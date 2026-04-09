@@ -1,4 +1,4 @@
-# Vol3D
+# Vol3d
 
 Vol3D is a browser-first and Windows-desktop-ready **3D volume texture generator** for seamless procedural noise, shader lookdev, VFX prototyping, and game content workflows.
 
