@@ -17,6 +17,14 @@ Recently completed / in progress:
 
 Use this section as a short handoff list if conversation context is lost.
 
+Recent UI bugfix batch / carry-forward:
+- [x] Move add-layer button/menu so the popup stays inside the frame.
+- [x] Move per-layer opacity and blend controls into the layer row.
+- [x] Replace blend-mode click-cycling with a popup selector.
+- [x] Cap inline layer renaming to 16 characters.
+- [x] Fix Bézier curve handle dragging / snapping behavior.
+- [x] Stop rebuilding the whole layer list on every small layer update to remove row flicker.
+
 - [ ] Finish animated export / frame sequence generation so looping previews can be rendered out, not just scrubbed in-app.
 - [ ] Add export controls for FPS, total frame count, and/or duration so animation export settings are explicit.
 - [ ] Make sure exported animation timing matches preview playback and scrubbing behavior.

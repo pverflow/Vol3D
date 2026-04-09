@@ -209,6 +209,11 @@
   color: var(--text-muted);
 }
 
+.layer-panel-header {
+  justify-content: flex-start;
+  gap: var(--sp-2);
+}
+
 /* ─── Modal ─── */
 
 .modal-overlay {

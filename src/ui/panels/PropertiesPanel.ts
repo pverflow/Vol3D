@@ -1,6 +1,6 @@
 import type { StateManager } from '../../state/StateManager'
 import type { Layer } from '../../types/index'
-import { NoiseType, WorleyMode, DistortionType, BlendMode, FeatherShape } from '../../types/index'
+import { NoiseType, WorleyMode, DistortionType, FeatherShape } from '../../types/index'
 import { Slider } from '../components/Slider'
 import { Select } from '../components/Select'
 import { Toggle } from '../components/Toggle'
@@ -46,6 +46,7 @@ export class PropertiesPanel {
   private state: StateManager
   private contentEl: HTMLElement
   private sectionState = new Map<string, boolean>()
+  private currentLayerSignature: string | null = null
 
   constructor(state: StateManager) {
     this.state = state
@@ -62,14 +63,15 @@ export class PropertiesPanel {
     this.el.appendChild(this.contentEl)
 
     this.state.subscribe('selected', () => this.render())
-    this.state.subscribe('layers', () => this.render())
+    this.state.subscribe('layers', () => this.handleLayersChange())
     this.render()
   }
 
   private render() {
     const id = this.state.get('selected')
     const layers = this.state.get('layers')
-    const layer = id ? layers.find(l => l.id === id) : null
+    const layer = id ? layers.find(l => l.id === id) ?? null : null
+    this.currentLayerSignature = getLayerEditorSignature(layer)
 
     this.contentEl.innerHTML = ''
 
@@ -88,7 +90,16 @@ export class PropertiesPanel {
     this.contentEl.appendChild(this.buildTransformSection(layer))
     this.contentEl.appendChild(this.buildDistortionSection(layer))
     this.contentEl.appendChild(this.buildRemapSection(layer))
-    this.contentEl.appendChild(this.buildLayerSection(layer))
+  }
+
+  private handleLayersChange() {
+    const id = this.state.get('selected')
+    const layer = id ? this.state.get('layers').find(l => l.id === id) ?? null : null
+    const nextSignature = getLayerEditorSignature(layer)
+
+    if (nextSignature !== this.currentLayerSignature) {
+      this.render()
+    }
   }
 
   private getSectionOpen(layerId: string, sectionName: string, defaultOpen: boolean): boolean {
@@ -436,37 +447,10 @@ export class PropertiesPanel {
     )
   }
 
-  private buildLayerSection(layer: Layer): HTMLElement {
-    const id = layer.id
-    const body = document.createElement('div')
-    body.className = 'prop-body'
-
-    const blendRow = document.createElement('div')
-    blendRow.className = 'prop-row'
-    const blendLabel = document.createElement('span')
-    blendLabel.className = 'prop-label'
-    blendLabel.textContent = 'Blend'
-    const blendSel = new Select(
-      Object.values(BlendMode).map(m => ({ value: m, label: m.charAt(0).toUpperCase() + m.slice(1) })),
-      layer.blendMode,
-      (v) => this.state.updateLayer(id, { blendMode: v as BlendMode })
-    )
-    blendRow.appendChild(blendLabel)
-    blendRow.appendChild(blendSel.el)
-    body.appendChild(blendRow)
-
-    body.appendChild(new Slider({
-      label: 'Opacity', min: 0, max: 1, step: 0.01, value: layer.opacity,
-      defaultValue: 1.0, decimals: 2,
-      onInput: (v) => this.state.updateLayer(id, { opacity: v }),
-      onChange: (v) => this.state.updateLayer(id, { opacity: v }),
-    }).el)
-
-    return section(
-      'Layer',
-      body,
-      this.getSectionOpen(id, 'Layer', true),
-      (open) => this.setSectionOpen(id, 'Layer', open)
-    )
-  }
 }
+
+function getLayerEditorSignature(layer: Layer | null): string | null {
+  if (!layer) return null
+  return [layer.id, layer.noise.type, layer.distortion.type].join('|')
+}
+

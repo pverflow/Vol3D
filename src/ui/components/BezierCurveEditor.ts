@@ -127,12 +127,14 @@ export class BezierCurveEditor {
   private attachEvents() {
     const startDrag = (index: 0 | 1, ev: MouseEvent) => {
       ev.preventDefault()
+      ev.stopPropagation()
+      const rect = this.svg.getBoundingClientRect()
       const onMove = (moveEv: MouseEvent) => {
-        const next = this.readEventPoint(moveEv, index)
+        const next = this.readEventPoint(moveEv, index, rect)
         this.setValue(next, false)
       }
       const onUp = (upEv: MouseEvent) => {
-        const next = this.readEventPoint(upEv, index)
+        const next = this.readEventPoint(upEv, index, rect)
         this.setValue(next, true)
         window.removeEventListener('mousemove', onMove)
         window.removeEventListener('mouseup', onUp)
@@ -151,8 +153,7 @@ export class BezierCurveEditor {
     })
   }
 
-  private readEventPoint(ev: MouseEvent, index: 0 | 1): BezierCurve {
-    const rect = this.svg.getBoundingClientRect()
+  private readEventPoint(ev: MouseEvent, index: 0 | 1, rect: DOMRect): BezierCurve {
     const x = clamp01((ev.clientX - rect.left) / Math.max(rect.width, 1))
     const y = clamp01(1 - (ev.clientY - rect.top) / Math.max(rect.height, 1))
 

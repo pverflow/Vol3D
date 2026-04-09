@@ -2,6 +2,7 @@ import type { AppState } from './AppState'
 import type { Layer, VolumeSettings, SliceCount } from '../types/index'
 import { defaultLayer, defaultState } from './AppState'
 import { uid } from '../utils/uid'
+import { formatStateDebugTransition, getStateDebugConfig, isStateDebugEnabled } from '../utils/stateDebug'
 
 type Subscriber<T> = (value: T) => void
 type StateKey = keyof AppState
@@ -30,22 +31,28 @@ export class StateManager {
   }
 
   update<K extends StateKey>(key: K, value: AppState[K]) {
+    this.applyUpdate(key, value, 'update')
+  }
+
+  private applyUpdate<K extends StateKey>(key: K, value: AppState[K], source: string) {
     const prevValue = this.state[key]
     if (key === 'settings') {
       value = normalizeVolumeSettings(value as AppState['settings']) as AppState[K]
     }
+
+    this.debugLogUpdate(source, key, prevValue, value)
     this.state[key] = value
-    this.notify(key)
+    this.notify(key, source)
 
     // Trigger regeneration for relevant keys
     if (key === 'layers' || key === 'settings') {
-      this.scheduleDirty()
+      this.scheduleDirty(`${source}:${String(key)}`)
     }
     if (key === 'animation') {
       const prev = prevValue as AppState['animation']
       const next = value as AppState['animation']
       if (prev.evolutions !== next.evolutions) {
-        this.scheduleDirty()
+        this.scheduleDirty(`${source}:animation.evolutions`)
       }
     }
   }
@@ -54,39 +61,48 @@ export class StateManager {
     const layers = this.state.layers.map(l =>
       l.id === id ? { ...l, ...patch } : l
     )
-    this.update('layers', layers)
+    this.applyUpdate('layers', layers, 'updateLayer')
   }
 
   updateLayerNoise(id: string, patch: Partial<Layer['noise']>) {
     const layer = this.state.layers.find(l => l.id === id)
     if (!layer) return
-    this.updateLayer(id, { noise: { ...layer.noise, ...patch } })
+    const layers = this.state.layers.map(l =>
+      l.id === id ? { ...l, noise: { ...layer.noise, ...patch } } : l
+    )
+    this.applyUpdate('layers', layers, 'updateLayerNoise')
   }
 
   updateLayerDistortion(id: string, patch: Partial<Layer['distortion']>) {
     const layer = this.state.layers.find(l => l.id === id)
     if (!layer) return
-    this.updateLayer(id, { distortion: { ...layer.distortion, ...patch } })
+    const layers = this.state.layers.map(l =>
+      l.id === id ? { ...l, distortion: { ...layer.distortion, ...patch } } : l
+    )
+    this.applyUpdate('layers', layers, 'updateLayerDistortion')
   }
 
   updateLayerRemap(id: string, patch: Partial<Layer['remap']>) {
     const layer = this.state.layers.find(l => l.id === id)
     if (!layer) return
-    this.updateLayer(id, { remap: { ...layer.remap, ...patch } })
+    const layers = this.state.layers.map(l =>
+      l.id === id ? { ...l, remap: { ...layer.remap, ...patch } } : l
+    )
+    this.applyUpdate('layers', layers, 'updateLayerRemap')
   }
 
   addLayer(layer: Layer) {
-    this.update('layers', [...this.state.layers, layer])
-    this.update('selected', layer.id)
+    this.applyUpdate('layers', [...this.state.layers, layer], 'addLayer')
+    this.applyUpdate('selected', layer.id, 'addLayer')
   }
 
   removeLayer(id: string) {
     const layers = this.state.layers.filter(l => l.id !== id)
-    this.update('layers', layers)
+    this.applyUpdate('layers', layers, 'removeLayer')
     const sel = this.state.selected === id
       ? (layers.length > 0 ? layers[layers.length - 1].id : null)
       : this.state.selected
-    this.update('selected', sel)
+    this.applyUpdate('selected', sel, 'removeLayer')
   }
 
   duplicateLayer(id: string) {
@@ -96,15 +112,15 @@ export class StateManager {
     const idx = this.state.layers.findIndex(l => l.id === id)
     const layers = [...this.state.layers]
     layers.splice(idx + 1, 0, copy)
-    this.update('layers', layers)
-    this.update('selected', copy.id)
+    this.applyUpdate('layers', layers, 'duplicateLayer')
+    this.applyUpdate('selected', copy.id, 'duplicateLayer')
   }
 
   reorderLayers(from: number, to: number) {
     const layers = [...this.state.layers]
     const [item] = layers.splice(from, 1)
     layers.splice(to, 0, item)
-    this.update('layers', layers)
+    this.applyUpdate('layers', layers, 'reorderLayers')
   }
 
   moveLayerUp(id: string) {
@@ -120,15 +136,18 @@ export class StateManager {
   subscribe<K extends StateKey>(key: K, fn: Subscriber<AppState[K]>) {
     if (!this.subscribers.has(key)) this.subscribers.set(key, new Set())
     this.subscribers.get(key)!.add(fn as Subscriber<unknown>)
+    this.debugLogSubscription(key)
     return () => this.subscribers.get(key)?.delete(fn as Subscriber<unknown>)
   }
 
-  private notify(key: StateKey) {
+  private notify(key: StateKey, source = 'notify') {
+    this.debugLogNotify(key, source)
     this.subscribers.get(key)?.forEach(fn => fn(this.state[key]))
   }
 
-  private scheduleDirty() {
+  private scheduleDirty(reason: string) {
     this.state.dirty = true
+    this.debugLogDirty(reason, this.dirtyTimer !== null)
     if (this.dirtyTimer !== null) clearTimeout(this.dirtyTimer)
     this.dirtyTimer = window.setTimeout(() => {
       this.dirtyTimer = null
@@ -152,13 +171,50 @@ export class StateManager {
       animation: { ...defaults.animation, ...state.animation },
       camera: { ...defaults.camera, ...state.camera },
     }
-    ;(Object.keys(this.state) as StateKey[]).forEach(k => this.notify(k))
-    this.scheduleDirty()
+    this.debugLogLoadState(state)
+    ;(Object.keys(this.state) as StateKey[]).forEach(k => this.notify(k, 'loadState'))
+    this.scheduleDirty('loadState')
   }
 
   serialize(): string {
     const { generating, progress, dirty, ...rest } = this.state
     return JSON.stringify(rest)
+  }
+
+  private debugLogUpdate<K extends StateKey>(source: string, key: K, prevValue: AppState[K], nextValue: AppState[K]) {
+    if (!isStateDebugEnabled(String(key))) return
+    const subscribers = this.subscribers.get(key)?.size ?? 0
+    console.debug(
+      `[state] ${source} -> ${String(key)} (${formatStateDebugTransition(prevValue, nextValue)}; subscribers=${subscribers})`
+    )
+
+    if (getStateDebugConfig().verbose) {
+      console.debug('[state] prev', prevValue)
+      console.debug('[state] next', nextValue)
+    }
+  }
+
+  private debugLogNotify(key: StateKey, source: string) {
+    if (!isStateDebugEnabled(String(key))) return
+    const count = this.subscribers.get(key)?.size ?? 0
+    console.debug(`[state] notify ${String(key)} from ${source} -> ${count} subscriber${count === 1 ? '' : 's'}`)
+  }
+
+  private debugLogDirty(reason: string, wasPending: boolean) {
+    if (!isStateDebugEnabled()) return
+    console.debug(`[state] dirty scheduled (${reason}; debounce=150ms${wasPending ? '; reset' : ''})`)
+  }
+
+  private debugLogSubscription(key: StateKey) {
+    if (!isStateDebugEnabled(String(key))) return
+    const count = this.subscribers.get(key)?.size ?? 0
+    console.debug(`[state] subscribe ${String(key)} -> ${count} subscriber${count === 1 ? '' : 's'}`)
+  }
+
+  private debugLogLoadState(state: Partial<AppState>) {
+    if (!isStateDebugEnabled()) return
+    const keys = Object.keys(state)
+    console.debug(`[state] loadState (${keys.length} key${keys.length === 1 ? '' : 's'}: ${keys.join(', ') || 'none'})`)
   }
 }
 
