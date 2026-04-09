@@ -1,0 +1,95 @@
+/* ─── Animations & Transitions ─── */
+
+/* Fade in for panels */
+.layer-panel, .properties-panel {
+  animation: fade-in 200ms ease;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Layer item entrance */
+.layer-item {
+  animation: slide-in 150ms ease;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Accent glow pulse for selected layer */
+.layer-item.selected {
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 8px rgba(108,108,255,0.1);
+}
+
+/* Smooth section collapse */
+.prop-section-body {
+  overflow: hidden;
+}
+
+/* Logo glow */
+.logo-icon {
+  animation: logo-glow 3s ease-in-out infinite;
+}
+
+@keyframes logo-glow {
+  0%, 100% { text-shadow: 0 0 8px rgba(108,108,255,0.4); }
+  50%       { text-shadow: 0 0 16px rgba(108,108,255,0.7), 0 0 32px rgba(108,108,255,0.3); }
+}
+
+/* Viewport generation shimmer */
+.gen-indicator {
+  animation: gen-pulse 2s ease-in-out infinite;
+}
+
+@keyframes gen-pulse {
+  0%, 100% { opacity: 0.8; }
+  50%       { opacity: 1; }
+}
+
+/* Progress fill glow */
+.progress-fill {
+  position: relative;
+}
+
+.progress-fill::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: -2px;
+  bottom: -2px;
+  width: 8px;
+  background: white;
+  border-radius: 2px;
+  opacity: 0.6;
+  filter: blur(2px);
+}
+
+/* Accent button shimmer */
+.top-btn.accent {
+  position: relative;
+  overflow: hidden;
+}
+
+.top-btn.accent::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+  transition: left 600ms ease;
+}
+
+.top-btn.accent:hover::before {
+  left: 100%;
+}
+
+/* Tooltip support */
+[title] {
+  position: relative;
+}

@@ -1,0 +1,27 @@
+{
+  "name": "3d-noise-generator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:nsis": "tauri build",
+    "release:windows:cert": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows/new-self-signed-cert.ps1",
+    "release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows/build-release.ps1"
+  },
+  "dependencies": {
+    "@tauri-apps/plugin-dialog": "^2.4.3",
+    "@tauri-apps/plugin-fs": "^2.4.4",
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.1",
+    "typescript": "^5.6.2",
+    "vite": "^6.0.0"
+  }
+}

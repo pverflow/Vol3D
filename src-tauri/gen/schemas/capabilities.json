@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capability for the main Vol3D desktop window.","local":true,"windows":["main"],"permissions":["core:default","dialog:default","fs:default"]}}
