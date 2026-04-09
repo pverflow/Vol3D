@@ -4,6 +4,20 @@ Vol3D is a browser-first and Windows-desktop-ready **3D volume texture generator
 
 It lets you stack procedural layers, preview them as a raymarched volume, inspect slices and projections, shape density with remapping and feathering, and export the generated volume data in several formats.
 
+## Screenshots
+
+### Main volume preview
+
+![Vol3D main volume preview](docs/images/Vol3d_simple.png)
+
+Raymarched preview of a generated volume in the main authoring view.
+
+### Tile preview / seam inspection
+
+![Vol3D tile preview](docs/images/Vold3d_tiled.png)
+
+3×3×3 tile preview used to inspect how well the generated volume repeats across neighboring cubes.
+
 ---
 
 ## Repository docs
@@ -147,22 +161,6 @@ npm run release:windows
 ```
 
 More detail is available in [`docs/windows-release.md`](docs/windows-release.md).
-
----
-
-## Screenshots / demo views
-
-### Main volume preview
-
-![Vol3D main volume preview](docs/images/Vol3d_simple.png)
-
-Raymarched preview of a generated volume in the main authoring view.
-
-### Tile preview / seam inspection
-
-![Vol3D tile preview](docs/images/Vold3d_tiled.png)
-
-3×3×3 tile preview used to inspect how well the generated volume repeats across neighboring cubes.
 
 ---
 
