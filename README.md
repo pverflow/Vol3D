@@ -152,23 +152,17 @@ More detail is available in [`docs/windows-release.md`](docs/windows-release.md)
 
 ## Screenshots / demo views
 
-Repository screenshots have not been added yet, but these are the most useful views to capture when preparing release docs or store pages:
+### Main volume preview
 
-- **Volume preview** — raymarched main view with a finished layered volume
-- **Slice mode** — internal cross-section for structure inspection
-- **Projection mode** — density overview for the whole volume
-- **Layer stack + properties** — show the authoring workflow
-- **Export dialog** — demonstrate current output formats
-- **Tile Preview** — show seam validation with the 3×3×3 repeated cube view
+![Vol3D main volume preview](docs/images/Vol3d_simple.png)
 
-Recommended future asset location:
-- `docs/images/volume-preview.png`
-- `docs/images/slice-preview.png`
-- `docs/images/projection-preview.png`
-- `docs/images/layers-and-properties.png`
-- `docs/images/export-dialog.png`
+Raymarched preview of a generated volume in the main authoring view.
 
-When screenshots are added later, this section can be upgraded into a visual gallery.
+### Tile preview / seam inspection
+
+![Vol3D tile preview](docs/images/Vold3d_tiled.png)
+
+3×3×3 tile preview used to inspect how well the generated volume repeats across neighboring cubes.
 
 ---
 
