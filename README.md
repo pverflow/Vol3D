@@ -148,7 +148,7 @@ npm run tauri:build
 
 This produces:
 - executable: `src-tauri/target/release/vol3d.exe`
-- installer: `src-tauri/target/release/bundle/nsis/Vol3D_1.0.0_x64-setup.exe`
+- installer: `src-tauri/target/release/bundle/nsis/Vol3D_<version>_x64-setup.exe`
 
 ### Create or reuse a local self-signed code-signing certificate
 ```powershell
