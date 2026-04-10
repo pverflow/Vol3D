@@ -28,6 +28,7 @@ export class Viewport {
   private animationCacheBuildId = 0
   private animationCacheBuilding = false
   private currentCachedFrame = -1
+  private exportInProgress = false
 
   constructor(state: StateManager) {
     this.state = state
@@ -636,9 +637,20 @@ export class Viewport {
   }
 
   private async handleExport(opts: { format: string; filename: string; flipY: boolean }) {
-    const { ExportManager } = await import('../../core/export/ExportManager')
-    const mgr = new ExportManager(this.ctx.gl, this.volume)
-    await mgr.export(opts.format as never, opts.filename, opts.flipY)
+    if (this.exportInProgress) return
+
+    this.exportInProgress = true
+    try {
+      const { ExportManager } = await import('../../core/export/ExportManager')
+      const mgr = new ExportManager(this.ctx.gl, this.volume)
+      await mgr.export(opts.format as never, opts.filename, opts.flipY)
+    } catch (error) {
+      console.error('Export failed:', error)
+      const message = describeViewportError(error)
+      window.alert(`Export failed: ${message}`)
+    } finally {
+      this.exportInProgress = false
+    }
   }
 
   private handleKey(e: KeyboardEvent) {
@@ -699,5 +711,19 @@ function attachRangeReset(input: HTMLInputElement, defaultValue: number, onReset
     input.value = String(defaultValue)
     onReset()
   })
+}
+
+function describeViewportError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === 'string' && error.trim()) return error
+
+  try {
+    const json = JSON.stringify(error)
+    if (json && json !== '{}') return json
+  } catch {
+    // ignore JSON conversion failures
+  }
+
+  return String(error)
 }
 

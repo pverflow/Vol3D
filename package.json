@@ -1,6 +1,6 @@
 {
-  "name": "3d-noise-generator",
-  "version": "1.1.0",
+  "name": "Vol3d",
+  "version": "1.2.0",
   "private": true,
   "license": "MIT",
   "type": "module",

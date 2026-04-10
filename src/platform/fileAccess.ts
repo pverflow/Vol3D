@@ -27,68 +27,70 @@ export function isTauriRuntime(): boolean {
 
 export async function saveBytes(data: Uint8Array, options: SaveFileOptions): Promise<boolean> {
   if (isTauriRuntime()) {
-    const { save } = await import('@tauri-apps/plugin-dialog')
-    const { writeFile } = await import('@tauri-apps/plugin-fs')
-    const target = await save({
-      defaultPath: options.suggestedName,
-      filters: options.filters,
-    })
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog')
+      const { writeFile } = await import('@tauri-apps/plugin-fs')
+      const target = await save({
+        defaultPath: options.suggestedName,
+        filters: options.filters,
+      })
 
-    if (!target || Array.isArray(target)) return false
-    await writeFile(target, data)
-    return true
+      if (!target || Array.isArray(target)) return false
+      await writeFile(target, data)
+      return true
+    } catch (error) {
+      throw new Error(`Desktop file save failed: ${describePlatformError(error)}`)
+    }
   }
 
   const blob = new Blob([toArrayBuffer(data)], { type: options.mime ?? 'application/octet-stream' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = options.suggestedName
-  a.click()
-  URL.revokeObjectURL(url)
+  triggerBrowserDownload(blob, options.suggestedName)
   return true
 }
 
 export async function saveText(text: string, options: SaveFileOptions): Promise<boolean> {
   if (isTauriRuntime()) {
-    const { save } = await import('@tauri-apps/plugin-dialog')
-    const { writeTextFile } = await import('@tauri-apps/plugin-fs')
-    const target = await save({
-      defaultPath: options.suggestedName,
-      filters: options.filters,
-    })
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog')
+      const { writeTextFile } = await import('@tauri-apps/plugin-fs')
+      const target = await save({
+        defaultPath: options.suggestedName,
+        filters: options.filters,
+      })
 
-    if (!target || Array.isArray(target)) return false
-    await writeTextFile(target, text)
-    return true
+      if (!target || Array.isArray(target)) return false
+      await writeTextFile(target, text)
+      return true
+    } catch (error) {
+      throw new Error(`Desktop text save failed: ${describePlatformError(error)}`)
+    }
   }
 
   const blob = new Blob([text], { type: options.mime ?? 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = options.suggestedName
-  a.click()
-  URL.revokeObjectURL(url)
+  triggerBrowserDownload(blob, options.suggestedName)
   return true
 }
 
 export async function openTextFile(options: OpenTextFileOptions = {}): Promise<OpenTextFileResult | null> {
   if (isTauriRuntime()) {
-    const { open } = await import('@tauri-apps/plugin-dialog')
-    const { readTextFile } = await import('@tauri-apps/plugin-fs')
-    const target = await open({
-      multiple: false,
-      directory: false,
-      filters: options.filters,
-    })
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const { readTextFile } = await import('@tauri-apps/plugin-fs')
+      const target = await open({
+        multiple: false,
+        directory: false,
+        filters: options.filters,
+      })
 
-    if (!target || Array.isArray(target)) return null
-    const text = await readTextFile(target)
-    const parts = target.replace(/\\/g, '/').split('/')
-    return {
-      name: parts[parts.length - 1] || 'file.txt',
-      text,
+      if (!target || Array.isArray(target)) return null
+      const text = await readTextFile(target)
+      const parts = target.replace(/\\/g, '/').split('/')
+      return {
+        name: parts[parts.length - 1] || 'file.txt',
+        text,
+      }
+    } catch (error) {
+      throw new Error(`Desktop file open failed: ${describePlatformError(error)}`)
     }
   }
 
@@ -128,5 +130,36 @@ function toAcceptString(filters?: FileDialogFilter[]): string {
 function toArrayBuffer(data: Uint8Array): ArrayBuffer {
   return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
 }
+
+function triggerBrowserDownload(blob: Blob, suggestedName: string) {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = suggestedName
+  anchor.style.display = 'none'
+
+  document.body.appendChild(anchor)
+  anchor.click()
+
+  window.setTimeout(() => {
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  }, 1000)
+}
+
+function describePlatformError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === 'string' && error.trim()) return error
+
+  try {
+    const json = JSON.stringify(error)
+    if (json && json !== '{}') return json
+  } catch {
+    // ignore JSON conversion failures
+  }
+
+  return String(error)
+}
+
 
 

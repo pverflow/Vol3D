@@ -3,7 +3,15 @@
   "identifier": "default",
   "description": "Default capability for the main Vol3D desktop window.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default", "fs:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:default",
+    "fs:allow-read-text-file",
+    "fs:allow-write-file",
+    "fs:allow-write-text-file"
+  ]
 }
+
 
 

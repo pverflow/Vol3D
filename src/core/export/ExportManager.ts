@@ -34,27 +34,36 @@ export class ExportManager {
 
     // Create a temporary FBO to read from the 3D texture slice
     const fb = gl.createFramebuffer()!
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb)
-    gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, volume.texture, 0, z)
+    try {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb)
+      gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, volume.texture, 0, z)
+      gl.readBuffer(gl.COLOR_ATTACHMENT0)
 
-    const data = new Uint8Array(res * res * 4)
-    gl.readPixels(0, 0, res, res, gl.RGBA, gl.UNSIGNED_BYTE, data)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-    gl.deleteFramebuffer(fb)
-
-    if (flipY) {
-      // Flip rows
-      const row = new Uint8Array(res * 4)
-      for (let y = 0; y < Math.floor(res / 2); y++) {
-        const top = y * res * 4
-        const bot = (res - 1 - y) * res * 4
-        row.set(data.subarray(top, top + res * 4))
-        data.copyWithin(top, bot, bot + res * 4)
-        data.set(row, bot)
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER)
+      if (status !== gl.FRAMEBUFFER_COMPLETE) {
+        throw new Error(`Export framebuffer is incomplete for slice ${z} (status ${status})`)
       }
-    }
 
-    return data
+      const data = new Uint8Array(res * res * 4)
+      gl.readPixels(0, 0, res, res, gl.RGBA, gl.UNSIGNED_BYTE, data)
+
+      if (flipY) {
+        // Flip rows
+        const row = new Uint8Array(res * 4)
+        for (let y = 0; y < Math.floor(res / 2); y++) {
+          const top = y * res * 4
+          const bot = (res - 1 - y) * res * 4
+          row.set(data.subarray(top, top + res * 4))
+          data.copyWithin(top, bot, bot + res * 4)
+          data.set(row, bot)
+        }
+      }
+
+      return data
+    } finally {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+      gl.deleteFramebuffer(fb)
+    }
   }
 
   private async exportPNGSequence(filename: string, flipY: boolean): Promise<void> {
@@ -70,11 +79,11 @@ export class ExportManager {
       const canvas = document.createElement('canvas')
       canvas.width = res
       canvas.height = res
-      const ctx = canvas.getContext('2d')!
+      const ctx = this.getCanvas2DContext(canvas)
       const imageData = new ImageData(new Uint8ClampedArray(rgba), res, res)
       ctx.putImageData(imageData, 0, 0)
 
-      const blob = await new Promise<Blob>(resolve => canvas.toBlob(b => resolve(b!), 'image/png'))
+      const blob = await this.canvasToBlob(canvas)
       const arrBuf = await blob.arrayBuffer()
       const zStr = String(z).padStart(4, '0')
       files[`${filename}/slice_${zStr}.png`] = new Uint8Array(arrBuf)
@@ -87,7 +96,10 @@ export class ExportManager {
           suggestedName: `${filename}.zip`,
           mime: 'application/zip',
           filters: [{ name: 'ZIP Archive', extensions: ['zip'] }],
-        }).then(() => resolve(), reject)
+        }).then((saved) => {
+          if (!saved) return resolve()
+          resolve()
+        }, reject)
       })
     })
   }
@@ -102,14 +114,14 @@ export class ExportManager {
     const canvas = document.createElement('canvas')
     canvas.width = res * cols
     canvas.height = res * rows
-    const ctx = canvas.getContext('2d')!
+    const ctx = this.getCanvas2DContext(canvas)
 
     for (let z = 0; z < depth; z++) {
       const rgba = this.readSlice(z, flipY)
       const sliceCanvas = document.createElement('canvas')
       sliceCanvas.width = res
       sliceCanvas.height = res
-      const sc = sliceCanvas.getContext('2d')!
+      const sc = this.getCanvas2DContext(sliceCanvas)
       sc.putImageData(new ImageData(new Uint8ClampedArray(rgba), res, res), 0, 0)
 
       const col = z % cols
@@ -117,7 +129,7 @@ export class ExportManager {
       ctx.drawImage(sliceCanvas, col * res, row * res)
     }
 
-    const blob = await new Promise<Blob>(resolve => canvas.toBlob(b => resolve(b!), 'image/png'))
+    const blob = await this.canvasToBlob(canvas)
     const arrBuf = await blob.arrayBuffer() as ArrayBuffer
     await saveBytes(new Uint8Array(arrBuf), {
       suggestedName: `${filename}_spritesheet.png`,
@@ -162,5 +174,32 @@ export class ExportManager {
       mime,
       filters: [{ name: 'Raw Volume Data', extensions: [ext] }],
     })
+  }
+
+  private getCanvas2DContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      throw new Error('2D canvas context is unavailable during export')
+    }
+    return ctx
+  }
+
+  private async canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+    if (blob) return blob
+
+    const dataUrl = canvas.toDataURL('image/png')
+    const [, base64 = ''] = dataUrl.split(',', 2)
+    if (!base64) {
+      throw new Error('Failed to encode exported PNG image')
+    }
+
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i)
+    }
+
+    return new Blob([bytes], { type: 'image/png' })
   }
 }
