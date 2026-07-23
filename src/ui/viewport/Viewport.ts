@@ -1,5 +1,6 @@
 import { WebGLContext } from '../../core/renderer/WebGLContext'
 import { ShaderCompiler } from '../../core/renderer/ShaderCompiler'
+import type { CompiledProgram } from '../../core/renderer/ShaderCompiler'
 import { VolumeGenerator } from '../../core/renderer/VolumeGenerator'
 import { VolumeTexture } from '../../core/volume/VolumeTexture'
 import { CameraController } from './CameraController'
@@ -9,6 +10,9 @@ import type { StateManager } from '../../state/StateManager'
 import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
 import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
+
+const AXIS_MAP: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
+const PREVIEW_MODE_ORDER: PreviewMode[] = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
 
 export class Viewport {
   readonly el: HTMLElement
@@ -26,6 +30,7 @@ export class Viewport {
   private vao: WebGLVertexArrayObject
   private dirtyTimer: number | null = null
   private exportInProgress = false
+  private readonly previewRenderers: Record<PreviewMode, (w: number, h: number) => void>
 
   constructor(state: StateManager) {
     this.state = state
@@ -95,6 +100,12 @@ export class Viewport {
       const detail = (e as CustomEvent<ExportConfig>).detail
       this.handleExport(detail)
     })
+
+    this.previewRenderers = {
+      [PreviewMode.Raymarched]: (w, h) => this.renderRaymarched(w, h),
+      [PreviewMode.Slice]: () => this.renderSlicePlane(false),
+      [PreviewMode.Projection]: () => this.renderSlicePlane(true),
+    }
 
     this.startRenderLoop()
     this.scheduleGeneration()
@@ -172,28 +183,22 @@ export class Viewport {
     gl.bindVertexArray(this.vao)
 
     const preview = this.state.get('preview')
-
-    switch (preview.mode) {
-      case PreviewMode.Raymarched:
-        this.renderRaymarched(w, h)
-        break
-      case PreviewMode.Slice:
-        this.renderSlice()
-        break
-      case PreviewMode.Projection:
-        this.renderProjection()
-        break
-    }
+    this.previewRenderers[preview.mode]?.(w, h)
 
     gl.bindVertexArray(null)
   }
 
-  private renderRaymarched(w: number, h: number) {
+  private beginPass(prog: CompiledProgram): WebGL2RenderingContext {
     const gl = this.ctx.gl
-    const { compiler } = this
-    const prog = compiler.buildRaymarchShader()
     gl.useProgram(prog.program)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    return gl
+  }
+
+  private renderRaymarched(w: number, h: number) {
+    const { compiler } = this
+    const prog = compiler.buildRaymarchShader()
+    const gl = this.beginPass(prog)
 
     const preview = this.state.get('preview')
     const depthScale = this.volume.depth / this.volume.resolution
@@ -221,49 +226,27 @@ export class Viewport {
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
-  private renderSlice() {
-    const gl = this.ctx.gl
+  private renderSlicePlane(isProjection: boolean) {
     const { compiler } = this
-    const prog = compiler.buildSliceShader()
-    gl.useProgram(prog.program)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    const prog = isProjection ? compiler.buildProjectionShader() : compiler.buildSliceShader()
+    const gl = this.beginPass(prog)
 
     const preview = this.state.get('preview')
-    const axisMap: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
     const planeAspect = preview.sliceAxis === SliceAxis.Z ? 1 : this.volume.resolution / this.volume.depth
     const screenAspect = this.canvas.width / this.canvas.height
 
-    compiler.setUniformi(prog, 'u_sliceAxis', axisMap[preview.sliceAxis])
-    compiler.setUniform(prog, 'u_slicePos', preview.slicePosition)
+    compiler.setUniformi(prog, 'u_sliceAxis', AXIS_MAP[preview.sliceAxis])
     compiler.setUniform(prog, 'u_exposure', preview.exposure)
     compiler.setUniform(prog, 'u_planeAspect', planeAspect)
     compiler.setUniform(prog, 'u_screenAspect', screenAspect)
 
-    this.volume.bind(0)
-    compiler.setUniformi(prog, 'u_volume', 0)
-
-    gl.drawArrays(gl.TRIANGLES, 0, 3)
-  }
-
-  private renderProjection() {
-    const gl = this.ctx.gl
-    const { compiler } = this
-    const prog = compiler.buildProjectionShader()
-    gl.useProgram(prog.program)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-
-    const preview = this.state.get('preview')
-    const axisMap: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
-    const projMap: Record<ProjectionMode, number> = { average: 0, max: 1 }
-    const planeAspect = preview.sliceAxis === SliceAxis.Z ? 1 : this.volume.resolution / this.volume.depth
-    const screenAspect = this.canvas.width / this.canvas.height
-
-    compiler.setUniformi(prog, 'u_sliceAxis', axisMap[preview.sliceAxis])
-    compiler.setUniformi(prog, 'u_projMode', projMap[preview.projectionMode])
-    compiler.setUniform(prog, 'u_exposure', preview.exposure)
-    compiler.setUniformi(prog, 'u_steps', preview.stepCount)
-    compiler.setUniform(prog, 'u_planeAspect', planeAspect)
-    compiler.setUniform(prog, 'u_screenAspect', screenAspect)
+    if (isProjection) {
+      const projMap: Record<ProjectionMode, number> = { average: 0, max: 1 }
+      compiler.setUniformi(prog, 'u_projMode', projMap[preview.projectionMode])
+      compiler.setUniformi(prog, 'u_steps', preview.stepCount)
+    } else {
+      compiler.setUniform(prog, 'u_slicePos', preview.slicePosition)
+    }
 
     this.volume.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
@@ -290,9 +273,8 @@ export class Viewport {
 
   cyclePreviewMode() {
     const state = this.state
-    const modes = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
     const cur = state.get('preview').mode
-    const next = modes[(modes.indexOf(cur) + 1) % modes.length]
+    const next = PREVIEW_MODE_ORDER[(PREVIEW_MODE_ORDER.indexOf(cur) + 1) % PREVIEW_MODE_ORDER.length]
     state.update('preview', { ...state.get('preview'), mode: next })
   }
 
