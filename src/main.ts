@@ -11,6 +11,7 @@ import { LayerPanel } from './ui/panels/LayerPanel'
 import { PropertiesPanel } from './ui/panels/PropertiesPanel'
 import { TopBar } from './ui/panels/TopBar'
 import { Viewport } from './ui/viewport/Viewport'
+import { KeyBindings } from './ui/KeyBindings'
 
 function init() {
   const app = document.getElementById('app')!
@@ -42,6 +43,7 @@ function init() {
   const layerPanel = new LayerPanel(state)
   const viewport = new Viewport(state)
   viewportRef = viewport
+  new KeyBindings(state, viewport)
   const propsPanel = new PropertiesPanel(state)
 
   // Layout

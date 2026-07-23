@@ -8,7 +8,6 @@ import { ViewportOverlay } from './ViewportOverlay'
 import type { StateManager } from '../../state/StateManager'
 import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
-import { defaultLayer } from '../../state/AppState'
 import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
 
 export class Viewport {
@@ -96,9 +95,6 @@ export class Viewport {
       const detail = (e as CustomEvent<ExportConfig>).detail
       this.handleExport(detail)
     })
-
-    // Keyboard shortcuts
-    window.addEventListener('keydown', (e) => this.handleKey(e))
 
     this.startRenderLoop()
     this.scheduleGeneration()
@@ -292,48 +288,21 @@ export class Viewport {
     }
   }
 
-  private handleKey(e: KeyboardEvent) {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-
+  cyclePreviewMode() {
     const state = this.state
-    // Tab = cycle preview mode
-    if (e.key === 'Tab') {
-      e.preventDefault()
-      const modes = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
-      const cur = state.get('preview').mode
-      const next = modes[(modes.indexOf(cur) + 1) % modes.length]
-      state.update('preview', { ...state.get('preview'), mode: next })
-    }
-    // T = toggle tile preview
-    if (e.key === 't' || e.key === 'T') {
-      const preview = state.get('preview')
-      state.update('preview', { ...preview, showTilePreview: !preview.showTilePreview })
-    }
-    // F = focus/reset camera
-    if (e.key === 'f' || e.key === 'F') {
-      this.camera.reset()
-    }
-    // Delete = delete selected layer
-    if (e.key === 'Delete') {
-      const sel = state.get('selected')
-      if (sel) state.removeLayer(sel)
-    }
-    // Ctrl+D = duplicate
-    if (e.ctrlKey && e.key === 'd') {
-      e.preventDefault()
-      const sel = state.get('selected')
-      if (sel) state.duplicateLayer(sel)
-    }
-    // Ctrl+Shift+N = add layer
-    if (e.ctrlKey && e.shiftKey && e.key === 'N') {
-      e.preventDefault()
-      state.addLayer(defaultLayer())
-    }
-    // Ctrl+E = export
-    if (e.ctrlKey && e.key === 'e') {
-      e.preventDefault()
-      window.dispatchEvent(new CustomEvent('vol3d-show-export'))
-    }
+    const modes = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
+    const cur = state.get('preview').mode
+    const next = modes[(modes.indexOf(cur) + 1) % modes.length]
+    state.update('preview', { ...state.get('preview'), mode: next })
+  }
+
+  toggleTilePreview() {
+    const preview = this.state.get('preview')
+    this.state.update('preview', { ...preview, showTilePreview: !preview.showTilePreview })
+  }
+
+  focusCamera() {
+    this.camera.reset()
   }
 
   destroy() {
