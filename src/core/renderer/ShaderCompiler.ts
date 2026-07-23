@@ -123,54 +123,33 @@ export class ShaderCompiler {
     return compiled
   }
 
-  buildCompositeShader(): CompiledProgram {
-    const key = 'composite'
-    if (this.cache.has(key)) return this.cache.get(key)!
-    const commonHeader = `#version 300 es\nprecision highp float;\n`
-    const fragSource = [
-      commonHeader,
-      blendModes,
-      compositeFrag.replace('#version 300 es', '').replace('precision highp float;', ''),
-    ].join('\n')
-    const vert = this.compile(fullscreenVert, this.gl.VERTEX_SHADER)
-    const frag = this.compile(fragSource, this.gl.FRAGMENT_SHADER)
-    const prog = this.link(vert, frag, 'Composite')
-    const compiled = { program: prog, uniforms: this.collectUniforms(prog, fragSource) }
+  private buildSimpleProgram(key: string, vertSrc: string, fragSrc: string, name: string): CompiledProgram {
+    const cached = this.cache.get(key)
+    if (cached) return cached
+    const vert = this.compile(vertSrc, this.gl.VERTEX_SHADER)
+    const frag = this.compile(fragSrc, this.gl.FRAGMENT_SHADER)
+    const prog = this.link(vert, frag, name)
+    const compiled = { program: prog, uniforms: this.collectUniforms(prog, fragSrc) }
     this.cache.set(key, compiled)
     return compiled
+  }
+
+  buildCompositeShader(): CompiledProgram {
+    const header = `#version 300 es\nprecision highp float;\n`
+    const frag = [header, blendModes, compositeFrag.replace('#version 300 es', '').replace('precision highp float;', '')].join('\n')
+    return this.buildSimpleProgram('composite', fullscreenVert, frag, 'Composite')
   }
 
   buildRaymarchShader(): CompiledProgram {
-    const key = 'raymarch'
-    if (this.cache.has(key)) return this.cache.get(key)!
-    const vert = this.compile(raymarchVert, this.gl.VERTEX_SHADER)
-    const frag = this.compile(raymarchFrag, this.gl.FRAGMENT_SHADER)
-    const prog = this.link(vert, frag, 'Raymarch')
-    const compiled = { program: prog, uniforms: this.collectUniforms(prog, raymarchFrag) }
-    this.cache.set(key, compiled)
-    return compiled
+    return this.buildSimpleProgram('raymarch', raymarchVert, raymarchFrag, 'Raymarch')
   }
 
   buildSliceShader(): CompiledProgram {
-    const key = 'slice'
-    if (this.cache.has(key)) return this.cache.get(key)!
-    const vert = this.compile(fullscreenVert, this.gl.VERTEX_SHADER)
-    const frag = this.compile(sliceFrag, this.gl.FRAGMENT_SHADER)
-    const prog = this.link(vert, frag, 'Slice')
-    const compiled = { program: prog, uniforms: this.collectUniforms(prog, sliceFrag) }
-    this.cache.set(key, compiled)
-    return compiled
+    return this.buildSimpleProgram('slice', fullscreenVert, sliceFrag, 'Slice')
   }
 
   buildProjectionShader(): CompiledProgram {
-    const key = 'projection'
-    if (this.cache.has(key)) return this.cache.get(key)!
-    const vert = this.compile(fullscreenVert, this.gl.VERTEX_SHADER)
-    const frag = this.compile(projectionFrag, this.gl.FRAGMENT_SHADER)
-    const prog = this.link(vert, frag, 'Projection')
-    const compiled = { program: prog, uniforms: this.collectUniforms(prog, projectionFrag) }
-    this.cache.set(key, compiled)
-    return compiled
+    return this.buildSimpleProgram('projection', fullscreenVert, projectionFrag, 'Projection')
   }
 
   private compile(source: string, type: number): WebGLShader {
