@@ -22,8 +22,6 @@ export class VolumeGenerator {
   private sliceBuffer: SliceBuffer
   private vao: WebGLVertexArrayObject
   private rafId: number | null = null
-  private onProgress: ProgressCallback | null = null
-  private onComplete: (() => void) | null = null
 
   constructor(gl: WebGL2RenderingContext, compiler: ShaderCompiler, resolution: number) {
     this.gl = gl
@@ -45,48 +43,19 @@ export class VolumeGenerator {
     onProgress?: ProgressCallback,
     onComplete?: () => void
   ) {
-    // Cancel any in-progress generation
-    if (this.rafId !== null) {
-      cancelAnimationFrame(this.rafId)
-      this.rafId = null
-    }
-
-    this.onProgress = onProgress ?? null
-    this.onComplete = onComplete ?? null
-
-    const activeLayers = layers.filter(l => l.visible)
-    const resolution = volume.resolution
-    const totalSlices = volume.depth
-
-    // Process slices in chunks across frames
-    const SLICES_PER_FRAME = resolution <= 64 ? resolution : 8
-    let currentSlice = 0
-
-    const processChunk = () => {
-      const end = Math.min(currentSlice + SLICES_PER_FRAME, totalSlices)
-
-      for (let z = currentSlice; z < end; z++) {
-        this.generateSlice(z, resolution, totalSlices, activeLayers, globalSeed, animPhase, animEvolutions)
-
-        // Read back and upload to 3D texture
-        const rgba = this.sliceBuffer.readPixels()
-        const red = extractAdjustedRedSlice(rgba, resolution, cutoff, contrast)
-        volume.uploadSlice(z, red)
-      }
-
-      currentSlice = end
-      const progress = currentSlice / totalSlices
-      this.onProgress?.(progress)
-
-      if (currentSlice < totalSlices) {
-        this.rafId = requestAnimationFrame(processChunk)
-      } else {
-        this.rafId = null
-        this.onComplete?.()
-      }
-    }
-
-    this.rafId = requestAnimationFrame(processChunk)
+    this.runSliceLoop({
+      layers,
+      resolution: volume.resolution,
+      depth: volume.depth,
+      globalSeed,
+      cutoff,
+      contrast,
+      animPhase,
+      animEvolutions,
+      sink: (z, red) => volume.uploadSlice(z, red),
+      onProgress,
+      onComplete,
+    })
   }
 
   generateFrameData(
@@ -100,40 +69,80 @@ export class VolumeGenerator {
     animEvolutions: number,
     onProgress?: ProgressCallback
   ): Promise<Uint8Array> {
+    const frame = new Uint8Array(resolution * resolution * depth)
+
+    return new Promise((resolve) => {
+      this.runSliceLoop({
+        layers,
+        resolution,
+        depth,
+        globalSeed,
+        cutoff,
+        contrast,
+        animPhase,
+        animEvolutions,
+        sink: (z, red) => frame.set(red, z * resolution * resolution),
+        onProgress,
+        onComplete: () => resolve(frame),
+      })
+    })
+  }
+
+  // Shared chunked scheduler: cancels any in-flight loop, then walks slices
+  // SLICES_PER_FRAME at a time across rAF ticks, handing each decoded slice
+  // to `sink` (texture upload for generate(), frame-buffer write for
+  // generateFrameData()).
+  private runSliceLoop(params: {
+    layers: Layer[]
+    resolution: number
+    depth: number
+    globalSeed: number
+    cutoff: number
+    contrast: number
+    animPhase: number
+    animEvolutions: number
+    sink: (z: number, red: Uint8Array) => void
+    onProgress?: ProgressCallback
+    onComplete?: () => void
+  }): void {
+    const { layers, resolution, depth, globalSeed, cutoff, contrast, animPhase, animEvolutions, sink, onProgress, onComplete } = params
+
+    // Cancel any in-progress generation
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId)
       this.rafId = null
     }
 
     const activeLayers = layers.filter(l => l.visible)
-    const frame = new Uint8Array(resolution * resolution * depth)
+
+    // Process slices in chunks across frames
     const SLICES_PER_FRAME = resolution <= 64 ? resolution : 8
     let currentSlice = 0
 
-    return new Promise((resolve) => {
-      const processChunk = () => {
-        const end = Math.min(currentSlice + SLICES_PER_FRAME, depth)
+    const processChunk = () => {
+      const end = Math.min(currentSlice + SLICES_PER_FRAME, depth)
 
-        for (let z = currentSlice; z < end; z++) {
-          this.generateSlice(z, resolution, depth, activeLayers, globalSeed, animPhase, animEvolutions)
-          const rgba = this.sliceBuffer.readPixels()
-          const red = extractAdjustedRedSlice(rgba, resolution, cutoff, contrast)
-          frame.set(red, z * resolution * resolution)
-        }
+      for (let z = currentSlice; z < end; z++) {
+        this.generateSlice(z, resolution, depth, activeLayers, globalSeed, animPhase, animEvolutions)
 
-        currentSlice = end
-        onProgress?.(currentSlice / depth)
-
-        if (currentSlice < depth) {
-          this.rafId = requestAnimationFrame(processChunk)
-        } else {
-          this.rafId = null
-          resolve(frame)
-        }
+        // Read back and hand off to the caller's sink
+        const rgba = this.sliceBuffer.readPixels()
+        const red = extractAdjustedRedSlice(rgba, resolution, cutoff, contrast)
+        sink(z, red)
       }
 
-      this.rafId = requestAnimationFrame(processChunk)
-    })
+      currentSlice = end
+      onProgress?.(currentSlice / depth)
+
+      if (currentSlice < depth) {
+        this.rafId = requestAnimationFrame(processChunk)
+      } else {
+        this.rafId = null
+        onComplete?.()
+      }
+    }
+
+    this.rafId = requestAnimationFrame(processChunk)
   }
 
   private generateSlice(
