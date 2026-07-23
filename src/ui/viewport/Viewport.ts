@@ -4,10 +4,11 @@ import { VolumeGenerator } from '../../core/renderer/VolumeGenerator'
 import { VolumeTexture } from '../../core/volume/VolumeTexture'
 import { CameraController } from './CameraController'
 import { AnimationController } from './AnimationController'
+import { ViewportOverlay } from './ViewportOverlay'
 import type { StateManager } from '../../state/StateManager'
 import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
-import { defaultLayer, defaultState } from '../../state/AppState'
+import { defaultLayer } from '../../state/AppState'
 import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
 
 export class Viewport {
@@ -20,6 +21,7 @@ export class Viewport {
   private volume: VolumeTexture
   private camera: CameraController
   private animation: AnimationController
+  private overlay: ViewportOverlay
   private state: StateManager
   private rafId: number | null = null
   private vao: WebGLVertexArrayObject
@@ -37,7 +39,8 @@ export class Viewport {
     this.el.appendChild(this.canvas)
 
     // Overlay controls
-    this.el.appendChild(this.buildOverlay())
+    this.overlay = new ViewportOverlay(state)
+    this.el.appendChild(this.overlay.el)
 
     // WebGL setup
     this.ctx = new WebGLContext(this.canvas)
@@ -99,219 +102,6 @@ export class Viewport {
 
     this.startRenderLoop()
     this.scheduleGeneration()
-  }
-
-  private buildOverlay(): HTMLElement {
-    const overlay = document.createElement('div')
-    overlay.className = 'viewport-overlay'
-    const defaults = defaultState().preview
-
-    // Preview mode buttons
-    const modeGroup = document.createElement('div')
-    modeGroup.className = 'seg-group'
-    const modeButtons = new Map<PreviewMode, HTMLButtonElement>()
-    const modes: [PreviewMode, string][] = [
-      [PreviewMode.Raymarched, '☁ Vol'],
-      [PreviewMode.Slice, '⬛ Slice'],
-      [PreviewMode.Projection, '⬤ Proj'],
-    ]
-    for (const [mode, label] of modes) {
-      const btn = document.createElement('button')
-      btn.className = 'seg-btn' + (this.state.get('preview').mode === mode ? ' active' : '')
-      btn.textContent = label
-      btn.addEventListener('click', () => {
-        this.state.update('preview', { ...this.state.get('preview'), mode })
-      })
-      modeButtons.set(mode, btn)
-      modeGroup.appendChild(btn)
-    }
-    overlay.appendChild(modeGroup)
-
-    const projModeGroup = document.createElement('div')
-    projModeGroup.className = 'seg-group'
-    const projectionButtons = new Map<ProjectionMode, HTMLButtonElement>()
-    const projModes: [ProjectionMode, string, string][] = [
-      [ProjectionMode.Max, 'Max', 'Maximum density projection: shows the strongest value along the axis'],
-      [ProjectionMode.Average, 'Avg', 'Average density projection: shows the mean value through the volume'],
-    ]
-    for (const [mode, label, title] of projModes) {
-      const btn = document.createElement('button')
-      btn.className = 'seg-btn sm' + (this.state.get('preview').projectionMode === mode ? ' active' : '')
-      btn.textContent = label
-      btn.title = title
-      btn.addEventListener('click', () => {
-        this.state.update('preview', { ...this.state.get('preview'), projectionMode: mode })
-      })
-      projectionButtons.set(mode, btn)
-      projModeGroup.appendChild(btn)
-    }
-    overlay.appendChild(projModeGroup)
-
-    // Slice controls (shown only in slice/projection mode)
-    const sliceControls = document.createElement('div')
-    sliceControls.className = 'slice-controls'
-
-    const axisGroup = document.createElement('div')
-    axisGroup.className = 'seg-group'
-    const axisButtons = new Map<SliceAxis, HTMLButtonElement>()
-    for (const axis of [SliceAxis.X, SliceAxis.Y, SliceAxis.Z]) {
-      const btn = document.createElement('button')
-      btn.className = 'seg-btn sm' + (this.state.get('preview').sliceAxis === axis ? ' active' : '')
-      btn.textContent = axis.toUpperCase()
-      btn.addEventListener('click', () => {
-        this.state.update('preview', { ...this.state.get('preview'), sliceAxis: axis })
-      })
-      axisButtons.set(axis, btn)
-      axisGroup.appendChild(btn)
-    }
-    sliceControls.appendChild(axisGroup)
-
-    const posSlider = document.createElement('input')
-    posSlider.type = 'range'
-    posSlider.className = 'slice-pos-slider'
-    posSlider.id = 'preview-slice-position'
-    posSlider.name = 'preview-slice-position'
-    posSlider.min = '0'
-    posSlider.max = '100'
-    posSlider.value = String(this.state.get('preview').slicePosition * 100)
-    posSlider.addEventListener('input', () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        slicePosition: parseInt(posSlider.value) / 100
-      })
-    })
-    attachRangeReset(posSlider, defaults.slicePosition * 100, () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        slicePosition: defaults.slicePosition
-      })
-    })
-    sliceControls.appendChild(posSlider)
-    overlay.appendChild(sliceControls)
-
-    const previewControls = document.createElement('div')
-    previewControls.className = 'raymarch-controls'
-
-    const densitySlider = document.createElement('input')
-    densitySlider.type = 'range'
-    densitySlider.className = 'mini-slider'
-    densitySlider.id = 'preview-density'
-    densitySlider.name = 'preview-density'
-    densitySlider.min = '0'
-    densitySlider.max = '300'
-    densitySlider.value = String(this.state.get('preview').density * 100)
-    densitySlider.title = 'Density'
-    densitySlider.addEventListener('input', () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        density: parseInt(densitySlider.value) / 100
-      })
-    })
-    attachRangeReset(densitySlider, defaults.density * 100, () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        density: defaults.density
-      })
-    })
-    const densityLabel = document.createElement('span')
-    densityLabel.className = 'mini-label'
-    densityLabel.textContent = 'Density'
-    previewControls.appendChild(densityLabel)
-    previewControls.appendChild(densitySlider)
-
-    const stepSlider = document.createElement('input')
-    stepSlider.type = 'range'
-    stepSlider.className = 'mini-slider'
-    stepSlider.min = '16'
-    stepSlider.max = '256'
-    stepSlider.step = '8'
-    stepSlider.value = String(this.state.get('preview').stepCount)
-    stepSlider.title = 'Raymarch steps'
-    stepSlider.addEventListener('input', () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        stepCount: parseInt(stepSlider.value)
-      })
-    })
-    attachRangeReset(stepSlider, defaults.stepCount, () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        stepCount: defaults.stepCount
-      })
-    })
-    const stepLabel = document.createElement('span')
-    stepLabel.className = 'mini-label'
-    stepLabel.textContent = 'Steps'
-    previewControls.appendChild(stepLabel)
-    previewControls.appendChild(stepSlider)
-
-    const tilePreviewDensitySlider = document.createElement('input')
-    tilePreviewDensitySlider.type = 'range'
-    tilePreviewDensitySlider.className = 'mini-slider'
-    tilePreviewDensitySlider.min = '0'
-    tilePreviewDensitySlider.max = '100'
-    tilePreviewDensitySlider.value = String(this.state.get('preview').tilePreviewDensity * 100)
-    tilePreviewDensitySlider.title = 'Neighbor cube density'
-    tilePreviewDensitySlider.addEventListener('input', () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        tilePreviewDensity: parseInt(tilePreviewDensitySlider.value) / 100
-      })
-    })
-    attachRangeReset(tilePreviewDensitySlider, defaults.tilePreviewDensity * 100, () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        tilePreviewDensity: defaults.tilePreviewDensity
-      })
-    })
-    const tilePreviewDensityLabel = document.createElement('span')
-    tilePreviewDensityLabel.className = 'mini-label'
-    tilePreviewDensityLabel.textContent = 'Repeat α'
-    previewControls.appendChild(tilePreviewDensityLabel)
-    previewControls.appendChild(tilePreviewDensitySlider)
-
-    overlay.appendChild(previewControls)
-
-    const syncOverlay = () => {
-      const preview = this.state.get('preview')
-      modeButtons.forEach((btn, mode) => btn.classList.toggle('active', preview.mode === mode))
-      projectionButtons.forEach((btn, mode) => btn.classList.toggle('active', preview.projectionMode === mode))
-      axisButtons.forEach((btn, axis) => btn.classList.toggle('active', preview.sliceAxis === axis))
-
-      posSlider.value = String(Math.round(preview.slicePosition * 100))
-      densitySlider.value = String(Math.round(preview.density * 100))
-      stepSlider.value = String(preview.stepCount)
-      tilePreviewDensitySlider.value = String(Math.round(preview.tilePreviewDensity * 100))
-
-      sliceControls.style.display = preview.mode === PreviewMode.Slice || preview.mode === PreviewMode.Projection ? 'flex' : 'none'
-      previewControls.style.display = preview.mode === PreviewMode.Raymarched || preview.mode === PreviewMode.Projection ? 'flex' : 'none'
-      projModeGroup.style.display = preview.mode === PreviewMode.Projection ? 'flex' : 'none'
-
-      const showDensity = preview.mode === PreviewMode.Raymarched
-      densityLabel.style.display = showDensity ? '' : 'none'
-      densitySlider.style.display = showDensity ? '' : 'none'
-
-      const showRepeatDensity = preview.mode === PreviewMode.Raymarched && preview.showTilePreview
-      tilePreviewDensityLabel.style.display = showRepeatDensity ? '' : 'none'
-      tilePreviewDensitySlider.style.display = showRepeatDensity ? '' : 'none'
-
-      stepSlider.title = preview.mode === PreviewMode.Projection
-        ? 'Projection sampling steps'
-        : 'Volume raymarch steps'
-    }
-
-    this.state.subscribe('preview', syncOverlay)
-    syncOverlay()
-
-    // Generating indicator
-    const genIndicator = document.createElement('div')
-    genIndicator.className = 'gen-indicator'
-    genIndicator.id = 'gen-indicator'
-    genIndicator.style.display = 'none'
-    genIndicator.innerHTML = `<span class="spin">⟳</span> Generating...`
-    overlay.appendChild(genIndicator)
-
-    return overlay
   }
 
   private handleResize() {
@@ -552,14 +342,6 @@ export class Viewport {
     this.cacheGenerator.destroy()
     this.volume.destroy()
   }
-}
-
-function attachRangeReset(input: HTMLInputElement, defaultValue: number, onReset: () => void) {
-  input.addEventListener('contextmenu', (e) => {
-    e.preventDefault()
-    input.value = String(defaultValue)
-    onReset()
-  })
 }
 
 function describeViewportError(error: unknown): string {

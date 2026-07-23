@@ -46,9 +46,39 @@
   backdrop-filter: blur(8px);
 }
 
-.slice-pos-slider {
-  width: 100px;
-  cursor: ew-resize;
+/* NOTE: .mini-slider is also used by TopBar.ts on a raw <input type=range> (unrelated to this
+   overlay); its width/accent-color rule lives in components.css-adjacent styling below and must
+   stay generic. The Slider component instances embedded here are scoped by container instead,
+   so they don't fight over the .mini-slider class name. */
+
+/* Compact Slider instances embedded in the overlay pills (overrides the panel's roomier .slider-row grid) */
+.slice-controls .slider-row,
+.raymarch-controls .slider-row {
+  grid-template-columns: auto 80px auto;
+  gap: var(--sp-1);
+  padding: 0;
+}
+
+.slice-controls .slider-track,
+.raymarch-controls .slider-track {
+  width: 80px;
+  height: 14px;
+}
+
+.slice-controls .slider-label,
+.raymarch-controls .slider-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.slice-controls .slider-value,
+.raymarch-controls .slider-value {
+  font-size: 10px;
+  padding: 0 2px;
+}
+
+.mini-slider {
+  width: 80px;
   accent-color: var(--accent);
 }
 
@@ -62,16 +92,6 @@
   padding: var(--sp-1) var(--sp-2);
   backdrop-filter: blur(8px);
   margin-left: auto;
-}
-
-.mini-label {
-  font-size: 10px;
-  color: var(--text-muted);
-}
-
-.mini-slider {
-  width: 80px;
-  accent-color: var(--accent);
 }
 
 /* ─── Generating indicator ─── */
