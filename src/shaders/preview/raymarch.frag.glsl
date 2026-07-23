@@ -19,6 +19,8 @@ uniform float u_tilePreviewDensity;
 uniform int u_stepCount;
 uniform float u_exposure;
 uniform vec3 u_lightDir;
+uniform float u_cutoff;
+uniform float u_contrast;
 
 const vec3 BACKGROUND_COLOR = vec3(0.0);
 const float EXTINCTION_SCALE = 12.0;
@@ -84,7 +86,7 @@ void main() {
     vec3 volumePos;
     float densityMul;
     if (sampleScene(worldPos, volumePos, densityMul)) {
-      float sampleValue = texture(u_volume, volumePos).r;
+      float sampleValue = applyDensityShaping(texture(u_volume, volumePos).r, u_cutoff, u_contrast);
       float density = sampleValue * (u_density * densityMul);
 
       if (density > 0.001) {
@@ -94,7 +96,7 @@ void main() {
         vec3 lightVolumePos;
         float lightDensityMul;
         if (sampleScene(lightWorldPos, lightVolumePos, lightDensityMul)) {
-          float lightSample = texture(u_volume, lightVolumePos).r;
+          float lightSample = applyDensityShaping(texture(u_volume, lightVolumePos).r, u_cutoff, u_contrast);
           shadow = 1.0 - lightSample * lightDensityMul * 0.75;
         }
 

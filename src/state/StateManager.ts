@@ -12,9 +12,15 @@ type StateKey = keyof AppState
 type RegenTrigger<K extends StateKey> = (prev: AppState[K], next: AppState[K]) => boolean
 type RegenTriggerMap = { [K in StateKey]?: RegenTrigger<K> }
 
+// cutoff/contrast are preview-time shading uniforms (Task 3) — they never
+// require regenerating the volume, only resolution/depth/globalSeed do.
+export function shouldRegenerateOnSettings(prev: VolumeSettings, next: VolumeSettings): boolean {
+  return prev.resolution !== next.resolution || prev.depth !== next.depth || prev.globalSeed !== next.globalSeed
+}
+
 const REGEN_TRIGGERS: RegenTriggerMap = {
   layers: () => true,
-  settings: () => true,
+  settings: shouldRegenerateOnSettings,
   animation: (prev, next) => prev.evolutions !== next.evolutions,
 }
 

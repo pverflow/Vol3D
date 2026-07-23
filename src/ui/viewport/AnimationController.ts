@@ -109,9 +109,13 @@ export class AnimationController {
 
   private getAnimationCacheKey(): string {
     const state = this.state.getState()
+    // cutoff/contrast are preview-time shading uniforms (Task 3) and don't
+    // affect the raw density the cache stores, so they're excluded here —
+    // dragging them must not invalidate/rebuild the animation cache.
+    const { cutoff, contrast, ...cacheSettings } = state.settings
     return JSON.stringify({
       layers: state.layers,
-      settings: state.settings,
+      settings: cacheSettings,
       evolutions: state.animation.evolutions,
     })
   }
@@ -150,8 +154,6 @@ export class AnimationController {
             settings.resolution,
             settings.depth,
             settings.globalSeed,
-            settings.cutoff,
-            settings.contrast,
             phase,
             animation.evolutions,
           )

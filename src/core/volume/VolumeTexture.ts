@@ -61,6 +61,18 @@ export class VolumeTexture {
     this.gl.bindTexture(this.gl.TEXTURE_3D, this.texture)
   }
 
+  // Attach Z-layer `z` of this 3D texture as COLOR_ATTACHMENT0 of `fb` so a
+  // fragment shader can render raw density directly into that slice (Task 3
+  // live generation path). Returns the framebuffer completeness status —
+  // caller checks against gl.FRAMEBUFFER_COMPLETE. Mirrors the pattern in
+  // ExportManager.readSlice.
+  bindAsRenderTarget(fb: WebGLFramebuffer, z: number): number {
+    const { gl } = this
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb)
+    gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.texture, 0, z)
+    return gl.checkFramebufferStatus(gl.FRAMEBUFFER)
+  }
+
   destroy() {
     this.gl.deleteTexture(this.texture)
   }

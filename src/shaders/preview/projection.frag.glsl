@@ -12,6 +12,8 @@ uniform float u_exposure;
 uniform int u_steps;
 uniform float u_planeAspect;
 uniform float u_screenAspect;
+uniform float u_cutoff;
+uniform float u_contrast;
 
 bool fitPlaneUv(vec2 uv, out vec2 planeUv) {
   planeUv = uv;
@@ -44,7 +46,7 @@ void main() {
     else if (u_sliceAxis == 1) uvw = vec3(planeUv.x, t, planeUv.y);
     else uvw = vec3(planeUv.x, planeUv.y, t);
 
-    float v = texture(u_volume, uvw).r;
+    float v = applyDensityShaping(texture(u_volume, uvw).r, u_cutoff, u_contrast);
     acc += v;
     maxVal = max(maxVal, v);
   }

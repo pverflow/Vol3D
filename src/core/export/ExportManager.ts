@@ -2,14 +2,22 @@ import { VolumeTexture } from '../volume/VolumeTexture'
 import { ExportFormat } from '../../types/index'
 import { saveBytes } from '../../platform/fileAccess'
 import { redToGray } from '../../utils/imageChannels'
+import { applyDensityShaping } from '../volumeShaping'
 
 export class ExportManager {
   private gl: WebGL2RenderingContext
   private volume: VolumeTexture
+  private cutoff: number
+  private contrast: number
 
-  constructor(gl: WebGL2RenderingContext, volume: VolumeTexture) {
+  // The volume now stores RAW density (Task 3); cutoff/contrast must be
+  // re-applied here so exported bytes match what the preview shows (v1
+  // parity — v1 baked this shaping into the volume during generation).
+  constructor(gl: WebGL2RenderingContext, volume: VolumeTexture, cutoff: number, contrast: number) {
     this.gl = gl
     this.volume = volume
+    this.cutoff = cutoff
+    this.contrast = contrast
   }
 
   async export(format: ExportFormat, filename: string, flipY: boolean): Promise<void> {
@@ -47,6 +55,14 @@ export class ExportManager {
 
       const data = new Uint8Array(res * res * 4)
       gl.readPixels(0, 0, res, res, gl.RGBA, gl.UNSIGNED_BYTE, data)
+
+      // Re-apply shaping to the raw density red channel (g/b/a stay 0/0/255,
+      // exactly as they were pre-Task-3, since the R8 volume never carried
+      // anything but red) — this is what makes exported bytes match v1.
+      for (let i = 0; i < data.length; i += 4) {
+        const shaped = applyDensityShaping(data[i] / 255, this.cutoff, this.contrast)
+        data[i] = Math.round(shaped * 255)
+      }
 
       if (flipY) {
         // Flip rows

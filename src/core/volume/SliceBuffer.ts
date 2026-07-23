@@ -20,8 +20,10 @@ export class SliceBuffer {
   // RGBA8 target the final (possibly float) accumulator is blitted into before
   // readPixels(), since readPixels() reads UNSIGNED_BYTE and you can't read a
   // float framebuffer as bytes directly. Only allocated when accumulators are
-  // float; null (and unused) when they're already RGBA8. Removed in Task 3
-  // once the live generation path stops reading back per-slice.
+  // float; null (and unused) when they're already RGBA8. Still used post-Task-3
+  // by the readback fallback path and by generateFrameData() (animation cache
+  // needs CPU bytes); the primary live generation path no longer reads back
+  // at all, rendering straight into the volume's 3D texture instead.
   private resolveFbo: FBO | null
   private pingIndex = 0
 

@@ -26,6 +26,7 @@ import sliceFrag from '../../shaders/preview/slice.frag.glsl?raw'
 import projectionFrag from '../../shaders/preview/projection.frag.glsl?raw'
 
 import { NoiseType, DistortionType } from '../../types/index'
+import { SHADING_GLSL } from '../volumeShaping'
 
 const IDENTITY_DISTORTION = `
 vec3 applyDistortion(vec3 p) { return p; }
@@ -141,15 +142,25 @@ export class ShaderCompiler {
   }
 
   buildRaymarchShader(): CompiledProgram {
-    return this.buildSimpleProgram('raymarch', raymarchVert, raymarchFrag, 'Raymarch')
+    return this.buildSimpleProgram('raymarch', raymarchVert, this.injectShading(raymarchFrag), 'Raymarch')
   }
 
   buildSliceShader(): CompiledProgram {
-    return this.buildSimpleProgram('slice', fullscreenVert, sliceFrag, 'Slice')
+    return this.buildSimpleProgram('slice', fullscreenVert, this.injectShading(sliceFrag), 'Slice')
   }
 
   buildProjectionShader(): CompiledProgram {
-    return this.buildSimpleProgram('projection', fullscreenVert, projectionFrag, 'Projection')
+    return this.buildSimpleProgram('projection', fullscreenVert, this.injectShading(projectionFrag), 'Projection')
+  }
+
+  // Concatenate SHADING_GLSL (applyDensityShaping) right after the version/
+  // precision preamble shared by all three preview fragment shaders, so they
+  // can apply cutoff/contrast to sampled density at preview time (Task 3).
+  private injectShading(source: string): string {
+    return source.replace(
+      /(#version 300 es\s*\nprecision highp float;\s*\nprecision highp sampler3D;\s*\n)/,
+      `$1\n${SHADING_GLSL}\n`
+    )
   }
 
   private compile(source: string, type: number): WebGLShader {

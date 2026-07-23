@@ -7,6 +7,7 @@ import { CameraController } from './CameraController'
 import { AnimationController } from './AnimationController'
 import { ViewportOverlay } from './ViewportOverlay'
 import type { StateManager } from '../../state/StateManager'
+import { shouldRegenerateOnSettings } from '../../state/StateManager'
 import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
 import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
@@ -34,6 +35,11 @@ export class Viewport {
   private resizeObserver!: ResizeObserver
   private unsubscribes: Array<() => void> = []
   private readonly previewRenderers: Record<PreviewMode, (w: number, h: number) => void>
+  // Last settings seen by the subscription below, so it can tell whether a
+  // change actually needs regeneration (resolution/depth/globalSeed) versus
+  // a preview-only shading tweak (cutoff/contrast) that the render loop
+  // already picks up live via u_cutoff/u_contrast — no regen needed.
+  private lastSettings: VolumeSettings
 
   constructor(state: StateManager) {
     this.state = state
@@ -57,6 +63,7 @@ export class Viewport {
     this.compiler = new ShaderCompiler(gl)
 
     const settings = state.get('settings')
+    this.lastSettings = settings
     this.volume = new VolumeTexture(gl, settings.resolution as Resolution, settings.depth as SliceCount)
     this.generator = new VolumeGenerator(gl, this.compiler, settings.resolution)
     this.cacheGenerator = new VolumeGenerator(gl, this.compiler, settings.resolution)
@@ -83,14 +90,17 @@ export class Viewport {
       this.animation.invalidateAnimationCache()
       this.scheduleGeneration()
     }))
-    this.unsubscribes.push(state.subscribe('settings', () => {
-      const s = state.get('settings')
-      this.animation.invalidateAnimationCache()
+    this.unsubscribes.push(state.subscribe('settings', (s) => {
+      const prev = this.lastSettings
+      this.lastSettings = s
       this.camera.setVolumeDepth(s.resolution, s.depth)
       if (s.resolution !== this.volume.resolution || s.depth !== this.volume.depth) {
         this.resizeVolume(s)
       }
-      this.scheduleGeneration()
+      if (shouldRegenerateOnSettings(prev, s)) {
+        this.animation.invalidateAnimationCache()
+        this.scheduleGeneration()
+      }
     }))
     this.unsubscribes.push(state.subscribe('preview', () => { /* just re-render */ }))
     this.unsubscribes.push(state.subscribe('animation', (anim) => this.animation.handleAnimationChange(anim as AnimationSettings)))
@@ -163,8 +173,6 @@ export class Viewport {
       state.get('layers'),
       this.volume,
       state.get('settings').globalSeed,
-      state.get('settings').cutoff,
-      state.get('settings').contrast,
       state.get('animation').phase,
       state.get('animation').evolutions,
       (p) => state.update('progress', p),
@@ -215,11 +223,14 @@ export class Viewport {
     const gl = this.beginPass(prog)
 
     const preview = this.state.get('preview')
+    const settings = this.state.get('settings')
     const depthScale = this.volume.depth / this.volume.resolution
     const { eye, forward, right, up } = this.camera.getMatrices()
     const aspect = w / h
     const tanHalfFov = RAYMARCH_TAN_HALF_FOV
 
+    compiler.setUniform(prog, 'u_cutoff', settings.cutoff)
+    compiler.setUniform(prog, 'u_contrast', settings.contrast)
     compiler.setUniform(prog, 'u_cameraPos', eye[0], eye[1], eye[2])
     compiler.setUniform(prog, 'u_cameraForward', forward[0], forward[1], forward[2])
     compiler.setUniform(prog, 'u_cameraRight', right[0], right[1], right[2])
@@ -246,9 +257,12 @@ export class Viewport {
     const gl = this.beginPass(prog)
 
     const preview = this.state.get('preview')
+    const settings = this.state.get('settings')
     const planeAspect = preview.sliceAxis === SliceAxis.Z ? 1 : this.volume.resolution / this.volume.depth
     const screenAspect = this.canvas.width / this.canvas.height
 
+    compiler.setUniform(prog, 'u_cutoff', settings.cutoff)
+    compiler.setUniform(prog, 'u_contrast', settings.contrast)
     compiler.setUniformi(prog, 'u_sliceAxis', AXIS_MAP[preview.sliceAxis])
     compiler.setUniform(prog, 'u_exposure', preview.exposure)
     compiler.setUniform(prog, 'u_planeAspect', planeAspect)
@@ -274,7 +288,8 @@ export class Viewport {
     this.exportInProgress = true
     try {
       const { ExportManager } = await import('../../core/export/ExportManager')
-      const mgr = new ExportManager(this.ctx.gl, this.volume)
+      const settings = this.state.get('settings')
+      const mgr = new ExportManager(this.ctx.gl, this.volume, settings.cutoff, settings.contrast)
       await mgr.export(opts.format, opts.filenameBase, opts.flipY)
     } catch (error) {
       console.error('Export failed:', error)
