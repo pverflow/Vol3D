@@ -187,6 +187,7 @@ export class StateManager {
   }
 
   private debugLogUpdate<K extends StateKey>(source: string, key: K, prevValue: AppState[K], nextValue: AppState[K]) {
+    if (!import.meta.env.DEV) return
     if (!isStateDebugEnabled(String(key))) return
     const subscribers = this.subscribers.get(key)?.size ?? 0
     console.debug(
@@ -200,23 +201,27 @@ export class StateManager {
   }
 
   private debugLogNotify(key: StateKey, source: string) {
+    if (!import.meta.env.DEV) return
     if (!isStateDebugEnabled(String(key))) return
     const count = this.subscribers.get(key)?.size ?? 0
     console.debug(`[state] notify ${String(key)} from ${source} -> ${count} subscriber${count === 1 ? '' : 's'}`)
   }
 
   private debugLogDirty(reason: string, wasPending: boolean) {
+    if (!import.meta.env.DEV) return
     if (!isStateDebugEnabled()) return
     console.debug(`[state] dirty scheduled (${reason}; debounce=${REGEN_DEBOUNCE_MS}ms${wasPending ? '; reset' : ''})`)
   }
 
   private debugLogSubscription(key: StateKey) {
+    if (!import.meta.env.DEV) return
     if (!isStateDebugEnabled(String(key))) return
     const count = this.subscribers.get(key)?.size ?? 0
     console.debug(`[state] subscribe ${String(key)} -> ${count} subscriber${count === 1 ? '' : 's'}`)
   }
 
   private debugLogLoadState(state: Partial<AppState>) {
+    if (!import.meta.env.DEV) return
     if (!isStateDebugEnabled()) return
     const keys = Object.keys(state)
     console.debug(`[state] loadState (${keys.length} key${keys.length === 1 ? '' : 's'}: ${keys.join(', ') || 'none'})`)
