@@ -21,6 +21,7 @@ import {
   BlendMode, NoiseType, WorleyMode, DistortionType, FeatherShape,
   PreviewMode, SliceAxis, ProjectionMode,
 } from '../types/index'
+import { normalizeBezierCurve } from './stateMigration'
 
 const BLEND_MODES = new Set<string>(Object.values(BlendMode))
 const NOISE_TYPES = new Set<string>(Object.values(NoiseType))
@@ -124,19 +125,35 @@ function sanitizeDistortion(raw: unknown, fallback: DistortionConfig): Distortio
   }
 }
 
+// Legacy presets stored `remapCurve`/`featherCurve` as a bare scalar "power"
+// instead of today's 4-tuple bezier. Route a finite number through the same
+// legacyPowerToBezier conversion stateMigration.ts uses for the live-state
+// path; otherwise fall through to the existing tuple guard (which already
+// falls back to `fallback` on anything malformed). normalizeBezierCurve also
+// clamps a valid tuple into range, matching the safety guarantee the rest of
+// this module gives every other numeric field.
+function sanitizeCurve(raw: unknown, fallback: BezierCurve): BezierCurve {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return normalizeBezierCurve(raw, fallback)
+  return normalizeBezierCurve(asBezierCurve(raw, fallback), fallback)
+}
+
 function sanitizeRemap(raw: unknown, fallback: RemapConfig): RemapConfig {
   const rec = isRecord(raw) ? raw : {}
+  // Legacy presets had one `edgeFeather` scalar instead of per-axis
+  // featherX/Y/Z; mirror normalizeRemap's `?? legacyFeather` rule so an old
+  // preset's feather value survives instead of silently zeroing out.
+  const legacyFeather = asFiniteNumber(rec.edgeFeather)
   return {
     inputMin: asFiniteNumber(rec.inputMin) ?? fallback.inputMin,
     inputMax: asFiniteNumber(rec.inputMax) ?? fallback.inputMax,
     outputMin: asFiniteNumber(rec.outputMin) ?? fallback.outputMin,
     outputMax: asFiniteNumber(rec.outputMax) ?? fallback.outputMax,
-    remapCurve: asBezierCurve(rec.remapCurve, fallback.remapCurve),
-    featherX: asFiniteNumber(rec.featherX) ?? fallback.featherX,
-    featherY: asFiniteNumber(rec.featherY) ?? fallback.featherY,
-    featherZ: asFiniteNumber(rec.featherZ) ?? fallback.featherZ,
+    remapCurve: sanitizeCurve(rec.remapCurve, fallback.remapCurve),
+    featherX: asFiniteNumber(rec.featherX) ?? legacyFeather ?? fallback.featherX,
+    featherY: asFiniteNumber(rec.featherY) ?? legacyFeather ?? fallback.featherY,
+    featherZ: asFiniteNumber(rec.featherZ) ?? legacyFeather ?? fallback.featherZ,
     featherShape: coerceEnum(rec.featherShape, FEATHER_SHAPES, fallback.featherShape),
-    featherCurve: asBezierCurve(rec.featherCurve, fallback.featherCurve),
+    featherCurve: sanitizeCurve(rec.featherCurve, fallback.featherCurve),
   }
 }
 

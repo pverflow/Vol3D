@@ -72,6 +72,13 @@ describe('preset round-trip after the stateMigration extraction', () => {
     expect(parsed.ok).toBe(true)
     const sm = new StateManager()
     if (parsed.ok) sm.loadState(parsed.data)
-    expect(sm.get('layers')[0].remap.remapCurve).toHaveLength(4)
+    const remap = sm.get('layers')[0].remap
+    // Assert the actual migrated values, not just tuple shape — a fallback
+    // curve also has length 4, so a shape-only check passes even when no
+    // migration happened at all.
+    expect(remap.featherX).toBe(0.3)
+    expect(remap.featherY).toBe(0.3)
+    expect(remap.featherZ).toBe(0.3)
+    expect(remap.remapCurve).toEqual(legacyPowerToBezier(2))
   })
 })
