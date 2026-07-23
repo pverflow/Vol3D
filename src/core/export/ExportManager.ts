@@ -1,6 +1,7 @@
 import { VolumeTexture } from '../volume/VolumeTexture'
 import { ExportFormat } from '../../types/index'
 import { saveBytes } from '../../platform/fileAccess'
+import { redToGray } from '../../utils/imageChannels'
 
 export class ExportManager {
   private gl: WebGL2RenderingContext
@@ -75,7 +76,7 @@ export class ExportManager {
     const files: Record<string, Uint8Array> = {}
 
     for (let z = 0; z < depth; z++) {
-      const rgba = this.readSlice(z, flipY)
+      const rgba = redToGray(this.readSlice(z, flipY))
       const canvas = document.createElement('canvas')
       canvas.width = res
       canvas.height = res
@@ -117,7 +118,7 @@ export class ExportManager {
     const ctx = this.getCanvas2DContext(canvas)
 
     for (let z = 0; z < depth; z++) {
-      const rgba = this.readSlice(z, flipY)
+      const rgba = redToGray(this.readSlice(z, flipY))
       const sliceCanvas = document.createElement('canvas')
       sliceCanvas.width = res
       sliceCanvas.height = res
