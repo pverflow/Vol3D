@@ -1,6 +1,7 @@
 import type { StateManager } from '../../state/StateManager'
 import type { PresetManager } from '../../state/PresetManager'
-import type { Resolution, SliceCount } from '../../types/index'
+import type { Resolution, SliceCount, ExportConfig } from '../../types/index'
+import { EXPORT_FORMAT_OPTIONS, ExportFormat } from '../../types/index'
 import { BUILTIN_PRESETS } from '../../state/PresetManager'
 import { defaultState } from '../../state/AppState'
 import { Select } from '../components/Select'
@@ -424,11 +425,7 @@ export class TopBar {
         <div class="prop-row">
           <span class="prop-label">Format</span>
           <select class="ui-select" id="exp-format" name="exp-format">
-            <option value="png_sequence">PNG Sequence (ZIP)</option>
-            <option value="sprite_sheet">Sprite Sheet (PNG)</option>
-            <option value="raw_r8">Raw R8 (grayscale bytes)</option>
-            <option value="raw_rgba8">Raw RGBA8</option>
-            <option value="raw_r32f">Raw R32F (float)</option>
+            ${EXPORT_FORMAT_OPTIONS.map(o => `<option value="${o.value}">${o.label}</option>`).join('')}
           </select>
         </div>
         <div class="prop-row">
@@ -462,12 +459,13 @@ export class TopBar {
 
     overlay.querySelector('.modal-export')?.addEventListener('click', () => {
       const format = (overlay.querySelector('#exp-format') as HTMLSelectElement).value
-      const filename = (overlay.querySelector('#exp-name') as HTMLInputElement).value || 'noise_volume'
+      const filenameBase = (overlay.querySelector('#exp-name') as HTMLInputElement).value || 'noise_volume'
       const flipY = (overlay.querySelector('#exp-flipy') as HTMLInputElement).checked
       overlay.remove()
+      if (!Object.values(ExportFormat).includes(format as ExportFormat)) return
       // Trigger export event
-      window.dispatchEvent(new CustomEvent('vol3d-export', {
-        detail: { format, filename, flipY }
+      window.dispatchEvent(new CustomEvent<ExportConfig>('vol3d-export', {
+        detail: { format: format as ExportFormat, filenameBase, flipY }
       }))
     })
   }

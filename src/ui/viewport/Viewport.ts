@@ -4,7 +4,7 @@ import { VolumeGenerator } from '../../core/renderer/VolumeGenerator'
 import { VolumeTexture } from '../../core/volume/VolumeTexture'
 import { CameraController } from './CameraController'
 import type { StateManager } from '../../state/StateManager'
-import type { AnimationSettings, Resolution, SliceCount, VolumeSettings } from '../../types/index'
+import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
 import { defaultLayer, defaultState } from '../../state/AppState'
 import { REGEN_DEBOUNCE_MS, ANIMATION_MIN_FRAME_MS, ANIMATION_CACHE_BUDGET_BYTES, ANIMATION_CACHE_MAX_FRAMES, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
@@ -90,7 +90,7 @@ export class Viewport {
 
     // Export handler
     window.addEventListener('vol3d-export', (e: Event) => {
-      const detail = (e as CustomEvent).detail
+      const detail = (e as CustomEvent<ExportConfig>).detail
       this.handleExport(detail)
     })
 
@@ -637,14 +637,14 @@ export class Viewport {
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
-  private async handleExport(opts: { format: string; filename: string; flipY: boolean }) {
+  private async handleExport(opts: ExportConfig) {
     if (this.exportInProgress) return
 
     this.exportInProgress = true
     try {
       const { ExportManager } = await import('../../core/export/ExportManager')
       const mgr = new ExportManager(this.ctx.gl, this.volume)
-      await mgr.export(opts.format as never, opts.filename, opts.flipY)
+      await mgr.export(opts.format, opts.filenameBase, opts.flipY)
     } catch (error) {
       console.error('Export failed:', error)
       const message = describeViewportError(error)
