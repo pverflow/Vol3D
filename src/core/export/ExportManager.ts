@@ -19,13 +19,13 @@ export class ExportManager {
       case ExportFormat.SpriteSheet:
         return this.exportSpriteSheet(filename, flipY)
       case ExportFormat.RawR8:
-        return this.exportRaw(filename, 'r8')
+        return this.exportRaw(filename, 'r8', flipY)
       case ExportFormat.RawRGBA8:
-        return this.exportRaw(filename, 'rgba8')
+        return this.exportRaw(filename, 'rgba8', flipY)
       case ExportFormat.RawR32F:
-        return this.exportRaw(filename, 'r32f')
+        return this.exportRaw(filename, 'r32f', flipY)
       default:
-        return this.exportPNGSequence(filename, flipY)
+        throw new Error(`Unsupported export format: ${format}`)
     }
   }
 
@@ -139,7 +139,7 @@ export class ExportManager {
     })
   }
 
-  private async exportRaw(filename: string, mode: 'r8' | 'rgba8' | 'r32f'): Promise<void> {
+  private async exportRaw(filename: string, mode: 'r8' | 'rgba8' | 'r32f', flipY: boolean): Promise<void> {
     const { volume } = this
     const res = volume.resolution
     const depth = volume.depth
@@ -150,7 +150,7 @@ export class ExportManager {
       : new Uint8Array(res * res * depth * channels)
 
     for (let z = 0; z < depth; z++) {
-      const rgba = this.readSlice(z, false)
+      const rgba = this.readSlice(z, flipY)
       const offset = z * res * res * channels
       if (mode === 'r8') {
         for (let i = 0; i < res * res; i++) {
@@ -166,7 +166,7 @@ export class ExportManager {
       }
     }
 
-    const ext = isFloat ? 'raw' : 'raw'
+    const ext = 'raw'
     const mime = 'application/octet-stream'
     const suffix = mode === 'rgba8' ? '_rgba8' : mode === 'r32f' ? '_r32f' : '_r8'
     const buffer = out.buffer as ArrayBuffer
