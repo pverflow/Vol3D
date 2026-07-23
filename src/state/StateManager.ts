@@ -1,9 +1,10 @@
 import type { AppState } from './AppState'
 import type { Layer, VolumeSettings, SliceCount } from '../types/index'
-import { defaultLayer, defaultState } from './AppState'
+import { defaultState } from './AppState'
 import { uid } from '../utils/uid'
 import { formatStateDebugTransition, getStateDebugConfig, isStateDebugEnabled } from '../utils/stateDebug'
 import { REGEN_DEBOUNCE_MS } from '../core/constants'
+import { normalizeLayer, CURRENT_PRESET_VERSION } from './stateMigration'
 
 type Subscriber<T> = (value: T) => void
 type StateKey = keyof AppState
@@ -182,7 +183,7 @@ export class StateManager {
 
   serialize(): string {
     const { generating, progress, dirty, ...rest } = this.state
-    return JSON.stringify(rest)
+    return JSON.stringify({ ...rest, version: CURRENT_PRESET_VERSION })
   }
 
   private debugLogUpdate<K extends StateKey>(source: string, key: K, prevValue: AppState[K], nextValue: AppState[K]) {
@@ -220,88 +221,6 @@ export class StateManager {
     const keys = Object.keys(state)
     console.debug(`[state] loadState (${keys.length} key${keys.length === 1 ? '' : 's'}: ${keys.join(', ') || 'none'})`)
   }
-}
-
-function normalizeLayer(layer: Layer): Layer {
-  const base = defaultLayer(layer.name, layer.noise?.type)
-  const normalizedRemap = normalizeRemap(layer.remap, base.remap)
-  return {
-    ...base,
-    ...layer,
-    noise: {
-      ...base.noise,
-      ...layer.noise,
-      fbm: { ...base.noise.fbm, ...layer.noise?.fbm },
-    },
-    distortion: {
-      ...base.distortion,
-      ...layer.distortion,
-    },
-    remap: normalizedRemap,
-  }
-}
-
-function normalizeRemap(
-  remap: (Partial<Layer['remap']> & { edgeFeather?: number, remapCurve?: Layer['remap']['remapCurve'] | number, featherCurve?: Layer['remap']['featherCurve'] | number }) | undefined,
-  base: Layer['remap']
-): Layer['remap'] {
-  const legacyFeather = remap?.edgeFeather ?? 0
-  return {
-    inputMin: remap?.inputMin ?? base.inputMin,
-    inputMax: remap?.inputMax ?? base.inputMax,
-    outputMin: remap?.outputMin ?? base.outputMin,
-    outputMax: remap?.outputMax ?? base.outputMax,
-    remapCurve: normalizeBezierCurve(remap?.remapCurve, base.remapCurve),
-    featherX: remap?.featherX ?? legacyFeather ?? base.featherX,
-    featherY: remap?.featherY ?? legacyFeather ?? base.featherY,
-    featherZ: remap?.featherZ ?? legacyFeather ?? base.featherZ,
-    featherShape: remap?.featherShape ?? base.featherShape,
-    featherCurve: normalizeBezierCurve(remap?.featherCurve, base.featherCurve),
-  }
-}
-
-function normalizeBezierCurve(
-  curve: Layer['remap']['remapCurve'] | number | undefined,
-  fallback: Layer['remap']['remapCurve']
-): Layer['remap']['remapCurve'] {
-  if (typeof curve === 'number') {
-    return legacyPowerToBezier(curve)
-  }
-
-  if (!Array.isArray(curve) || curve.length !== 4 || curve.some(v => typeof v !== 'number' || Number.isNaN(v))) {
-    return [...fallback] as Layer['remap']['remapCurve']
-  }
-
-  const x1 = clamp01(curve[0])
-  const y1 = clamp01(curve[1])
-  const x2 = Math.max(x1, clamp01(curve[2]))
-  const y2 = clamp01(curve[3])
-  return [x1, y1, x2, y2]
-}
-
-function legacyPowerToBezier(power: number): Layer['remap']['remapCurve'] {
-  const p = Math.max(0.2, Math.min(4, power || 1))
-  const strength = Math.min(Math.abs(p - 1) / 3, 1)
-
-  if (p >= 1) {
-    return [
-      0.25,
-      0.25 * (1 - strength),
-      0.75,
-      0.75 - 0.45 * strength,
-    ]
-  }
-
-  return [
-    0.25,
-    0.25 + 0.45 * strength,
-    0.75,
-    0.75 + 0.25 * strength,
-  ]
-}
-
-function clamp01(value: number): number {
-  return Math.max(0, Math.min(1, value))
 }
 
 function normalizeVolumeSettings(settings: VolumeSettings): VolumeSettings {
