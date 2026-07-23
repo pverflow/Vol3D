@@ -6,7 +6,6 @@ export enum ExportFormat {
   SpriteSheet = 'sprite_sheet',
   RawR8 = 'raw_r8',
   RawRGBA8 = 'raw_rgba8',
-  RawR16F = 'raw_r16f',
   RawR32F = 'raw_r32f',
 }
 

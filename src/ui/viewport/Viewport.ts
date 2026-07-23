@@ -562,7 +562,7 @@ export class Viewport {
 
     const preview = this.state.get('preview')
     const depthScale = this.volume.depth / this.volume.resolution
-    const { eye, forward, right, up } = this.camera.getMatrices(w, h)
+    const { eye, forward, right, up } = this.camera.getMatrices()
     const aspect = w / h
     const tanHalfFov = Math.tan(Math.PI / 6)
 

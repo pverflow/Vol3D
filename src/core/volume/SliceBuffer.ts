@@ -68,11 +68,6 @@ export class SliceBuffer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   }
 
-  // Clear accumulator to black
-  clearAccumulator() {
-    this.beginSlice()
-  }
-
   // Read back pixels from the accumulator as Uint8Array (RGBA)
   readPixels(): Uint8Array {
     const { gl, resolution } = this

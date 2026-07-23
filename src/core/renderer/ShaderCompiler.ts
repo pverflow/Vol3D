@@ -244,12 +244,6 @@ export class ShaderCompiler {
     this.gl.uniformMatrix3fv(loc, false, matrix)
   }
 
-  setUniformMat4(prog: CompiledProgram, name: string, matrix: Float32Array): void {
-    const loc = prog.uniforms.get(name)
-    if (loc === undefined || loc === null) return
-    this.gl.uniformMatrix4fv(loc, false, matrix)
-  }
-
   setUniformBool(prog: CompiledProgram, name: string, value: boolean): void {
     const loc = prog.uniforms.get(name)
     if (loc === undefined || loc === null) return
