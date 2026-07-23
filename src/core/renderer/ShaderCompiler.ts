@@ -118,7 +118,7 @@ export class ShaderCompiler {
     const vert = this.compile(fullscreenVert, this.gl.VERTEX_SHADER)
     const frag = this.compile(fragSource, this.gl.FRAGMENT_SHADER)
     const prog = this.link(vert, frag, `LayerGen_${key}`)
-    const compiled = { program: prog, uniforms: this.collectUniforms(prog, fragSource) }
+    const compiled = { program: prog, uniforms: this.collectUniforms(prog) }
     this.cache.set(key, compiled)
     return compiled
   }
@@ -129,7 +129,7 @@ export class ShaderCompiler {
     const vert = this.compile(vertSrc, this.gl.VERTEX_SHADER)
     const frag = this.compile(fragSrc, this.gl.FRAGMENT_SHADER)
     const prog = this.link(vert, frag, name)
-    const compiled = { program: prog, uniforms: this.collectUniforms(prog, fragSrc) }
+    const compiled = { program: prog, uniforms: this.collectUniforms(prog) }
     this.cache.set(key, compiled)
     return compiled
   }
@@ -185,17 +185,16 @@ export class ShaderCompiler {
     return program
   }
 
-  private collectUniforms(program: WebGLProgram, source: string): Map<string, WebGLUniformLocation | null> {
+  private collectUniforms(program: WebGLProgram): Map<string, WebGLUniformLocation | null> {
     const { gl } = this
     const uniforms = new Map<string, WebGLUniformLocation | null>()
-    // Extract uniform names from source via regex
-    const regex = /uniform\s+\S+\s+(\w+)/g
-    let match: RegExpExecArray | null
-    while ((match = regex.exec(source)) !== null) {
-      const name = match[1]
-      if (!uniforms.has(name)) {
-        uniforms.set(name, gl.getUniformLocation(program, name))
-      }
+    const count = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS) as number
+    for (let i = 0; i < count; i++) {
+      const info = gl.getActiveUniform(program, i)
+      if (!info) continue
+      // Array uniforms report a name like "u_foo[0]"; normalize to "u_foo".
+      const name = info.name.replace(/\[0\]$/, '')
+      uniforms.set(name, gl.getUniformLocation(program, name))
     }
     return uniforms
   }
