@@ -7,6 +7,7 @@ import type { StateManager } from '../../state/StateManager'
 import type { AnimationSettings, Resolution, SliceCount, VolumeSettings } from '../../types/index'
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
 import { defaultLayer, defaultState } from '../../state/AppState'
+import { REGEN_DEBOUNCE_MS, ANIMATION_MIN_FRAME_MS, ANIMATION_CACHE_BUDGET_BYTES, ANIMATION_CACHE_MAX_FRAMES, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
 
 export class Viewport {
   readonly el: HTMLElement
@@ -335,7 +336,7 @@ export class Viewport {
     this.dirtyTimer = window.setTimeout(() => {
       this.dirtyTimer = null
       this.runGeneration()
-    }, 150)
+    }, REGEN_DEBOUNCE_MS)
   }
 
   private runGeneration() {
@@ -420,7 +421,7 @@ export class Viewport {
       return
     }
 
-    const minFrameMs = 100
+    const minFrameMs = ANIMATION_MIN_FRAME_MS
     const elapsed = now - this.lastAnimationTick
     if (elapsed < minFrameMs) return
 
@@ -477,8 +478,8 @@ export class Viewport {
 
   private getAnimationCacheFrameCount(): number {
     const bytesPerFrame = this.volume.resolution * this.volume.resolution * this.volume.depth
-    const maxFramesByBudget = Math.floor((96 * 1024 * 1024) / Math.max(bytesPerFrame, 1))
-    return Math.min(24, Math.max(0, maxFramesByBudget))
+    const maxFramesByBudget = Math.floor(ANIMATION_CACHE_BUDGET_BYTES / Math.max(bytesPerFrame, 1))
+    return Math.min(ANIMATION_CACHE_MAX_FRAMES, Math.max(0, maxFramesByBudget))
   }
 
   private buildAnimationCacheIfNeeded() {
@@ -564,7 +565,7 @@ export class Viewport {
     const depthScale = this.volume.depth / this.volume.resolution
     const { eye, forward, right, up } = this.camera.getMatrices()
     const aspect = w / h
-    const tanHalfFov = Math.tan(Math.PI / 6)
+    const tanHalfFov = RAYMARCH_TAN_HALF_FOV
 
     compiler.setUniform(prog, 'u_cameraPos', eye[0], eye[1], eye[2])
     compiler.setUniform(prog, 'u_cameraForward', forward[0], forward[1], forward[2])
@@ -578,7 +579,7 @@ export class Viewport {
     compiler.setUniform(prog, 'u_tilePreviewDensity', preview.tilePreviewDensity)
     compiler.setUniformi(prog, 'u_stepCount', preview.stepCount)
     compiler.setUniform(prog, 'u_exposure', preview.exposure)
-    compiler.setUniform(prog, 'u_lightDir', 0.577, 0.577, 0.577)
+    compiler.setUniform(prog, 'u_lightDir', ...LIGHT_DIR)
 
     this.volume.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)

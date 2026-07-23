@@ -3,6 +3,7 @@ import type { Layer, VolumeSettings, SliceCount } from '../types/index'
 import { defaultLayer, defaultState } from './AppState'
 import { uid } from '../utils/uid'
 import { formatStateDebugTransition, getStateDebugConfig, isStateDebugEnabled } from '../utils/stateDebug'
+import { REGEN_DEBOUNCE_MS } from '../core/constants'
 
 type Subscriber<T> = (value: T) => void
 type StateKey = keyof AppState
@@ -152,7 +153,7 @@ export class StateManager {
     this.dirtyTimer = window.setTimeout(() => {
       this.dirtyTimer = null
       this.onDirty?.()
-    }, 150)
+    }, REGEN_DEBOUNCE_MS)
   }
 
   loadState(state: Partial<AppState>) {
@@ -202,7 +203,7 @@ export class StateManager {
 
   private debugLogDirty(reason: string, wasPending: boolean) {
     if (!isStateDebugEnabled()) return
-    console.debug(`[state] dirty scheduled (${reason}; debounce=150ms${wasPending ? '; reset' : ''})`)
+    console.debug(`[state] dirty scheduled (${reason}; debounce=${REGEN_DEBOUNCE_MS}ms${wasPending ? '; reset' : ''})`)
   }
 
   private debugLogSubscription(key: StateKey) {
