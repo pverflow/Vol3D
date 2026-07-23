@@ -153,7 +153,7 @@ export class StateManager {
     this.state.dirty = true
     this.debugLogDirty(reason, this.dirtyTimer !== null)
     if (this.dirtyTimer !== null) clearTimeout(this.dirtyTimer)
-    this.dirtyTimer = window.setTimeout(() => {
+    this.dirtyTimer = setTimeout(() => {
       this.dirtyTimer = null
       this.onDirty?.()
     }, REGEN_DEBOUNCE_MS)

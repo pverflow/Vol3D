@@ -86,15 +86,14 @@ export class LayerPanel {
       if (!row || !targetId || !this.dragSrcId) return
 
       e.preventDefault()
-      const displayedLayers = [...this.state.get('layers')].reverse()
-      const from = displayedLayers.findIndex(layer => layer.id === this.dragSrcId)
-      const to = displayedLayers.findIndex(layer => layer.id === targetId)
-      if (from >= 0 && to >= 0 && from !== to) {
-        const reordered = [...displayedLayers]
-        const [moved] = reordered.splice(from, 1)
-        const insertAt = from < to ? to - 1 : to
-        reordered.splice(insertAt, 0, moved)
-        this.state.update('layers', reordered.reverse())
+      // The visual list is displayed reversed vs the state `layers` array, but
+      // StateManager.reorderLayers operates on state indices directly, so translate here.
+      const layers = this.state.get('layers')
+      const from = layers.findIndex(layer => layer.id === this.dragSrcId)
+      const targetIndex = layers.findIndex(layer => layer.id === targetId)
+      if (from >= 0 && targetIndex >= 0 && from !== targetIndex) {
+        const to = from < targetIndex ? targetIndex : targetIndex + 1
+        this.state.reorderLayers(from, to)
       }
       this.dragSrcId = null
       this.listEl.querySelectorAll('.layer-item.dragging').forEach(el => el.classList.remove('dragging'))
