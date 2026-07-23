@@ -31,6 +31,8 @@ const FEATHER_SHAPES = new Set<string>(Object.values(FeatherShape))
 const PREVIEW_MODES = new Set<string>(Object.values(PreviewMode))
 const SLICE_AXES = new Set<string>(Object.values(SliceAxis))
 const PROJECTION_MODES = new Set<string>(Object.values(ProjectionMode))
+// Hand-maintained against the `CameraState['dragMode']` string-literal union
+// (no backing enum to derive from) — update this if that union grows.
 const DRAG_MODES = new Set<string>(['orbit', 'grab'])
 
 const RESOLUTIONS: readonly Resolution[] = [32, 64, 128, 256, 512]

@@ -20,6 +20,8 @@ export function openAnchoredPopup(anchor: HTMLElement, popup: HTMLElement): () =
   // Hug the anchor's left edge, but flip to hug its right edge if that would
   // run the popup off the right side of the viewport (e.g. an anchor sitting
   // near the window's right edge).
+  // This flip's correctness relies on the app's fixed right-docked ~320px
+  // sidebar geometry: popups anchored near the right edge flip to right-align.
   const fitsRight = rect.left + popupWidth + margin <= window.innerWidth
   const desiredLeft = fitsRight ? rect.left : rect.right - popupWidth
   const desiredTop = rect.bottom + 4

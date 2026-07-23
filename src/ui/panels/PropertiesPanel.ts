@@ -190,13 +190,13 @@ export class PropertiesPanel {
     }).el)
     body.appendChild(new Slider({
       label: 'Scale Y', min: 0.1, max: 20, step: 0.1, value: layer.noise.scale[1],
-      defaultValue: D.noise.scale[0], decimals: 2,
+      defaultValue: D.noise.scale[1], decimals: 2,
       onInput: (v) => this.updateNoise(id, (current) => ({ scale: [current.noise.scale[0], v, current.noise.scale[2]] })),
       onChange: (v) => this.updateNoise(id, (current) => ({ scale: [current.noise.scale[0], v, current.noise.scale[2]] })),
     }).el)
     body.appendChild(new Slider({
       label: 'Scale Z', min: 0.1, max: 20, step: 0.1, value: layer.noise.scale[2],
-      defaultValue: D.noise.scale[0], decimals: 2,
+      defaultValue: D.noise.scale[2], decimals: 2,
       onInput: (v) => this.updateNoise(id, (current) => ({ scale: [current.noise.scale[0], current.noise.scale[1], v] })),
       onChange: (v) => this.updateNoise(id, (current) => ({ scale: [current.noise.scale[0], current.noise.scale[1], v] })),
     }).el)
