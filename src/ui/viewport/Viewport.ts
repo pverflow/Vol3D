@@ -3,11 +3,12 @@ import { ShaderCompiler } from '../../core/renderer/ShaderCompiler'
 import { VolumeGenerator } from '../../core/renderer/VolumeGenerator'
 import { VolumeTexture } from '../../core/volume/VolumeTexture'
 import { CameraController } from './CameraController'
+import { AnimationController } from './AnimationController'
 import type { StateManager } from '../../state/StateManager'
 import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
 import { defaultLayer, defaultState } from '../../state/AppState'
-import { REGEN_DEBOUNCE_MS, ANIMATION_MIN_FRAME_MS, ANIMATION_CACHE_BUDGET_BYTES, ANIMATION_CACHE_MAX_FRAMES, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
+import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
 
 export class Viewport {
   readonly el: HTMLElement
@@ -18,17 +19,11 @@ export class Viewport {
   private cacheGenerator: VolumeGenerator
   private volume: VolumeTexture
   private camera: CameraController
+  private animation: AnimationController
   private state: StateManager
   private rafId: number | null = null
   private vao: WebGLVertexArrayObject
   private dirtyTimer: number | null = null
-  private lastAnimationTick = 0
-  private lastAnimationState: AnimationSettings
-  private animationCacheFrames: Uint8Array[] = []
-  private animationCacheKey = ''
-  private animationCacheBuildId = 0
-  private animationCacheBuilding = false
-  private currentCachedFrame = -1
   private exportInProgress = false
 
   constructor(state: StateManager) {
@@ -55,7 +50,12 @@ export class Viewport {
     this.volume = new VolumeTexture(gl, settings.resolution as Resolution, settings.depth as SliceCount)
     this.generator = new VolumeGenerator(gl, this.compiler, settings.resolution)
     this.cacheGenerator = new VolumeGenerator(gl, this.compiler, settings.resolution)
-    this.lastAnimationState = { ...state.get('animation') }
+    this.animation = new AnimationController({
+      state,
+      cacheGenerator: this.cacheGenerator,
+      getVolume: () => this.volume,
+      onNeedsGeneration: () => this.scheduleGeneration(),
+    })
 
     this.camera = new CameraController(this.canvas, state.get('camera'), (cam) => {
       state.update('camera', cam)
@@ -70,12 +70,12 @@ export class Viewport {
 
     // State subscriptions
     state.subscribe('layers', () => {
-      this.invalidateAnimationCache()
+      this.animation.invalidateAnimationCache()
       this.scheduleGeneration()
     })
     state.subscribe('settings', () => {
       const s = state.get('settings')
-      this.invalidateAnimationCache()
+      this.animation.invalidateAnimationCache()
       this.camera.setVolumeDepth(s.resolution, s.depth)
       if (s.resolution !== this.volume.resolution || s.depth !== this.volume.depth) {
         this.resizeVolume(s)
@@ -83,7 +83,7 @@ export class Viewport {
       this.scheduleGeneration()
     })
     state.subscribe('preview', () => { /* just re-render */ })
-    state.subscribe('animation', (anim) => this.handleAnimationChange(anim as AnimationSettings))
+    state.subscribe('animation', (anim) => this.animation.handleAnimationChange(anim as AnimationSettings))
     state.subscribe('camera', (cam) => {
       this.camera.updateCamera(cam as typeof cam)
     })
@@ -328,7 +328,7 @@ export class Viewport {
     this.volume = new VolumeTexture(this.ctx.gl, settings.resolution as Resolution, settings.depth as SliceCount)
     this.generator.resize(settings.resolution)
     this.cacheGenerator.resize(settings.resolution)
-    this.currentCachedFrame = -1
+    this.animation.invalidateAnimationCache()
   }
 
   scheduleGeneration() {
@@ -341,7 +341,7 @@ export class Viewport {
 
   private runGeneration() {
     const { state } = this
-    this.currentCachedFrame = -1
+    this.animation.resetAppliedFrame()
     state.update('generating', true)
     state.update('progress', 0)
 
@@ -361,7 +361,7 @@ export class Viewport {
         state.update('generating', false)
         state.update('progress', 1)
         if (indicator) indicator.style.display = 'none'
-        this.buildAnimationCacheIfNeeded()
+        this.animation.buildAnimationCacheIfNeeded()
       }
     )
   }
@@ -375,7 +375,7 @@ export class Viewport {
   }
 
   private renderFrame() {
-    this.advanceAnimation(performance.now())
+    this.animation.advanceAnimation(performance.now())
 
     const { gl } = this.ctx
     const w = this.canvas.width
@@ -400,158 +400,6 @@ export class Viewport {
     }
 
     gl.bindVertexArray(null)
-  }
-
-  private advanceAnimation(now: number) {
-    const animation = this.state.get('animation')
-    if (!animation.playing) {
-      this.lastAnimationTick = now
-      return
-    }
-
-    const cacheFrameCount = this.getAnimationCacheFrameCount()
-    if (cacheFrameCount >= 2 && this.animationCacheFrames.length < cacheFrameCount) {
-      this.buildAnimationCacheIfNeeded()
-      this.lastAnimationTick = now
-      return
-    }
-
-    if (this.lastAnimationTick === 0) {
-      this.lastAnimationTick = now
-      return
-    }
-
-    const minFrameMs = ANIMATION_MIN_FRAME_MS
-    const elapsed = now - this.lastAnimationTick
-    if (elapsed < minFrameMs) return
-
-    const phaseDelta = elapsed / (animation.loopSeconds * 1000)
-    const phase = (animation.phase + phaseDelta) % 1
-    this.lastAnimationTick = now
-    this.state.update('animation', { ...animation, phase })
-
-    if (cacheFrameCount < 2) {
-      this.scheduleGeneration()
-    }
-  }
-
-  private handleAnimationChange(next: AnimationSettings) {
-    const prev = this.lastAnimationState
-
-    if (prev.evolutions !== next.evolutions) {
-      this.invalidateAnimationCache()
-      this.scheduleGeneration()
-    } else if (prev.phase !== next.phase) {
-      if (!this.tryApplyCachedAnimationFrame(next.phase) && !next.playing) {
-        this.scheduleGeneration()
-      }
-    }
-
-    if ((!prev.playing && next.playing) || prev.evolutions !== next.evolutions) {
-      this.buildAnimationCacheIfNeeded()
-    }
-
-    if (prev.playing && !next.playing) {
-      this.lastAnimationTick = 0
-    }
-
-    this.lastAnimationState = { ...next }
-  }
-
-  private invalidateAnimationCache() {
-    this.animationCacheBuildId += 1
-    this.animationCacheBuilding = false
-    this.animationCacheFrames = []
-    this.animationCacheKey = ''
-    this.currentCachedFrame = -1
-    this.cacheGenerator.cancel()
-  }
-
-  private getAnimationCacheKey(): string {
-    const state = this.state.getState()
-    return JSON.stringify({
-      layers: state.layers,
-      settings: state.settings,
-      evolutions: state.animation.evolutions,
-    })
-  }
-
-  private getAnimationCacheFrameCount(): number {
-    const bytesPerFrame = this.volume.resolution * this.volume.resolution * this.volume.depth
-    const maxFramesByBudget = Math.floor(ANIMATION_CACHE_BUDGET_BYTES / Math.max(bytesPerFrame, 1))
-    return Math.min(ANIMATION_CACHE_MAX_FRAMES, Math.max(0, maxFramesByBudget))
-  }
-
-  private buildAnimationCacheIfNeeded() {
-    const frameCount = this.getAnimationCacheFrameCount()
-    if (frameCount < 2) {
-      this.invalidateAnimationCache()
-      return
-    }
-
-    const key = `${this.getAnimationCacheKey()}::${frameCount}`
-    if (!this.animationCacheBuilding && this.animationCacheKey === key && this.animationCacheFrames.length === frameCount) {
-      return
-    }
-    if (this.animationCacheBuilding && this.animationCacheKey === key) {
-      return
-    }
-
-    this.animationCacheBuildId += 1
-    const buildId = this.animationCacheBuildId
-    this.animationCacheBuilding = true
-    this.animationCacheKey = key
-    this.animationCacheFrames = []
-    this.currentCachedFrame = -1
-    this.cacheGenerator.cancel()
-
-    const { layers, settings, animation } = this.state.getState()
-
-    void (async () => {
-      try {
-        for (let i = 0; i < frameCount; i++) {
-          const phase = i / frameCount
-          const frame = await this.cacheGenerator.generateFrameData(
-            layers,
-            settings.resolution,
-            settings.depth,
-            settings.globalSeed,
-            settings.cutoff,
-            settings.contrast,
-            phase,
-            animation.evolutions,
-          )
-
-          if (buildId !== this.animationCacheBuildId) return
-          this.animationCacheFrames[i] = frame
-        }
-
-        if (buildId !== this.animationCacheBuildId) return
-        this.animationCacheBuilding = false
-        this.tryApplyCachedAnimationFrame(this.state.get('animation').phase)
-      } finally {
-        if (buildId === this.animationCacheBuildId) {
-          this.animationCacheBuilding = false
-        }
-      }
-    })()
-  }
-
-  private tryApplyCachedAnimationFrame(phase: number): boolean {
-    const frameCount = this.animationCacheFrames.length
-    if (frameCount < 2) return false
-
-    const wrapped = ((phase % 1) + 1) % 1
-    const index = Math.min(frameCount - 1, Math.floor(wrapped * frameCount))
-    const frame = this.animationCacheFrames[index]
-    if (!frame) return false
-
-    if (this.currentCachedFrame !== index) {
-      this.volume.uploadVolume(frame)
-      this.currentCachedFrame = index
-    }
-
-    return true
   }
 
   private renderRaymarched(w: number, h: number) {
