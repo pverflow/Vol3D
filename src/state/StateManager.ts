@@ -8,6 +8,15 @@ import { REGEN_DEBOUNCE_MS } from '../core/constants'
 type Subscriber<T> = (value: T) => void
 type StateKey = keyof AppState
 
+type RegenTrigger<K extends StateKey> = (prev: AppState[K], next: AppState[K]) => boolean
+type RegenTriggerMap = { [K in StateKey]?: RegenTrigger<K> }
+
+const REGEN_TRIGGERS: RegenTriggerMap = {
+  layers: () => true,
+  settings: () => true,
+  animation: (prev, next) => prev.evolutions !== next.evolutions,
+}
+
 export class StateManager {
   private state: AppState
   private subscribers = new Map<StateKey, Set<Subscriber<unknown>>>()
@@ -46,15 +55,9 @@ export class StateManager {
     this.notify(key, source)
 
     // Trigger regeneration for relevant keys
-    if (key === 'layers' || key === 'settings') {
+    const trigger = REGEN_TRIGGERS[key]
+    if (trigger && trigger(prevValue, value)) {
       this.scheduleDirty(`${source}:${String(key)}`)
-    }
-    if (key === 'animation') {
-      const prev = prevValue as AppState['animation']
-      const next = value as AppState['animation']
-      if (prev.evolutions !== next.evolutions) {
-        this.scheduleDirty(`${source}:animation.evolutions`)
-      }
     }
   }
 
