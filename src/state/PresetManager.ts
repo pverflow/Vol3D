@@ -2,6 +2,7 @@ import type { StateManager } from './StateManager'
 import { defaultLayer } from './AppState'
 import { NoiseType, BlendMode, DistortionType } from '../types/index'
 import { openTextFile, saveText } from '../platform/fileAccess'
+import { parsePreset } from './presetValidation'
 
 const STORAGE_KEY = 'vol3d_presets'
 
@@ -148,11 +149,11 @@ export class PresetManager {
   }
 
   loadPreset(preset: Preset) {
-    try {
-      const data = JSON.parse(preset.data)
-      this.state.loadState(data)
-    } catch (e) {
-      console.error('Failed to load preset:', e)
+    const result = parsePreset(preset.data)
+    if (result.ok) {
+      this.state.loadState(result.data)
+    } else {
+      window.alert('Could not load preset: ' + result.error)
     }
   }
 
@@ -172,7 +173,11 @@ export class PresetManager {
 
     if (!file) return
 
-    const data = JSON.parse(file.text)
-    this.state.loadState(data)
+    const result = parsePreset(file.text)
+    if (result.ok) {
+      this.state.loadState(result.data)
+    } else {
+      window.alert('Could not load preset: ' + result.error)
+    }
   }
 }
