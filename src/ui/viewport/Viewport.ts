@@ -30,6 +30,9 @@ export class Viewport {
   private vao: WebGLVertexArrayObject
   private dirtyTimer: number | null = null
   private exportInProgress = false
+  private readonly listeners = new AbortController()
+  private resizeObserver!: ResizeObserver
+  private unsubscribes: Array<() => void> = []
   private readonly previewRenderers: Record<PreviewMode, (w: number, h: number) => void>
 
   constructor(state: StateManager) {
@@ -72,15 +75,15 @@ export class Viewport {
     this.vao = gl.createVertexArray()!
 
     // Resize observer
-    const ro = new ResizeObserver(() => this.handleResize())
-    ro.observe(this.el)
+    this.resizeObserver = new ResizeObserver(() => this.handleResize())
+    this.resizeObserver.observe(this.el)
 
     // State subscriptions
-    state.subscribe('layers', () => {
+    this.unsubscribes.push(state.subscribe('layers', () => {
       this.animation.invalidateAnimationCache()
       this.scheduleGeneration()
-    })
-    state.subscribe('settings', () => {
+    }))
+    this.unsubscribes.push(state.subscribe('settings', () => {
       const s = state.get('settings')
       this.animation.invalidateAnimationCache()
       this.camera.setVolumeDepth(s.resolution, s.depth)
@@ -88,18 +91,21 @@ export class Viewport {
         this.resizeVolume(s)
       }
       this.scheduleGeneration()
-    })
-    state.subscribe('preview', () => { /* just re-render */ })
-    state.subscribe('animation', (anim) => this.animation.handleAnimationChange(anim as AnimationSettings))
-    state.subscribe('camera', (cam) => {
+    }))
+    this.unsubscribes.push(state.subscribe('preview', () => { /* just re-render */ }))
+    this.unsubscribes.push(state.subscribe('animation', (anim) => this.animation.handleAnimationChange(anim as AnimationSettings)))
+    this.unsubscribes.push(state.subscribe('camera', (cam) => {
       this.camera.updateCamera(cam as typeof cam)
-    })
+    }))
 
     // Export handler
     window.addEventListener('vol3d-export', (e: Event) => {
       const detail = (e as CustomEvent<ExportConfig>).detail
       this.handleExport(detail)
-    })
+    }, { signal: this.listeners.signal })
+
+    // WebGL context-loss recovery
+    window.addEventListener('webgl-restored', () => this.handleContextRestored(), { signal: this.listeners.signal })
 
     this.previewRenderers = {
       [PreviewMode.Raymarched]: (w, h) => this.renderRaymarched(w, h),
@@ -126,6 +132,14 @@ export class Viewport {
     this.generator.resize(settings.resolution)
     this.cacheGenerator.resize(settings.resolution)
     this.animation.invalidateAnimationCache()
+  }
+
+  private handleContextRestored() {
+    this.compiler.invalidateCache()
+    this.animation.invalidateAnimationCache()
+    const s = this.state.get('settings')
+    this.resizeVolume(s) // rebuilds VolumeTexture + generator slice buffers
+    this.scheduleGeneration()
   }
 
   scheduleGeneration() {
@@ -289,9 +303,19 @@ export class Viewport {
 
   destroy() {
     if (this.rafId !== null) cancelAnimationFrame(this.rafId)
+    if (this.dirtyTimer !== null) {
+      clearTimeout(this.dirtyTimer)
+      this.dirtyTimer = null
+    }
+    this.listeners.abort()
+    this.resizeObserver.disconnect()
+    this.unsubscribes.forEach(unsub => unsub())
+    this.unsubscribes = []
+    this.camera.destroy()
     this.generator.destroy()
     this.cacheGenerator.destroy()
     this.volume.destroy()
+    this.ctx.gl.deleteVertexArray(this.vao)
   }
 }
 

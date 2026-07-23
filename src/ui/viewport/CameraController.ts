@@ -9,6 +9,7 @@ export class CameraController {
   private isPanning = false
   private lastX = 0
   private lastY = 0
+  private readonly windowListeners = new AbortController()
 
   constructor(canvas: HTMLElement, initial: CameraState, onChange: (cam: CameraState) => void) {
     this.camera = { ...initial }
@@ -19,6 +20,7 @@ export class CameraController {
 
   private attachEvents() {
     const el = this.canvas
+    const { signal } = this.windowListeners
 
     el.addEventListener('mousedown', (e) => {
       if (e.button === 0) { this.isOrbiting = true }
@@ -48,12 +50,12 @@ export class CameraController {
         this.camera.panY -= dy * 0.005 * panSign
         this.onChange({ ...this.camera })
       }
-    })
+    }, { signal })
 
     window.addEventListener('mouseup', () => {
       this.isOrbiting = false
       this.isPanning = false
-    })
+    }, { signal })
 
     el.addEventListener('wheel', (e) => {
       e.preventDefault()
@@ -117,6 +119,10 @@ export class CameraController {
 
   updateCamera(cam: CameraState) {
     this.camera = { ...cam }
+  }
+
+  destroy() {
+    this.windowListeners.abort()
   }
 }
 

@@ -120,6 +120,8 @@ export class VolumeGenerator {
     let currentSlice = 0
 
     const processChunk = () => {
+      if (this.gl.isContextLost()) { this.rafId = null; return }
+
       const end = Math.min(currentSlice + SLICES_PER_FRAME, depth)
 
       for (let z = currentSlice; z < end; z++) {
