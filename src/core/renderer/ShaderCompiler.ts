@@ -49,6 +49,13 @@ const DISTORTION_SNIPPETS: Record<DistortionType, string> = {
   [DistortionType.Polar]: polarGlsl,
 }
 
+// Distortions whose GLSL calls _baseNoiseEval and thus need the alias
+// injected when the layer noise is not FBM.
+const DISTORTION_NEEDS_BASE_NOISE = new Set<DistortionType>([
+  DistortionType.DomainWarp,
+  DistortionType.Curl,
+])
+
 export interface CompiledProgram {
   program: WebGLProgram
   uniforms: Map<string, WebGLUniformLocation | null>
@@ -87,8 +94,7 @@ export class ShaderCompiler {
 
     // For distortion that uses _baseNoiseEval (domain_warp, curl), we need a _baseNoiseEval alias
     const distortionSection = DISTORTION_SNIPPETS[distortion]
-    if ((distortion === DistortionType.DomainWarp || distortion === DistortionType.Curl)
-        && noiseType !== NoiseType.FBM) {
+    if (DISTORTION_NEEDS_BASE_NOISE.has(distortion) && noiseType !== NoiseType.FBM) {
       // Rename the noise function to _baseNoiseEval and add noiseEval as alias
       noiseSection = noiseSection.replace(/float noiseEval\(/g, 'float _baseNoiseEval(')
         + '\nfloat noiseEval(vec3 p) { return _baseNoiseEval(p); }\n'
