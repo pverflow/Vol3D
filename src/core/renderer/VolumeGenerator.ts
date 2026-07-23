@@ -4,6 +4,7 @@ import { SliceBuffer } from '../volume/SliceBuffer'
 import { NoiseType, BlendMode, FeatherShape } from '../../types/index'
 import type { Layer } from '../../types/index'
 import { deg2rad, mat3FromEuler } from '../../utils/mathUtils'
+import { applyDensityShaping } from '../volumeShaping'
 
 const BLEND_MODE_INDEX: Record<BlendMode, number> = {
   [BlendMode.Normal]: 0,
@@ -264,17 +265,11 @@ export class VolumeGenerator {
   }
 }
 
-function applyVolumeAdjustments(value: number, cutoff: number, contrast: number): number {
-  const thresholded = Math.max((value - cutoff) / Math.max(1 - cutoff, 0.0001), 0)
-  const contrasted = (thresholded - 0.5) * contrast + 0.5
-  return Math.max(0, Math.min(1, contrasted))
-}
-
 function extractAdjustedRedSlice(rgba: Uint8Array, resolution: number, cutoff: number, contrast: number): Uint8Array {
   const red = new Uint8Array(resolution * resolution)
   for (let i = 0; i < red.length; i++) {
     const normalized = rgba[i * 4] / 255
-    red[i] = Math.round(applyVolumeAdjustments(normalized, cutoff, contrast) * 255)
+    red[i] = Math.round(applyDensityShaping(normalized, cutoff, contrast) * 255)
   }
   return red
 }
