@@ -3,6 +3,7 @@ import { LayerItem } from './LayerItem'
 import { defaultLayer } from '../../state/AppState'
 import { NoiseType } from '../../types/index'
 import { NOISE_COLORS, NOISE_LABELS } from '../../utils/colorMap'
+import { openAnchoredPopup } from '../components/anchoredPopup'
 
 export class LayerPanel {
   readonly el: HTMLElement
@@ -159,32 +160,11 @@ export class LayerPanel {
       btn.addEventListener('click', () => {
         const layerCount = this.state.get('layers').length
         this.state.addLayer(defaultLayer(`${NOISE_LABELS[type]} ${layerCount + 1}`, type))
-        popup.remove()
+        close()
       })
       popup.appendChild(btn)
     }
 
-    document.body.appendChild(popup)
-    const rect = anchor.getBoundingClientRect()
-    const margin = 8
-    const desiredTop = rect.bottom + 4
-    const desiredLeft = rect.left
-    const popupWidth = popup.offsetWidth
-    const popupHeight = popup.offsetHeight
-    const maxLeft = Math.max(margin, window.innerWidth - popupWidth - margin)
-    const maxTop = Math.max(margin, window.innerHeight - popupHeight - margin)
-
-    popup.style.top = `${Math.min(desiredTop, maxTop)}px`
-    popup.style.left = `${Math.min(Math.max(desiredLeft, margin), maxLeft)}px`
-
-    setTimeout(() => {
-      const close = (e: MouseEvent) => {
-        if (!popup.contains(e.target as Node)) {
-          popup.remove()
-          document.removeEventListener('mousedown', close)
-        }
-      }
-      document.addEventListener('mousedown', close)
-    }, 10)
+    const close = openAnchoredPopup(anchor, popup)
   }
 }
