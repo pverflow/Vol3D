@@ -106,6 +106,7 @@ export class PropertiesPanel {
     // handle mousedown calls stopPropagation() (capture runs on the way
     // down, before that stopPropagation takes effect during target/bubble).
     this.contentEl.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return  // left-drag only; right-click is the slider reset gesture
       const target = e.target as Element | null
       if (!target?.closest('.slider-track, .curve-handle')) return
       this.viewport.setInteracting(true)
