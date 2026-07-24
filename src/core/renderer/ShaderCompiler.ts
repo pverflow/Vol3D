@@ -28,7 +28,7 @@ import raymarchFrag from '../../shaders/preview/raymarch.frag.glsl?raw'
 import sliceFrag from '../../shaders/preview/slice.frag.glsl?raw'
 import projectionFrag from '../../shaders/preview/projection.frag.glsl?raw'
 
-import { NoiseType, DistortionType } from '../../types/index'
+import { NoiseType, DistortionType, isSdfSource } from '../../types/index'
 import { SHADING_GLSL } from '../volumeShaping'
 
 const IDENTITY_DISTORTION = `
@@ -86,6 +86,12 @@ export class ShaderCompiler {
     if (this.cache.has(key)) return this.cache.get(key)!
 
     const commonHeader = `#version 300 es\nprecision highp float;\n`
+    // Compile-time only: SDF sources (a single localized shape) need the
+    // main()/sampleNoiseAtVolumePos #ifdef SDF_SOURCE branch in layer_gen so
+    // they render centered and without the periodic-noise tiling/domain-
+    // animation that would otherwise smear/cancel them. Zero runtime cost,
+    // and the #else branch that non-SDF noise types take is untouched.
+    const sdfDefine = isSdfSource(noiseType) ? '#define SDF_SOURCE\n' : ''
     const earlyUniforms = `uniform float u_seed;\n`
 
     // Build noise section
@@ -109,6 +115,7 @@ export class ShaderCompiler {
 
     const fragSource = [
       commonHeader,
+      sdfDefine,
       earlyUniforms,
       mathUtils,
       hashGlsl,

@@ -1,7 +1,7 @@
 import { ShaderCompiler } from './ShaderCompiler'
 import { VolumeTexture } from '../volume/VolumeTexture'
 import { SliceBuffer } from '../volume/SliceBuffer'
-import { NoiseType, BlendMode, FeatherShape, isSdfSource } from '../../types/index'
+import { NoiseType, BlendMode, FeatherShape, isSdfSource, DEFAULT_SDF } from '../../types/index'
 import type { Layer } from '../../types/index'
 import { deg2rad, mat3FromEuler } from '../../utils/mathUtils'
 
@@ -15,10 +15,6 @@ const BLEND_MODE_INDEX: Record<BlendMode, number> = {
 }
 
 export type ProgressCallback = (progress: number) => void
-
-// Fallback used when a layer's noise.sdf is missing (older/hand-built Layer
-// objects) — mirrors AppState.defaultLayer's sdf default.
-const DEFAULT_SDF = { radius: 0.3, softness: 0.1 }
 
 export class VolumeGenerator {
   private gl: WebGL2RenderingContext

@@ -44,10 +44,20 @@ vec3 animatedDomainOffset() {
 float sampleNoiseAtVolumePos(vec3 volumePos) {
   vec3 p = volumePos;
 
+#ifdef SDF_SOURCE
+  // SDF sources are a single localized shape, not periodic noise: center the
+  // volume so offset=[0,0,0] puts the shape at the volume's CENTER (not its
+  // corner, which is what volumePos*u_scale+u_offset would do), and skip the
+  // noise-only domain animation entirely (it exists to hide seams in tiling
+  // noise; an SDF shape has no seams and would just be shifted off-center).
+  p = (p - 0.5) * u_scale + u_offset;
+  p = u_rotation * p;
+#else
   // Apply scale, offset, rotation
   p = p * u_scale + u_offset;
   p = u_rotation * p;
   p += animatedDomainOffset();
+#endif
 
   // Apply distortion (function injected by shader assembler)
   p = applyDistortion(p);
@@ -157,7 +167,14 @@ float applyFeather(vec3 volumePos, float density) {
 
 void main() {
   vec3 volumePos = vec3(vUv, u_sliceZ);
+#ifdef SDF_SOURCE
+  // Bypass the 8-corner tiling blend below: it exists to make periodic noise
+  // seamless across the volume boundary, but averaging 8 shifted copies of a
+  // single localized shape cancels it out instead. Sample once, centered.
+  float n = sampleNoiseAtVolumePos(volumePos);
+#else
   float n = sampleNoiseTileable(volumePos);
+#endif
 
   // Remap
   n = applyRemapCurve(n);

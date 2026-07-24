@@ -1,7 +1,7 @@
 import type { StateManager } from '../../state/StateManager'
 import type { Viewport } from '../viewport/Viewport'
 import type { Layer } from '../../types/index'
-import { NoiseType, WorleyMode, DistortionType, FeatherShape, isSdfSource } from '../../types/index'
+import { NoiseType, WorleyMode, DistortionType, FeatherShape, isSdfSource, DEFAULT_SDF } from '../../types/index'
 import { defaultLayer } from '../../state/AppState'
 import { Slider } from '../components/Slider'
 import { Select } from '../components/Select'
@@ -11,7 +11,6 @@ import { NOISE_LABELS, NOISE_COLORS } from '../../utils/colorMap'
 
 // Single source of truth for slider/curve right-click reset defaults.
 const D = defaultLayer()
-const DEFAULT_SDF = D.noise.sdf ?? { radius: 0.3, softness: 0.1 }
 
 function section(
   title: string,
@@ -283,7 +282,9 @@ export class PropertiesPanel {
 
     if (layer.noise.type === NoiseType.FBM) {
       const baseOptions = Object.values(NoiseType)
-        .filter(t => t !== NoiseType.FBM)
+        // FBM base must be a procedural noise field, not FBM itself and not
+        // an SDF shape (a shape isn't a fractal base and has no controls here).
+        .filter(t => t !== NoiseType.FBM && !isSdfSource(t))
         .map(t => ({ value: t, label: NOISE_LABELS[t] }))
       const baseRow = document.createElement('div')
       baseRow.className = 'prop-row'

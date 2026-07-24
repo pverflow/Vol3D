@@ -19,11 +19,9 @@ import type {
 } from '../types/index'
 import {
   BlendMode, NoiseType, WorleyMode, DistortionType, FeatherShape,
-  PreviewMode, SliceAxis, ProjectionMode,
+  PreviewMode, SliceAxis, ProjectionMode, DEFAULT_SDF,
 } from '../types/index'
 import { normalizeBezierCurve, normalizeSdf } from './stateMigration'
-
-const DEFAULT_SDF: SdfConfig = { radius: 0.3, softness: 0.1 }
 
 const BLEND_MODES = new Set<string>(Object.values(BlendMode))
 const NOISE_TYPES = new Set<string>(Object.values(NoiseType))

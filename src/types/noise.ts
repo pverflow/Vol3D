@@ -35,6 +35,11 @@ export interface SdfConfig {
   softness: number
 }
 
+// Single source of truth for the SDF radius/softness default — referenced by
+// defaultLayer, state migration/preset validation fallbacks, the renderer's
+// missing-sdf fallback, and the PropertiesPanel slider reset value.
+export const DEFAULT_SDF: SdfConfig = { radius: 0.3, softness: 0.1 }
+
 export interface NoiseConfig {
   type: NoiseType
   worleyMode: WorleyMode

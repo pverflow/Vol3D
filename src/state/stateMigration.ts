@@ -3,6 +3,7 @@
 // values, the old `edgeFeather` field) so presets exported by older Vol3D builds
 // keep loading correctly. Moved verbatim out of StateManager.
 import type { Layer, SdfConfig } from '../types/index'
+import { DEFAULT_SDF } from '../types/index'
 import { defaultLayer } from './AppState'
 
 export const CURRENT_PRESET_VERSION = 2
@@ -10,8 +11,6 @@ export const CURRENT_PRESET_VERSION = 2
 // Bumped to 2: adds NoiseConfig.sdf (SDF primitive source layers, VFX-0 Task 1).
 // Presets from version 1 lack `sdf` entirely; normalizeLayer below fills it in
 // from defaultLayer's default, same as any other missing/legacy field.
-
-const DEFAULT_SDF: SdfConfig = { radius: 0.3, softness: 0.1 }
 
 export function normalizeLayer(layer: Layer): Layer {
   const base = defaultLayer(layer.name, layer.noise?.type)

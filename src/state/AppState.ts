@@ -1,6 +1,6 @@
 import {
   NoiseType, WorleyMode, BlendMode, DistortionType,
-  PreviewMode, SliceAxis, ProjectionMode, FeatherShape,
+  PreviewMode, SliceAxis, ProjectionMode, FeatherShape, DEFAULT_SDF,
 } from '../types/index'
 import type { Layer, VolumeSettings, PreviewSettings, CameraState, AnimationSettings } from '../types/index'
 import { uid } from '../utils/uid'
@@ -24,10 +24,7 @@ export function defaultLayer(name?: string, noiseType: NoiseType = NoiseType.Per
         persistence: 0.5,
         lacunarity: 2.0,
       },
-      sdf: {
-        radius: 0.3,
-        softness: 0.1,
-      },
+      sdf: { ...DEFAULT_SDF },
       scale: [3.0, 3.0, 3.0],
       amplitude: 1.0,
       offset: [0.0, 0.0, 0.0],
