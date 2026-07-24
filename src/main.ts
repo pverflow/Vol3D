@@ -48,7 +48,7 @@ function init() {
   const viewport = new Viewport(state)
   viewportRef = viewport
   new KeyBindings(state, viewport)
-  const propsPanel = new PropertiesPanel(state)
+  const propsPanel = new PropertiesPanel(state, viewport)
 
   // Layout
   app.appendChild(topBar.el)

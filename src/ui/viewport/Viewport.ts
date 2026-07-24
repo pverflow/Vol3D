@@ -10,7 +10,7 @@ import type { StateManager } from '../../state/StateManager'
 import { shouldRegenerateOnSettings } from '../../state/StateManager'
 import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
-import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
+import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR, PROXY_RES_FACTOR, PROXY_MIN_RES } from '../../core/constants'
 
 const AXIS_MAP: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
 const PREVIEW_MODE_ORDER: PreviewMode[] = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
@@ -23,6 +23,23 @@ export class Viewport {
   private generator: VolumeGenerator
   private cacheGenerator: VolumeGenerator
   private volume: VolumeTexture
+  // Low-res drag proxy (Task 4): a second, cheap VolumeTexture + its own
+  // VolumeGenerator (own SliceBuffer sized at proxy resolution) so dragging
+  // a generation-affecting control never has to resize/reallocate the
+  // full-res generator's buffers. Regenerated in place of `volume` while
+  // `interacting` is true; never used for export or the animation cache.
+  private proxyGenerator: VolumeGenerator
+  private proxyVolume: VolumeTexture
+  // True while a generation-affecting control (Slider/BezierCurveEditor in
+  // PropertiesPanel) is being dragged — see setInteracting().
+  private interacting = false
+  // True once proxyVolume holds a completed generation for its current
+  // dimensions — gates the preview so it never samples an empty/stale proxy.
+  private proxyReady = false
+  // True from the moment a drag ends until the settle (full-res) generation
+  // that follows it completes — keeps the preview on the (still-fresh)
+  // proxy instead of flashing back to the stale pre-drag full-res volume.
+  private settling = false
   private camera: CameraController
   private animation: AnimationController
   private overlay: ViewportOverlay
@@ -67,6 +84,10 @@ export class Viewport {
     this.volume = new VolumeTexture(gl, settings.resolution as Resolution, settings.depth as SliceCount)
     this.generator = new VolumeGenerator(gl, this.compiler, settings.resolution)
     this.cacheGenerator = new VolumeGenerator(gl, this.compiler, settings.resolution)
+
+    const proxyRes = proxyDimension(settings.resolution)
+    this.proxyVolume = new VolumeTexture(gl, proxyRes as Resolution, proxyDimension(settings.depth) as SliceCount)
+    this.proxyGenerator = new VolumeGenerator(gl, this.compiler, proxyRes)
     this.animation = new AnimationController({
       state,
       cacheGenerator: this.cacheGenerator,
@@ -142,6 +163,12 @@ export class Viewport {
     this.generator.resize(settings.resolution)
     this.cacheGenerator.resize(settings.resolution)
     this.animation.invalidateAnimationCache()
+
+    const proxyRes = proxyDimension(settings.resolution)
+    this.proxyVolume.destroy()
+    this.proxyVolume = new VolumeTexture(this.ctx.gl, proxyRes as Resolution, proxyDimension(settings.depth) as SliceCount)
+    this.proxyGenerator.resize(proxyRes)
+    this.proxyReady = false
   }
 
   private handleContextRestored() {
@@ -160,7 +187,35 @@ export class Viewport {
     }, REGEN_DEBOUNCE_MS)
   }
 
+  // Called (e.g. from PropertiesPanel) on pointer-down/up of a
+  // generation-affecting control. See the drag-proxy fields above.
+  setInteracting(active: boolean) {
+    if (this.interacting === active) return
+    this.interacting = active
+    if (active) {
+      // Generate the proxy immediately so there's fresh low-res content to
+      // preview right away instead of a flash of stale/empty data.
+      this.generateProxy()
+    } else {
+      // Snap back to full res as soon as possible; keep previewing the
+      // proxy until this completes so we never flash the stale pre-drag
+      // full-res volume (see previewSource()).
+      this.settling = true
+      this.generateFull()
+    }
+  }
+
   private runGeneration() {
+    if (this.interacting) {
+      this.generateProxy()
+    } else {
+      this.generateFull()
+    }
+  }
+
+  // Full-resolution generation: the authoritative volume used for the
+  // settled (non-dragging) preview, export, and the animation cache.
+  private generateFull() {
     const { state } = this
     this.animation.resetAppliedFrame()
     state.update('generating', true)
@@ -180,9 +235,35 @@ export class Viewport {
         state.update('generating', false)
         state.update('progress', 1)
         if (indicator) indicator.style.display = 'none'
+        this.settling = false
         this.animation.buildAnimationCacheIfNeeded()
       }
     )
+  }
+
+  // Low-res drag proxy (Task 4): regenerates the cheap proxyVolume while a
+  // generation-affecting control is being dragged. No progress/indicator UI
+  // — proxy generations are meant to be cheap, invisible plumbing, not a
+  // "Generating…" flash during otherwise-smooth dragging.
+  private generateProxy() {
+    const { state } = this
+    this.proxyGenerator.generate(
+      state.get('layers'),
+      this.proxyVolume,
+      state.get('settings').globalSeed,
+      state.get('animation').phase,
+      state.get('animation').evolutions,
+      undefined,
+      () => { this.proxyReady = true }
+    )
+  }
+
+  // Which volume the preview should currently sample: the proxy while
+  // dragging (or settling right after) and it holds a completed generation,
+  // otherwise the full-res volume. Export and the animation cache always
+  // use `this.volume` directly and never call this.
+  private previewSource(): VolumeTexture {
+    return (this.interacting || this.settling) && this.proxyReady ? this.proxyVolume : this.volume
   }
 
   private startRenderLoop() {
@@ -224,7 +305,8 @@ export class Viewport {
 
     const preview = this.state.get('preview')
     const settings = this.state.get('settings')
-    const depthScale = this.volume.depth / this.volume.resolution
+    const vol = this.previewSource()
+    const depthScale = vol.depth / vol.resolution
     const { eye, forward, right, up } = this.camera.getMatrices()
     const aspect = w / h
     const tanHalfFov = RAYMARCH_TAN_HALF_FOV
@@ -245,7 +327,7 @@ export class Viewport {
     compiler.setUniform(prog, 'u_exposure', preview.exposure)
     compiler.setUniform(prog, 'u_lightDir', ...LIGHT_DIR)
 
-    this.volume.bind(0)
+    vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -258,7 +340,8 @@ export class Viewport {
 
     const preview = this.state.get('preview')
     const settings = this.state.get('settings')
-    const planeAspect = preview.sliceAxis === SliceAxis.Z ? 1 : this.volume.resolution / this.volume.depth
+    const vol = this.previewSource()
+    const planeAspect = preview.sliceAxis === SliceAxis.Z ? 1 : vol.resolution / vol.depth
     const screenAspect = this.canvas.width / this.canvas.height
 
     compiler.setUniform(prog, 'u_cutoff', settings.cutoff)
@@ -276,7 +359,7 @@ export class Viewport {
       compiler.setUniform(prog, 'u_slicePos', preview.slicePosition)
     }
 
-    this.volume.bind(0)
+    vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -330,8 +413,17 @@ export class Viewport {
     this.generator.destroy()
     this.cacheGenerator.destroy()
     this.volume.destroy()
+    this.proxyGenerator.destroy()
+    this.proxyVolume.destroy()
     this.ctx.gl.deleteVertexArray(this.vao)
   }
+}
+
+// Low-res drag proxy (Task 4): max(PROXY_MIN_RES, floor(n / PROXY_RES_FACTOR)),
+// applied to both resolution and depth so the proxy volume keeps the full
+// volume's aspect ratio while cutting generation cost on every axis.
+function proxyDimension(n: number): number {
+  return Math.max(PROXY_MIN_RES, Math.floor(n / PROXY_RES_FACTOR))
 }
 
 function describeViewportError(error: unknown): string {

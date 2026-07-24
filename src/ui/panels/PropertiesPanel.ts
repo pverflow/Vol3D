@@ -1,4 +1,5 @@
 import type { StateManager } from '../../state/StateManager'
+import type { Viewport } from '../viewport/Viewport'
 import type { Layer } from '../../types/index'
 import { NoiseType, WorleyMode, DistortionType, FeatherShape } from '../../types/index'
 import { defaultLayer } from '../../state/AppState'
@@ -51,6 +52,7 @@ export class PropertiesPanel {
   private contentEl: HTMLElement
   private sectionState = new Map<string, boolean>()
   private currentLayerSignature: string | null = null
+  private viewport: Viewport
 
   private getLayerById(id: string): Layer | null {
     return this.state.get('layers').find(layer => layer.id === id) ?? null
@@ -74,8 +76,9 @@ export class PropertiesPanel {
     this.state.updateLayerRemap(id, buildPatch(layer))
   }
 
-  constructor(state: StateManager) {
+  constructor(state: StateManager, viewport: Viewport) {
     this.state = state
+    this.viewport = viewport
     this.el = document.createElement('div')
     this.el.className = 'properties-panel'
 
@@ -87,6 +90,19 @@ export class PropertiesPanel {
     this.contentEl = document.createElement('div')
     this.contentEl.className = 'properties-content'
     this.el.appendChild(this.contentEl)
+
+    // Drag-proxy interaction signal (Task 4): every control in this panel
+    // edits a layer's noise/distortion/remap, i.e. always regeneration-
+    // affecting, so a single delegated listener covers all of them instead
+    // of touching each Slider/BezierCurveEditor call site individually.
+    // Capture phase so this still fires even though BezierCurveEditor's
+    // handle mousedown calls stopPropagation() (capture runs on the way
+    // down, before that stopPropagation takes effect during target/bubble).
+    // mouseup is listened on window (not contentEl) because Slider and
+    // BezierCurveEditor both track drags via a window-level mouseup, so a
+    // release can land anywhere on the page, not just back over the panel.
+    this.contentEl.addEventListener('mousedown', () => this.viewport.setInteracting(true), { capture: true })
+    window.addEventListener('mouseup', () => this.viewport.setInteracting(false))
 
     this.state.subscribe('selected', () => this.render())
     this.state.subscribe('layers', () => this.handleLayersChange())
