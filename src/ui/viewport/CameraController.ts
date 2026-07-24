@@ -1,5 +1,4 @@
 import type { CameraState } from '../../types/index'
-import { mat4LookAt, mat4Perspective, mat4Multiply, mat4Invert } from '../../utils/mathUtils'
 
 export class CameraController {
   private camera: CameraState
@@ -10,6 +9,7 @@ export class CameraController {
   private isPanning = false
   private lastX = 0
   private lastY = 0
+  private readonly windowListeners = new AbortController()
 
   constructor(canvas: HTMLElement, initial: CameraState, onChange: (cam: CameraState) => void) {
     this.camera = { ...initial }
@@ -20,6 +20,7 @@ export class CameraController {
 
   private attachEvents() {
     const el = this.canvas
+    const { signal } = this.windowListeners
 
     el.addEventListener('mousedown', (e) => {
       if (e.button === 0) { this.isOrbiting = true }
@@ -49,12 +50,12 @@ export class CameraController {
         this.camera.panY -= dy * 0.005 * panSign
         this.onChange({ ...this.camera })
       }
-    })
+    }, { signal })
 
     window.addEventListener('mouseup', () => {
       this.isOrbiting = false
       this.isPanning = false
-    })
+    }, { signal })
 
     el.addEventListener('wheel', (e) => {
       e.preventDefault()
@@ -85,10 +86,7 @@ export class CameraController {
     this.volumeSize = new Float32Array([1, 1, depth / resolution])
   }
 
-  getMatrices(width: number, height: number): {
-    view: Float32Array
-    proj: Float32Array
-    invViewProj: Float32Array
+  getMatrices(): {
     eye: Float32Array
     forward: Float32Array
     right: Float32Array
@@ -116,16 +114,15 @@ export class CameraController {
     const right = normalize3(cross3(forward, worldUp))
     const up = normalize3(cross3(right, forward))
 
-    const view = mat4LookAt(eye, center, up)
-    const proj = mat4Perspective(Math.PI / 3, width / height, 0.01, 100.0)
-    const viewProj = mat4Multiply(proj, view)
-    const invViewProj = mat4Invert(viewProj)
-
-    return { view, proj, invViewProj, eye, forward, right, up }
+    return { eye, forward, right, up }
   }
 
   updateCamera(cam: CameraState) {
     this.camera = { ...cam }
+  }
+
+  destroy() {
+    this.windowListeners.abort()
   }
 }
 

@@ -25,50 +25,69 @@ export function isTauriRuntime(): boolean {
   )
 }
 
+async function saveViaTauri<T extends Uint8Array | string>(
+  data: T,
+  options: SaveFileOptions,
+  loadWriter: () => Promise<(path: string, data: T) => Promise<void>>,
+  errorLabel: string,
+): Promise<boolean> {
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const writer = await loadWriter()
+    const target = await save({
+      defaultPath: options.suggestedName,
+      filters: options.filters,
+    })
+
+    if (!target || Array.isArray(target)) return false
+    await writer(target, data)
+    return true
+  } catch (error) {
+    throw new Error(`Desktop ${errorLabel} save failed: ${describePlatformError(error)}`)
+  }
+}
+
+function saveViaBrowser(blob: Blob, suggestedName: string, errorLabel: string): boolean {
+  try {
+    triggerBrowserDownload(blob, suggestedName)
+    return true
+  } catch (error) {
+    throw new Error(`Browser ${errorLabel} save failed: ${describePlatformError(error)}`)
+  }
+}
+
 export async function saveBytes(data: Uint8Array, options: SaveFileOptions): Promise<boolean> {
   if (isTauriRuntime()) {
-    try {
-      const { save } = await import('@tauri-apps/plugin-dialog')
-      const { writeFile } = await import('@tauri-apps/plugin-fs')
-      const target = await save({
-        defaultPath: options.suggestedName,
-        filters: options.filters,
-      })
-
-      if (!target || Array.isArray(target)) return false
-      await writeFile(target, data)
-      return true
-    } catch (error) {
-      throw new Error(`Desktop file save failed: ${describePlatformError(error)}`)
-    }
+    return saveViaTauri(
+      data,
+      options,
+      async () => (await import('@tauri-apps/plugin-fs')).writeFile,
+      'file',
+    )
   }
 
-  const blob = new Blob([toArrayBuffer(data)], { type: options.mime ?? 'application/octet-stream' })
-  triggerBrowserDownload(blob, options.suggestedName)
-  return true
+  return saveViaBrowser(
+    new Blob([toArrayBuffer(data)], { type: options.mime ?? 'application/octet-stream' }),
+    options.suggestedName,
+    'file',
+  )
 }
 
 export async function saveText(text: string, options: SaveFileOptions): Promise<boolean> {
   if (isTauriRuntime()) {
-    try {
-      const { save } = await import('@tauri-apps/plugin-dialog')
-      const { writeTextFile } = await import('@tauri-apps/plugin-fs')
-      const target = await save({
-        defaultPath: options.suggestedName,
-        filters: options.filters,
-      })
-
-      if (!target || Array.isArray(target)) return false
-      await writeTextFile(target, text)
-      return true
-    } catch (error) {
-      throw new Error(`Desktop text save failed: ${describePlatformError(error)}`)
-    }
+    return saveViaTauri(
+      text,
+      options,
+      async () => (await import('@tauri-apps/plugin-fs')).writeTextFile,
+      'text',
+    )
   }
 
-  const blob = new Blob([text], { type: options.mime ?? 'text/plain;charset=utf-8' })
-  triggerBrowserDownload(blob, options.suggestedName)
-  return true
+  return saveViaBrowser(
+    new Blob([text], { type: options.mime ?? 'text/plain;charset=utf-8' }),
+    options.suggestedName,
+    'text',
+  )
 }
 
 export async function openTextFile(options: OpenTextFileOptions = {}): Promise<OpenTextFileResult | null> {
@@ -101,20 +120,50 @@ export async function openTextFile(options: OpenTextFileOptions = {}): Promise<O
     input.id = 'platform-open-text-file'
     input.name = 'platform-open-text-file'
 
+    let settled = false
+
+    const cleanup = () => {
+      window.removeEventListener('focus', onWindowFocus)
+      input.remove()
+    }
+
+    const settle = (value: OpenTextFileResult | null) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(value)
+    }
+
+    const fail = (error: unknown) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+
+    // Native file pickers fire no `change` event on cancel. When the window
+    // regains focus (the dialog just closed) with no file chosen, give `change`
+    // a brief moment to land - it can fire just after focus - then treat it as
+    // cancelled. A real selection always wins via the `settled` guard.
+    const onWindowFocus = () => {
+      window.setTimeout(() => {
+        if (!input.files?.length) settle(null)
+      }, 300)
+    }
+    window.addEventListener('focus', onWindowFocus, { once: true })
+
     input.addEventListener('change', async () => {
       const file = input.files?.[0]
       if (!file) {
-        resolve(null)
+        settle(null)
         return
       }
 
       try {
-        resolve({
-          name: file.name,
-          text: await file.text(),
-        })
+        const text = await file.text()
+        settle({ name: file.name, text })
       } catch (error) {
-        reject(error)
+        fail(error)
       }
     })
 

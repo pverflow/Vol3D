@@ -3,6 +3,7 @@ import type { StateManager } from '../../state/StateManager'
 import { BlendMode } from '../../types/index'
 import { NOISE_COLORS, NOISE_LABELS } from '../../utils/colorMap'
 import { showContextMenu } from '../components/ContextMenu'
+import { openAnchoredPopup } from '../components/anchoredPopup'
 
 const BLEND_OPTIONS: Array<{ value: BlendMode, label: string }> = [
   { value: BlendMode.Normal, label: 'Normal' },
@@ -211,33 +212,11 @@ export class LayerItem {
       btn.addEventListener('click', (e) => {
         e.stopPropagation()
         this.state.updateLayer(this.layer.id, { blendMode: option.value })
-        popup.remove()
+        close()
       })
       popup.appendChild(btn)
     }
 
-    document.body.appendChild(popup)
-    const rect = anchor.getBoundingClientRect()
-    const margin = 8
-    const popupWidth = popup.offsetWidth
-    const popupHeight = popup.offsetHeight
-    const desiredLeft = rect.right - popupWidth
-    const desiredTop = rect.bottom + 4
-    const maxLeft = Math.max(margin, window.innerWidth - popupWidth - margin)
-    const maxTop = Math.max(margin, window.innerHeight - popupHeight - margin)
-
-    popup.style.left = `${Math.min(Math.max(desiredLeft, margin), maxLeft)}px`
-    popup.style.top = `${Math.min(desiredTop, maxTop)}px`
-
-    setTimeout(() => {
-      const close = (e: MouseEvent) => {
-        if (e.target === anchor) return
-        if (!popup.contains(e.target as Node)) {
-          popup.remove()
-          document.removeEventListener('mousedown', close)
-        }
-      }
-      document.addEventListener('mousedown', close)
-    }, 10)
+    const close = openAnchoredPopup(anchor, popup)
   }
 }

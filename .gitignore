@@ -3,3 +3,6 @@ dist/
 certificates/
 src-tauri/target/
 
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo

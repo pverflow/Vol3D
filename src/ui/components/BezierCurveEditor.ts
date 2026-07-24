@@ -104,13 +104,11 @@ export class BezierCurveEditor {
 
     this.handle1 = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
     this.handle1.classList.add('curve-handle')
-    this.handle1.dataset.index = '0'
     this.handle1.setAttribute('r', String(HANDLE_RADIUS))
     this.svg.appendChild(this.handle1)
 
     this.handle2 = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
     this.handle2.classList.add('curve-handle')
-    this.handle2.dataset.index = '1'
     this.handle2.setAttribute('r', String(HANDLE_RADIUS))
     this.svg.appendChild(this.handle2)
 

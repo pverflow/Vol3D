@@ -11,6 +11,8 @@ uniform float u_slicePos;     // [0..1]
 uniform float u_exposure;
 uniform float u_planeAspect;
 uniform float u_screenAspect;
+uniform float u_cutoff;
+uniform float u_contrast;
 
 bool fitPlaneUv(vec2 uv, out vec2 planeUv) {
   planeUv = uv;
@@ -38,7 +40,7 @@ void main() {
     uvw = vec3(planeUv.x, planeUv.y, u_slicePos);
   }
 
-  float v = texture(u_volume, uvw).r;
+  float v = applyDensityShaping(texture(u_volume, uvw).r, u_cutoff, u_contrast);
   v = clamp(v * u_exposure, 0.0, 1.0);
 
   // Apply a subtle false-color gradient for readability

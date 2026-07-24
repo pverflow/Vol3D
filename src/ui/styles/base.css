@@ -25,6 +25,10 @@
   --accent-hover:  #8080ff;
   --danger:        #ff4d6d;
 
+  /* Theme-driven RGB triples (used with rgba(var(--x), alpha)) */
+  --overlay-rgb:   11,11,15;    /* viewport overlay panel background */
+  --line-rgb:      255,255,255; /* curve-editor grid lines */
+
   /* Spacing */
   --sp-1: 4px;
   --sp-2: 8px;
@@ -44,6 +48,30 @@
   /* Transitions */
   --t-fast: 120ms ease;
   --t-med:  200ms ease;
+}
+
+/* ─── Light theme ─── */
+:root[data-theme="light"] {
+  --bg-base:       #f4f4f8;
+  --bg-panel:      #ffffff;
+  --bg-elevated:   #eef0f5;
+  --bg-control:    #e8e8f0;
+  --bg-hover:      #e0e0ea;
+  --bg-active:     #d4d4e4;
+  --border:        #d2d2de;
+  --border-focus:  #6c6cff;
+
+  --text-primary:   #1a1a24;
+  --text-secondary: #55556a;
+  --text-muted:     #9090a4;
+
+  --accent:        #5555ee;
+  --accent-glow:   rgba(108,108,255,0.22);
+  --accent-hover:  #4040dd;
+  --danger:        #d63a58;
+
+  --overlay-rgb:   255,255,255;
+  --line-rgb:      30,30,45;
 }
 
 html, body {

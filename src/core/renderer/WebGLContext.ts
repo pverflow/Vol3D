@@ -31,12 +31,4 @@ export class WebGLContext {
       window.dispatchEvent(new Event('webgl-restored'))
     })
   }
-
-  checkExtensions(): { float32Tex: boolean; floatBlend: boolean } {
-    const { gl } = this
-    return {
-      float32Tex: !!gl.getExtension('EXT_color_buffer_float'),
-      floatBlend: !!gl.getExtension('EXT_float_blend'),
-    }
-  }
 }

@@ -5,7 +5,6 @@
 
 uniform float u_warpStrength;
 uniform float u_warpFrequency;
-uniform int u_warpOctaves;
 
 vec3 applyDistortion(vec3 p) {
   if (u_warpStrength < 0.001) return p;

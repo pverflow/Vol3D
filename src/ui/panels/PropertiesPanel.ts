@@ -1,11 +1,16 @@
 import type { StateManager } from '../../state/StateManager'
+import type { Viewport } from '../viewport/Viewport'
 import type { Layer } from '../../types/index'
 import { NoiseType, WorleyMode, DistortionType, FeatherShape } from '../../types/index'
+import { defaultLayer } from '../../state/AppState'
 import { Slider } from '../components/Slider'
 import { Select } from '../components/Select'
 import { Toggle } from '../components/Toggle'
 import { BezierCurveEditor } from '../components/BezierCurveEditor'
 import { NOISE_LABELS, NOISE_COLORS } from '../../utils/colorMap'
+
+// Single source of truth for slider/curve right-click reset defaults.
+const D = defaultLayer()
 
 function section(
   title: string,
@@ -47,6 +52,7 @@ export class PropertiesPanel {
   private contentEl: HTMLElement
   private sectionState = new Map<string, boolean>()
   private currentLayerSignature: string | null = null
+  private viewport: Viewport
 
   private getLayerById(id: string): Layer | null {
     return this.state.get('layers').find(layer => layer.id === id) ?? null
@@ -70,8 +76,9 @@ export class PropertiesPanel {
     this.state.updateLayerRemap(id, buildPatch(layer))
   }
 
-  constructor(state: StateManager) {
+  constructor(state: StateManager, viewport: Viewport) {
     this.state = state
+    this.viewport = viewport
     this.el = document.createElement('div')
     this.el.className = 'properties-panel'
 
@@ -83,6 +90,37 @@ export class PropertiesPanel {
     this.contentEl = document.createElement('div')
     this.contentEl.className = 'properties-content'
     this.el.appendChild(this.contentEl)
+
+    // Drag-proxy interaction signal (Task 4): a single delegated listener
+    // covers every Slider/BezierCurveEditor in this panel instead of
+    // touching each call site individually, but it must only fire for an
+    // actual drag start on those two controls' own drag targets -- the
+    // slider track (Slider.ts's `track`, class "slider-track") and a bezier
+    // handle (BezierCurveEditor.ts's `handle1`/`handle2`, class
+    // "curve-handle"). A mousedown anywhere else in the panel -- opening a
+    // native <select>, a Toggle, a section header, a right-click reset --
+    // must NOT set interacting, otherwise closing a <select> popup (which
+    // doesn't reliably deliver a matching window mouseup) leaves interacting
+    // stuck true and every later edit renders proxy-only forever.
+    // Capture phase so this still fires even though BezierCurveEditor's
+    // handle mousedown calls stopPropagation() (capture runs on the way
+    // down, before that stopPropagation takes effect during target/bubble).
+    this.contentEl.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return  // left-drag only; right-click is the slider reset gesture
+      const target = e.target as Element | null
+      if (!target?.closest('.slider-track, .curve-handle')) return
+      this.viewport.setInteracting(true)
+    }, { capture: true })
+    // mouseup is listened on window (not contentEl) because Slider and
+    // BezierCurveEditor both track drags via a window-level mouseup, so a
+    // release can land anywhere on the page, not just back over the panel.
+    window.addEventListener('mouseup', () => this.viewport.setInteracting(false))
+    // Safety net: if focus/the window is lost mid-drag (alt-tab, devtools
+    // stealing focus, ...) the mouseup above may never arrive. Clearing on
+    // blur too keeps the invariant that interacting can't stay stuck true
+    // once the pointer or focus is gone, without rewriting Slider/
+    // BezierCurveEditor's mouse-event drag tracking to pointer capture.
+    window.addEventListener('blur', () => this.viewport.setInteracting(false))
 
     this.state.subscribe('selected', () => this.render())
     this.state.subscribe('layers', () => this.handleLayersChange())
@@ -180,26 +218,26 @@ export class PropertiesPanel {
     // Scale XYZ
     body.appendChild(new Slider({
       label: 'Scale X', min: 0.1, max: 20, step: 0.1, value: layer.noise.scale[0],
-      defaultValue: 3.0, decimals: 2,
+      defaultValue: D.noise.scale[0], decimals: 2,
       onInput: (v) => this.updateNoise(id, (current) => ({ scale: [v, current.noise.scale[1], current.noise.scale[2]] })),
       onChange: (v) => this.updateNoise(id, (current) => ({ scale: [v, current.noise.scale[1], current.noise.scale[2]] })),
     }).el)
     body.appendChild(new Slider({
       label: 'Scale Y', min: 0.1, max: 20, step: 0.1, value: layer.noise.scale[1],
-      defaultValue: 3.0, decimals: 2,
+      defaultValue: D.noise.scale[1], decimals: 2,
       onInput: (v) => this.updateNoise(id, (current) => ({ scale: [current.noise.scale[0], v, current.noise.scale[2]] })),
       onChange: (v) => this.updateNoise(id, (current) => ({ scale: [current.noise.scale[0], v, current.noise.scale[2]] })),
     }).el)
     body.appendChild(new Slider({
       label: 'Scale Z', min: 0.1, max: 20, step: 0.1, value: layer.noise.scale[2],
-      defaultValue: 3.0, decimals: 2,
+      defaultValue: D.noise.scale[2], decimals: 2,
       onInput: (v) => this.updateNoise(id, (current) => ({ scale: [current.noise.scale[0], current.noise.scale[1], v] })),
       onChange: (v) => this.updateNoise(id, (current) => ({ scale: [current.noise.scale[0], current.noise.scale[1], v] })),
     }).el)
 
     body.appendChild(new Slider({
       label: 'Amplitude', min: 0, max: 2, step: 0.01, value: layer.noise.amplitude,
-      defaultValue: 1.0, decimals: 2,
+      defaultValue: D.noise.amplitude, decimals: 2,
       onInput: (v) => this.updateNoise(id, () => ({ amplitude: v })),
       onChange: (v) => this.updateNoise(id, () => ({ amplitude: v })),
     }).el)
@@ -246,7 +284,7 @@ export class PropertiesPanel {
 
     body.appendChild(new Slider({
       label: 'Octaves', min: 1, max: 8, step: 1, value: fbm.octaves,
-      defaultValue: 4, decimals: 0,
+      defaultValue: D.noise.fbm.octaves, decimals: 0,
       onInput: (v) => this.updateNoise(id, (current) => ({
         fbm: { ...current.noise.fbm, octaves: v },
       })),
@@ -256,7 +294,7 @@ export class PropertiesPanel {
     }).el)
     body.appendChild(new Slider({
       label: 'Persistence', min: 0.1, max: 1.0, step: 0.01, value: fbm.persistence,
-      defaultValue: 0.5, decimals: 2,
+      defaultValue: D.noise.fbm.persistence, decimals: 2,
       onInput: (v) => this.updateNoise(id, (current) => ({
         fbm: { ...current.noise.fbm, persistence: v },
       })),
@@ -266,7 +304,7 @@ export class PropertiesPanel {
     }).el)
     body.appendChild(new Slider({
       label: 'Lacunarity', min: 1.0, max: 4.0, step: 0.05, value: fbm.lacunarity,
-      defaultValue: 2.0, decimals: 2,
+      defaultValue: D.noise.fbm.lacunarity, decimals: 2,
       onInput: (v) => this.updateNoise(id, (current) => ({
         fbm: { ...current.noise.fbm, lacunarity: v },
       })),
@@ -366,7 +404,7 @@ export class PropertiesPanel {
     if (dist.type !== DistortionType.None) {
       body.appendChild(new Slider({
         label: 'Strength', min: 0, max: 2, step: 0.01, value: dist.strength,
-        defaultValue: 0.3, decimals: 2,
+        defaultValue: D.distortion.strength, decimals: 2,
         onInput: (v) => this.updateDistortion(id, () => ({ strength: v })),
         onChange: (v) => this.updateDistortion(id, () => ({ strength: v })),
       }).el)
@@ -374,7 +412,7 @@ export class PropertiesPanel {
       if (dist.type === DistortionType.DomainWarp) {
         body.appendChild(new Slider({
           label: 'Warp Freq', min: 0.5, max: 10, step: 0.1, value: dist.warpFrequency,
-          defaultValue: 2.0, decimals: 2,
+          defaultValue: D.distortion.warpFrequency, decimals: 2,
           onInput: (v) => this.updateDistortion(id, () => ({ warpFrequency: v })),
           onChange: (v) => this.updateDistortion(id, () => ({ warpFrequency: v })),
         }).el)
@@ -383,7 +421,7 @@ export class PropertiesPanel {
       if (dist.type === DistortionType.Swirl) {
         body.appendChild(new Slider({
           label: 'Swirl Amt', min: -5, max: 5, step: 0.1, value: dist.swirlAmount,
-          defaultValue: 1.0, decimals: 2,
+          defaultValue: D.distortion.swirlAmount, decimals: 2,
           onInput: (v) => this.updateDistortion(id, () => ({ swirlAmount: v })),
           onChange: (v) => this.updateDistortion(id, () => ({ swirlAmount: v })),
         }).el)
@@ -432,7 +470,7 @@ export class PropertiesPanel {
     body.appendChild(new BezierCurveEditor({
       label: 'Remap Curve',
       value: remap.remapCurve,
-      defaultValue: [0.25, 0.25, 0.75, 0.75],
+      defaultValue: D.remap.remapCurve,
       onInput: (v) => this.updateRemap(id, () => ({ remapCurve: v })),
       onChange: (v) => this.updateRemap(id, () => ({ remapCurve: v })),
     }).el)
@@ -473,7 +511,7 @@ export class PropertiesPanel {
     body.appendChild(new BezierCurveEditor({
       label: 'Feather Curve',
       value: remap.featherCurve,
-      defaultValue: [0.25, 0.25, 0.75, 0.75],
+      defaultValue: D.remap.featherCurve,
       onInput: (v) => this.updateRemap(id, () => ({ featherCurve: v })),
       onChange: (v) => this.updateRemap(id, () => ({ featherCurve: v })),
     }).el)

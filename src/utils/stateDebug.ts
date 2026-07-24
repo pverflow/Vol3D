@@ -31,7 +31,14 @@ const STORAGE_VERBOSE_KEY = 'vol3d:debug:state:verbose'
 //   ?vol3dStateDebug=layers,selected
 //   localStorage.setItem('vol3d:debug:state', 'layers')
 //   window.__VOL3D_DEBUG_STATE__ = true
+let cachedConfig: StateDebugConfig | null = null
+
 export function getStateDebugConfig(): StateDebugConfig {
+  if (cachedConfig) return cachedConfig
+  return cachedConfig = computeStateDebugConfig()
+}
+
+function computeStateDebugConfig(): StateDebugConfig {
   if (typeof window === 'undefined') {
     return { enabled: false, keys: null, verbose: false, source: 'none' }
   }

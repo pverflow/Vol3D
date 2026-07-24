@@ -26,6 +26,7 @@ import sliceFrag from '../../shaders/preview/slice.frag.glsl?raw'
 import projectionFrag from '../../shaders/preview/projection.frag.glsl?raw'
 
 import { NoiseType, DistortionType } from '../../types/index'
+import { SHADING_GLSL } from '../volumeShaping'
 
 const IDENTITY_DISTORTION = `
 vec3 applyDistortion(vec3 p) { return p; }
@@ -48,6 +49,13 @@ const DISTORTION_SNIPPETS: Record<DistortionType, string> = {
   [DistortionType.Swirl]: swirlGlsl,
   [DistortionType.Polar]: polarGlsl,
 }
+
+// Distortions whose GLSL calls _baseNoiseEval and thus need the alias
+// injected when the layer noise is not FBM.
+const DISTORTION_NEEDS_BASE_NOISE = new Set<DistortionType>([
+  DistortionType.DomainWarp,
+  DistortionType.Curl,
+])
 
 export interface CompiledProgram {
   program: WebGLProgram
@@ -87,8 +95,7 @@ export class ShaderCompiler {
 
     // For distortion that uses _baseNoiseEval (domain_warp, curl), we need a _baseNoiseEval alias
     const distortionSection = DISTORTION_SNIPPETS[distortion]
-    if ((distortion === DistortionType.DomainWarp || distortion === DistortionType.Curl)
-        && noiseType !== NoiseType.FBM) {
+    if (DISTORTION_NEEDS_BASE_NOISE.has(distortion) && noiseType !== NoiseType.FBM) {
       // Rename the noise function to _baseNoiseEval and add noiseEval as alias
       noiseSection = noiseSection.replace(/float noiseEval\(/g, 'float _baseNoiseEval(')
         + '\nfloat noiseEval(vec3 p) { return _baseNoiseEval(p); }\n'
@@ -112,59 +119,48 @@ export class ShaderCompiler {
     const vert = this.compile(fullscreenVert, this.gl.VERTEX_SHADER)
     const frag = this.compile(fragSource, this.gl.FRAGMENT_SHADER)
     const prog = this.link(vert, frag, `LayerGen_${key}`)
-    const compiled = { program: prog, uniforms: this.collectUniforms(prog, fragSource) }
+    const compiled = { program: prog, uniforms: this.collectUniforms(prog) }
+    this.cache.set(key, compiled)
+    return compiled
+  }
+
+  private buildSimpleProgram(key: string, vertSrc: string, fragSrc: string, name: string): CompiledProgram {
+    const cached = this.cache.get(key)
+    if (cached) return cached
+    const vert = this.compile(vertSrc, this.gl.VERTEX_SHADER)
+    const frag = this.compile(fragSrc, this.gl.FRAGMENT_SHADER)
+    const prog = this.link(vert, frag, name)
+    const compiled = { program: prog, uniforms: this.collectUniforms(prog) }
     this.cache.set(key, compiled)
     return compiled
   }
 
   buildCompositeShader(): CompiledProgram {
-    const key = 'composite'
-    if (this.cache.has(key)) return this.cache.get(key)!
-    const commonHeader = `#version 300 es\nprecision highp float;\n`
-    const fragSource = [
-      commonHeader,
-      blendModes,
-      compositeFrag.replace('#version 300 es', '').replace('precision highp float;', ''),
-    ].join('\n')
-    const vert = this.compile(fullscreenVert, this.gl.VERTEX_SHADER)
-    const frag = this.compile(fragSource, this.gl.FRAGMENT_SHADER)
-    const prog = this.link(vert, frag, 'Composite')
-    const compiled = { program: prog, uniforms: this.collectUniforms(prog, fragSource) }
-    this.cache.set(key, compiled)
-    return compiled
+    const header = `#version 300 es\nprecision highp float;\n`
+    const frag = [header, blendModes, compositeFrag.replace('#version 300 es', '').replace('precision highp float;', '')].join('\n')
+    return this.buildSimpleProgram('composite', fullscreenVert, frag, 'Composite')
   }
 
   buildRaymarchShader(): CompiledProgram {
-    const key = 'raymarch'
-    if (this.cache.has(key)) return this.cache.get(key)!
-    const vert = this.compile(raymarchVert, this.gl.VERTEX_SHADER)
-    const frag = this.compile(raymarchFrag, this.gl.FRAGMENT_SHADER)
-    const prog = this.link(vert, frag, 'Raymarch')
-    const compiled = { program: prog, uniforms: this.collectUniforms(prog, raymarchFrag) }
-    this.cache.set(key, compiled)
-    return compiled
+    return this.buildSimpleProgram('raymarch', raymarchVert, this.injectShading(raymarchFrag), 'Raymarch')
   }
 
   buildSliceShader(): CompiledProgram {
-    const key = 'slice'
-    if (this.cache.has(key)) return this.cache.get(key)!
-    const vert = this.compile(fullscreenVert, this.gl.VERTEX_SHADER)
-    const frag = this.compile(sliceFrag, this.gl.FRAGMENT_SHADER)
-    const prog = this.link(vert, frag, 'Slice')
-    const compiled = { program: prog, uniforms: this.collectUniforms(prog, sliceFrag) }
-    this.cache.set(key, compiled)
-    return compiled
+    return this.buildSimpleProgram('slice', fullscreenVert, this.injectShading(sliceFrag), 'Slice')
   }
 
   buildProjectionShader(): CompiledProgram {
-    const key = 'projection'
-    if (this.cache.has(key)) return this.cache.get(key)!
-    const vert = this.compile(fullscreenVert, this.gl.VERTEX_SHADER)
-    const frag = this.compile(projectionFrag, this.gl.FRAGMENT_SHADER)
-    const prog = this.link(vert, frag, 'Projection')
-    const compiled = { program: prog, uniforms: this.collectUniforms(prog, projectionFrag) }
-    this.cache.set(key, compiled)
-    return compiled
+    return this.buildSimpleProgram('projection', fullscreenVert, this.injectShading(projectionFrag), 'Projection')
+  }
+
+  // Concatenate SHADING_GLSL (applyDensityShaping) right after the version/
+  // precision preamble shared by all three preview fragment shaders, so they
+  // can apply cutoff/contrast to sampled density at preview time (Task 3).
+  private injectShading(source: string): string {
+    return source.replace(
+      /(#version 300 es\s*\nprecision highp float;\s*\nprecision highp sampler3D;\s*\n)/,
+      `$1\n${SHADING_GLSL}\n`
+    )
   }
 
   private compile(source: string, type: number): WebGLShader {
@@ -200,17 +196,16 @@ export class ShaderCompiler {
     return program
   }
 
-  private collectUniforms(program: WebGLProgram, source: string): Map<string, WebGLUniformLocation | null> {
+  private collectUniforms(program: WebGLProgram): Map<string, WebGLUniformLocation | null> {
     const { gl } = this
     const uniforms = new Map<string, WebGLUniformLocation | null>()
-    // Extract uniform names from source via regex
-    const regex = /uniform\s+\S+\s+(\w+)/g
-    let match: RegExpExecArray | null
-    while ((match = regex.exec(source)) !== null) {
-      const name = match[1]
-      if (!uniforms.has(name)) {
-        uniforms.set(name, gl.getUniformLocation(program, name))
-      }
+    const count = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS) as number
+    for (let i = 0; i < count; i++) {
+      const info = gl.getActiveUniform(program, i)
+      if (!info) continue
+      // Array uniforms report a name like "u_foo[0]"; normalize to "u_foo".
+      const name = info.name.replace(/\[0\]$/, '')
+      uniforms.set(name, gl.getUniformLocation(program, name))
     }
     return uniforms
   }
@@ -242,12 +237,6 @@ export class ShaderCompiler {
     const loc = prog.uniforms.get(name)
     if (loc === undefined || loc === null) return
     this.gl.uniformMatrix3fv(loc, false, matrix)
-  }
-
-  setUniformMat4(prog: CompiledProgram, name: string, matrix: Float32Array): void {
-    const loc = prog.uniforms.get(name)
-    if (loc === undefined || loc === null) return
-    this.gl.uniformMatrix4fv(loc, false, matrix)
   }
 
   setUniformBool(prog: CompiledProgram, name: string, value: boolean): void {

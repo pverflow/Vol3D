@@ -1,12 +1,20 @@
 import { WebGLContext } from '../../core/renderer/WebGLContext'
 import { ShaderCompiler } from '../../core/renderer/ShaderCompiler'
+import type { CompiledProgram } from '../../core/renderer/ShaderCompiler'
 import { VolumeGenerator } from '../../core/renderer/VolumeGenerator'
 import { VolumeTexture } from '../../core/volume/VolumeTexture'
 import { CameraController } from './CameraController'
+import { AnimationController } from './AnimationController'
+import { ViewportOverlay } from './ViewportOverlay'
 import type { StateManager } from '../../state/StateManager'
-import type { AnimationSettings, Resolution, SliceCount, VolumeSettings } from '../../types/index'
+import { shouldRegenerateOnSettings } from '../../state/StateManager'
+import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
-import { defaultLayer, defaultState } from '../../state/AppState'
+import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
+import { proxyDimension } from './proxyDimension'
+
+const AXIS_MAP: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
+const PREVIEW_MODE_ORDER: PreviewMode[] = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
 
 export class Viewport {
   readonly el: HTMLElement
@@ -16,19 +24,40 @@ export class Viewport {
   private generator: VolumeGenerator
   private cacheGenerator: VolumeGenerator
   private volume: VolumeTexture
+  // Low-res drag proxy (Task 4): a second, cheap VolumeTexture + its own
+  // VolumeGenerator (own SliceBuffer sized at proxy resolution) so dragging
+  // a generation-affecting control never has to resize/reallocate the
+  // full-res generator's buffers. Regenerated in place of `volume` while
+  // `interacting` is true; never used for export or the animation cache.
+  private proxyGenerator: VolumeGenerator
+  private proxyVolume: VolumeTexture
+  // True while a generation-affecting control (Slider/BezierCurveEditor in
+  // PropertiesPanel) is being dragged — see setInteracting().
+  private interacting = false
+  // True once proxyVolume holds a completed generation for its current
+  // dimensions — gates the preview so it never samples an empty/stale proxy.
+  private proxyReady = false
+  // True from the moment a drag ends until the settle (full-res) generation
+  // that follows it completes — keeps the preview on the (still-fresh)
+  // proxy instead of flashing back to the stale pre-drag full-res volume.
+  private settling = false
   private camera: CameraController
+  private animation: AnimationController
+  private overlay: ViewportOverlay
   private state: StateManager
   private rafId: number | null = null
   private vao: WebGLVertexArrayObject
   private dirtyTimer: number | null = null
-  private lastAnimationTick = 0
-  private lastAnimationState: AnimationSettings
-  private animationCacheFrames: Uint8Array[] = []
-  private animationCacheKey = ''
-  private animationCacheBuildId = 0
-  private animationCacheBuilding = false
-  private currentCachedFrame = -1
   private exportInProgress = false
+  private readonly listeners = new AbortController()
+  private resizeObserver!: ResizeObserver
+  private unsubscribes: Array<() => void> = []
+  private readonly previewRenderers: Record<PreviewMode, (w: number, h: number) => void>
+  // Last settings seen by the subscription below, so it can tell whether a
+  // change actually needs regeneration (resolution/depth/globalSeed) versus
+  // a preview-only shading tweak (cutoff/contrast) that the render loop
+  // already picks up live via u_cutoff/u_contrast — no regen needed.
+  private lastSettings: VolumeSettings
 
   constructor(state: StateManager) {
     this.state = state
@@ -41,7 +70,8 @@ export class Viewport {
     this.el.appendChild(this.canvas)
 
     // Overlay controls
-    this.el.appendChild(this.buildOverlay())
+    this.overlay = new ViewportOverlay(state)
+    this.el.appendChild(this.overlay.el)
 
     // WebGL setup
     this.ctx = new WebGLContext(this.canvas)
@@ -51,10 +81,20 @@ export class Viewport {
     this.compiler = new ShaderCompiler(gl)
 
     const settings = state.get('settings')
+    this.lastSettings = settings
     this.volume = new VolumeTexture(gl, settings.resolution as Resolution, settings.depth as SliceCount)
     this.generator = new VolumeGenerator(gl, this.compiler, settings.resolution)
     this.cacheGenerator = new VolumeGenerator(gl, this.compiler, settings.resolution)
-    this.lastAnimationState = { ...state.get('animation') }
+
+    const proxyRes = proxyDimension(settings.resolution)
+    this.proxyVolume = new VolumeTexture(gl, proxyRes as Resolution, proxyDimension(settings.depth) as SliceCount)
+    this.proxyGenerator = new VolumeGenerator(gl, this.compiler, proxyRes)
+    this.animation = new AnimationController({
+      state,
+      cacheGenerator: this.cacheGenerator,
+      getVolume: () => this.volume,
+      onNeedsGeneration: () => this.scheduleGeneration(),
+    })
 
     this.camera = new CameraController(this.canvas, state.get('camera'), (cam) => {
       state.update('camera', cam)
@@ -64,253 +104,49 @@ export class Viewport {
     this.vao = gl.createVertexArray()!
 
     // Resize observer
-    const ro = new ResizeObserver(() => this.handleResize())
-    ro.observe(this.el)
+    this.resizeObserver = new ResizeObserver(() => this.handleResize())
+    this.resizeObserver.observe(this.el)
 
     // State subscriptions
-    state.subscribe('layers', () => {
-      this.invalidateAnimationCache()
+    this.unsubscribes.push(state.subscribe('layers', () => {
+      this.animation.invalidateAnimationCache()
       this.scheduleGeneration()
-    })
-    state.subscribe('settings', () => {
-      const s = state.get('settings')
-      this.invalidateAnimationCache()
+    }))
+    this.unsubscribes.push(state.subscribe('settings', (s) => {
+      const prev = this.lastSettings
+      this.lastSettings = s
       this.camera.setVolumeDepth(s.resolution, s.depth)
       if (s.resolution !== this.volume.resolution || s.depth !== this.volume.depth) {
         this.resizeVolume(s)
       }
-      this.scheduleGeneration()
-    })
-    state.subscribe('preview', () => { /* just re-render */ })
-    state.subscribe('animation', (anim) => this.handleAnimationChange(anim as AnimationSettings))
-    state.subscribe('camera', (cam) => {
+      if (shouldRegenerateOnSettings(prev, s)) {
+        this.animation.invalidateAnimationCache()
+        this.scheduleGeneration()
+      }
+    }))
+    this.unsubscribes.push(state.subscribe('preview', () => { /* just re-render */ }))
+    this.unsubscribes.push(state.subscribe('animation', (anim) => this.animation.handleAnimationChange(anim as AnimationSettings)))
+    this.unsubscribes.push(state.subscribe('camera', (cam) => {
       this.camera.updateCamera(cam as typeof cam)
-    })
+    }))
 
     // Export handler
     window.addEventListener('vol3d-export', (e: Event) => {
-      const detail = (e as CustomEvent).detail
+      const detail = (e as CustomEvent<ExportConfig>).detail
       this.handleExport(detail)
-    })
+    }, { signal: this.listeners.signal })
 
-    // Keyboard shortcuts
-    window.addEventListener('keydown', (e) => this.handleKey(e))
+    // WebGL context-loss recovery
+    window.addEventListener('webgl-restored', () => this.handleContextRestored(), { signal: this.listeners.signal })
+
+    this.previewRenderers = {
+      [PreviewMode.Raymarched]: (w, h) => this.renderRaymarched(w, h),
+      [PreviewMode.Slice]: () => this.renderSlicePlane(false),
+      [PreviewMode.Projection]: () => this.renderSlicePlane(true),
+    }
 
     this.startRenderLoop()
     this.scheduleGeneration()
-  }
-
-  private buildOverlay(): HTMLElement {
-    const overlay = document.createElement('div')
-    overlay.className = 'viewport-overlay'
-    const defaults = defaultState().preview
-
-    // Preview mode buttons
-    const modeGroup = document.createElement('div')
-    modeGroup.className = 'seg-group'
-    const modeButtons = new Map<PreviewMode, HTMLButtonElement>()
-    const modes: [PreviewMode, string][] = [
-      [PreviewMode.Raymarched, '☁ Vol'],
-      [PreviewMode.Slice, '⬛ Slice'],
-      [PreviewMode.Projection, '⬤ Proj'],
-    ]
-    for (const [mode, label] of modes) {
-      const btn = document.createElement('button')
-      btn.className = 'seg-btn' + (this.state.get('preview').mode === mode ? ' active' : '')
-      btn.textContent = label
-      btn.addEventListener('click', () => {
-        this.state.update('preview', { ...this.state.get('preview'), mode })
-      })
-      modeButtons.set(mode, btn)
-      modeGroup.appendChild(btn)
-    }
-    overlay.appendChild(modeGroup)
-
-    const projModeGroup = document.createElement('div')
-    projModeGroup.className = 'seg-group'
-    const projectionButtons = new Map<ProjectionMode, HTMLButtonElement>()
-    const projModes: [ProjectionMode, string, string][] = [
-      [ProjectionMode.Max, 'Max', 'Maximum density projection: shows the strongest value along the axis'],
-      [ProjectionMode.Average, 'Avg', 'Average density projection: shows the mean value through the volume'],
-    ]
-    for (const [mode, label, title] of projModes) {
-      const btn = document.createElement('button')
-      btn.className = 'seg-btn sm' + (this.state.get('preview').projectionMode === mode ? ' active' : '')
-      btn.textContent = label
-      btn.title = title
-      btn.addEventListener('click', () => {
-        this.state.update('preview', { ...this.state.get('preview'), projectionMode: mode })
-      })
-      projectionButtons.set(mode, btn)
-      projModeGroup.appendChild(btn)
-    }
-    overlay.appendChild(projModeGroup)
-
-    // Slice controls (shown only in slice/projection mode)
-    const sliceControls = document.createElement('div')
-    sliceControls.className = 'slice-controls'
-
-    const axisGroup = document.createElement('div')
-    axisGroup.className = 'seg-group'
-    const axisButtons = new Map<SliceAxis, HTMLButtonElement>()
-    for (const axis of [SliceAxis.X, SliceAxis.Y, SliceAxis.Z]) {
-      const btn = document.createElement('button')
-      btn.className = 'seg-btn sm' + (this.state.get('preview').sliceAxis === axis ? ' active' : '')
-      btn.textContent = axis.toUpperCase()
-      btn.addEventListener('click', () => {
-        this.state.update('preview', { ...this.state.get('preview'), sliceAxis: axis })
-      })
-      axisButtons.set(axis, btn)
-      axisGroup.appendChild(btn)
-    }
-    sliceControls.appendChild(axisGroup)
-
-    const posSlider = document.createElement('input')
-    posSlider.type = 'range'
-    posSlider.className = 'slice-pos-slider'
-    posSlider.id = 'preview-slice-position'
-    posSlider.name = 'preview-slice-position'
-    posSlider.min = '0'
-    posSlider.max = '100'
-    posSlider.value = String(this.state.get('preview').slicePosition * 100)
-    posSlider.addEventListener('input', () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        slicePosition: parseInt(posSlider.value) / 100
-      })
-    })
-    attachRangeReset(posSlider, defaults.slicePosition * 100, () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        slicePosition: defaults.slicePosition
-      })
-    })
-    sliceControls.appendChild(posSlider)
-    overlay.appendChild(sliceControls)
-
-    const previewControls = document.createElement('div')
-    previewControls.className = 'raymarch-controls'
-
-    const densitySlider = document.createElement('input')
-    densitySlider.type = 'range'
-    densitySlider.className = 'mini-slider'
-    densitySlider.id = 'preview-density'
-    densitySlider.name = 'preview-density'
-    densitySlider.min = '0'
-    densitySlider.max = '300'
-    densitySlider.value = String(this.state.get('preview').density * 100)
-    densitySlider.title = 'Density'
-    densitySlider.addEventListener('input', () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        density: parseInt(densitySlider.value) / 100
-      })
-    })
-    attachRangeReset(densitySlider, defaults.density * 100, () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        density: defaults.density
-      })
-    })
-    const densityLabel = document.createElement('span')
-    densityLabel.className = 'mini-label'
-    densityLabel.textContent = 'Density'
-    previewControls.appendChild(densityLabel)
-    previewControls.appendChild(densitySlider)
-
-    const stepSlider = document.createElement('input')
-    stepSlider.type = 'range'
-    stepSlider.className = 'mini-slider'
-    stepSlider.min = '16'
-    stepSlider.max = '256'
-    stepSlider.step = '8'
-    stepSlider.value = String(this.state.get('preview').stepCount)
-    stepSlider.title = 'Raymarch steps'
-    stepSlider.addEventListener('input', () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        stepCount: parseInt(stepSlider.value)
-      })
-    })
-    attachRangeReset(stepSlider, defaults.stepCount, () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        stepCount: defaults.stepCount
-      })
-    })
-    const stepLabel = document.createElement('span')
-    stepLabel.className = 'mini-label'
-    stepLabel.textContent = 'Steps'
-    previewControls.appendChild(stepLabel)
-    previewControls.appendChild(stepSlider)
-
-    const tilePreviewDensitySlider = document.createElement('input')
-    tilePreviewDensitySlider.type = 'range'
-    tilePreviewDensitySlider.className = 'mini-slider'
-    tilePreviewDensitySlider.min = '0'
-    tilePreviewDensitySlider.max = '100'
-    tilePreviewDensitySlider.value = String(this.state.get('preview').tilePreviewDensity * 100)
-    tilePreviewDensitySlider.title = 'Neighbor cube density'
-    tilePreviewDensitySlider.addEventListener('input', () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        tilePreviewDensity: parseInt(tilePreviewDensitySlider.value) / 100
-      })
-    })
-    attachRangeReset(tilePreviewDensitySlider, defaults.tilePreviewDensity * 100, () => {
-      this.state.update('preview', {
-        ...this.state.get('preview'),
-        tilePreviewDensity: defaults.tilePreviewDensity
-      })
-    })
-    const tilePreviewDensityLabel = document.createElement('span')
-    tilePreviewDensityLabel.className = 'mini-label'
-    tilePreviewDensityLabel.textContent = 'Repeat α'
-    previewControls.appendChild(tilePreviewDensityLabel)
-    previewControls.appendChild(tilePreviewDensitySlider)
-
-    overlay.appendChild(previewControls)
-
-    const syncOverlay = () => {
-      const preview = this.state.get('preview')
-      modeButtons.forEach((btn, mode) => btn.classList.toggle('active', preview.mode === mode))
-      projectionButtons.forEach((btn, mode) => btn.classList.toggle('active', preview.projectionMode === mode))
-      axisButtons.forEach((btn, axis) => btn.classList.toggle('active', preview.sliceAxis === axis))
-
-      posSlider.value = String(Math.round(preview.slicePosition * 100))
-      densitySlider.value = String(Math.round(preview.density * 100))
-      stepSlider.value = String(preview.stepCount)
-      tilePreviewDensitySlider.value = String(Math.round(preview.tilePreviewDensity * 100))
-
-      sliceControls.style.display = preview.mode === PreviewMode.Slice || preview.mode === PreviewMode.Projection ? 'flex' : 'none'
-      previewControls.style.display = preview.mode === PreviewMode.Raymarched || preview.mode === PreviewMode.Projection ? 'flex' : 'none'
-      projModeGroup.style.display = preview.mode === PreviewMode.Projection ? 'flex' : 'none'
-
-      const showDensity = preview.mode === PreviewMode.Raymarched
-      densityLabel.style.display = showDensity ? '' : 'none'
-      densitySlider.style.display = showDensity ? '' : 'none'
-
-      const showRepeatDensity = preview.mode === PreviewMode.Raymarched && preview.showTilePreview
-      tilePreviewDensityLabel.style.display = showRepeatDensity ? '' : 'none'
-      tilePreviewDensitySlider.style.display = showRepeatDensity ? '' : 'none'
-
-      stepSlider.title = preview.mode === PreviewMode.Projection
-        ? 'Projection sampling steps'
-        : 'Volume raymarch steps'
-    }
-
-    this.state.subscribe('preview', syncOverlay)
-    syncOverlay()
-
-    // Generating indicator
-    const genIndicator = document.createElement('div')
-    genIndicator.className = 'gen-indicator'
-    genIndicator.id = 'gen-indicator'
-    genIndicator.style.display = 'none'
-    genIndicator.innerHTML = `<span class="spin">⟳</span> Generating...`
-    overlay.appendChild(genIndicator)
-
-    return overlay
   }
 
   private handleResize() {
@@ -327,7 +163,21 @@ export class Viewport {
     this.volume = new VolumeTexture(this.ctx.gl, settings.resolution as Resolution, settings.depth as SliceCount)
     this.generator.resize(settings.resolution)
     this.cacheGenerator.resize(settings.resolution)
-    this.currentCachedFrame = -1
+    this.animation.invalidateAnimationCache()
+
+    const proxyRes = proxyDimension(settings.resolution)
+    this.proxyVolume.destroy()
+    this.proxyVolume = new VolumeTexture(this.ctx.gl, proxyRes as Resolution, proxyDimension(settings.depth) as SliceCount)
+    this.proxyGenerator.resize(proxyRes)
+    this.proxyReady = false
+  }
+
+  private handleContextRestored() {
+    this.compiler.invalidateCache()
+    this.animation.invalidateAnimationCache()
+    const s = this.state.get('settings')
+    this.resizeVolume(s) // rebuilds VolumeTexture + generator slice buffers
+    this.scheduleGeneration()
   }
 
   scheduleGeneration() {
@@ -335,12 +185,40 @@ export class Viewport {
     this.dirtyTimer = window.setTimeout(() => {
       this.dirtyTimer = null
       this.runGeneration()
-    }, 150)
+    }, REGEN_DEBOUNCE_MS)
+  }
+
+  // Called (e.g. from PropertiesPanel) on pointer-down/up of a
+  // generation-affecting control. See the drag-proxy fields above.
+  setInteracting(active: boolean) {
+    if (this.interacting === active) return
+    this.interacting = active
+    if (active) {
+      // Generate the proxy immediately so there's fresh low-res content to
+      // preview right away instead of a flash of stale/empty data.
+      this.generateProxy()
+    } else {
+      // Snap back to full res as soon as possible; keep previewing the
+      // proxy until this completes so we never flash the stale pre-drag
+      // full-res volume (see previewSource()).
+      this.settling = true
+      this.generateFull()
+    }
   }
 
   private runGeneration() {
+    if (this.interacting) {
+      this.generateProxy()
+    } else {
+      this.generateFull()
+    }
+  }
+
+  // Full-resolution generation: the authoritative volume used for the
+  // settled (non-dragging) preview, export, and the animation cache.
+  private generateFull() {
     const { state } = this
-    this.currentCachedFrame = -1
+    this.animation.resetAppliedFrame()
     state.update('generating', true)
     state.update('progress', 0)
 
@@ -351,8 +229,6 @@ export class Viewport {
       state.get('layers'),
       this.volume,
       state.get('settings').globalSeed,
-      state.get('settings').cutoff,
-      state.get('settings').contrast,
       state.get('animation').phase,
       state.get('animation').evolutions,
       (p) => state.update('progress', p),
@@ -360,9 +236,35 @@ export class Viewport {
         state.update('generating', false)
         state.update('progress', 1)
         if (indicator) indicator.style.display = 'none'
-        this.buildAnimationCacheIfNeeded()
+        this.settling = false
+        this.animation.buildAnimationCacheIfNeeded()
       }
     )
+  }
+
+  // Low-res drag proxy (Task 4): regenerates the cheap proxyVolume while a
+  // generation-affecting control is being dragged. No progress/indicator UI
+  // — proxy generations are meant to be cheap, invisible plumbing, not a
+  // "Generating…" flash during otherwise-smooth dragging.
+  private generateProxy() {
+    const { state } = this
+    this.proxyGenerator.generate(
+      state.get('layers'),
+      this.proxyVolume,
+      state.get('settings').globalSeed,
+      state.get('animation').phase,
+      state.get('animation').evolutions,
+      undefined,
+      () => { this.proxyReady = true }
+    )
+  }
+
+  // Which volume the preview should currently sample: the proxy while
+  // dragging (or settling right after) and it holds a completed generation,
+  // otherwise the full-res volume. Export and the animation cache always
+  // use `this.volume` directly and never call this.
+  private previewSource(): VolumeTexture {
+    return (this.interacting || this.settling) && this.proxyReady ? this.proxyVolume : this.volume
   }
 
   private startRenderLoop() {
@@ -374,7 +276,7 @@ export class Viewport {
   }
 
   private renderFrame() {
-    this.advanceAnimation(performance.now())
+    this.animation.advanceAnimation(performance.now())
 
     const { gl } = this.ctx
     const w = this.canvas.width
@@ -385,187 +287,33 @@ export class Viewport {
     gl.bindVertexArray(this.vao)
 
     const preview = this.state.get('preview')
-
-    switch (preview.mode) {
-      case PreviewMode.Raymarched:
-        this.renderRaymarched(w, h)
-        break
-      case PreviewMode.Slice:
-        this.renderSlice()
-        break
-      case PreviewMode.Projection:
-        this.renderProjection()
-        break
-    }
+    this.previewRenderers[preview.mode]?.(w, h)
 
     gl.bindVertexArray(null)
   }
 
-  private advanceAnimation(now: number) {
-    const animation = this.state.get('animation')
-    if (!animation.playing) {
-      this.lastAnimationTick = now
-      return
-    }
-
-    const cacheFrameCount = this.getAnimationCacheFrameCount()
-    if (cacheFrameCount >= 2 && this.animationCacheFrames.length < cacheFrameCount) {
-      this.buildAnimationCacheIfNeeded()
-      this.lastAnimationTick = now
-      return
-    }
-
-    if (this.lastAnimationTick === 0) {
-      this.lastAnimationTick = now
-      return
-    }
-
-    const minFrameMs = 100
-    const elapsed = now - this.lastAnimationTick
-    if (elapsed < minFrameMs) return
-
-    const phaseDelta = elapsed / (animation.loopSeconds * 1000)
-    const phase = (animation.phase + phaseDelta) % 1
-    this.lastAnimationTick = now
-    this.state.update('animation', { ...animation, phase })
-
-    if (cacheFrameCount < 2) {
-      this.scheduleGeneration()
-    }
-  }
-
-  private handleAnimationChange(next: AnimationSettings) {
-    const prev = this.lastAnimationState
-
-    if (prev.evolutions !== next.evolutions) {
-      this.invalidateAnimationCache()
-      this.scheduleGeneration()
-    } else if (prev.phase !== next.phase) {
-      if (!this.tryApplyCachedAnimationFrame(next.phase) && !next.playing) {
-        this.scheduleGeneration()
-      }
-    }
-
-    if ((!prev.playing && next.playing) || prev.evolutions !== next.evolutions) {
-      this.buildAnimationCacheIfNeeded()
-    }
-
-    if (prev.playing && !next.playing) {
-      this.lastAnimationTick = 0
-    }
-
-    this.lastAnimationState = { ...next }
-  }
-
-  private invalidateAnimationCache() {
-    this.animationCacheBuildId += 1
-    this.animationCacheBuilding = false
-    this.animationCacheFrames = []
-    this.animationCacheKey = ''
-    this.currentCachedFrame = -1
-    this.cacheGenerator.cancel()
-  }
-
-  private getAnimationCacheKey(): string {
-    const state = this.state.getState()
-    return JSON.stringify({
-      layers: state.layers,
-      settings: state.settings,
-      evolutions: state.animation.evolutions,
-    })
-  }
-
-  private getAnimationCacheFrameCount(): number {
-    const bytesPerFrame = this.volume.resolution * this.volume.resolution * this.volume.depth
-    const maxFramesByBudget = Math.floor((96 * 1024 * 1024) / Math.max(bytesPerFrame, 1))
-    return Math.min(24, Math.max(0, maxFramesByBudget))
-  }
-
-  private buildAnimationCacheIfNeeded() {
-    const frameCount = this.getAnimationCacheFrameCount()
-    if (frameCount < 2) {
-      this.invalidateAnimationCache()
-      return
-    }
-
-    const key = `${this.getAnimationCacheKey()}::${frameCount}`
-    if (!this.animationCacheBuilding && this.animationCacheKey === key && this.animationCacheFrames.length === frameCount) {
-      return
-    }
-    if (this.animationCacheBuilding && this.animationCacheKey === key) {
-      return
-    }
-
-    this.animationCacheBuildId += 1
-    const buildId = this.animationCacheBuildId
-    this.animationCacheBuilding = true
-    this.animationCacheKey = key
-    this.animationCacheFrames = []
-    this.currentCachedFrame = -1
-    this.cacheGenerator.cancel()
-
-    const { layers, settings, animation } = this.state.getState()
-
-    void (async () => {
-      try {
-        for (let i = 0; i < frameCount; i++) {
-          const phase = i / frameCount
-          const frame = await this.cacheGenerator.generateFrameData(
-            layers,
-            settings.resolution,
-            settings.depth,
-            settings.globalSeed,
-            settings.cutoff,
-            settings.contrast,
-            phase,
-            animation.evolutions,
-          )
-
-          if (buildId !== this.animationCacheBuildId) return
-          this.animationCacheFrames[i] = frame
-        }
-
-        if (buildId !== this.animationCacheBuildId) return
-        this.animationCacheBuilding = false
-        this.tryApplyCachedAnimationFrame(this.state.get('animation').phase)
-      } finally {
-        if (buildId === this.animationCacheBuildId) {
-          this.animationCacheBuilding = false
-        }
-      }
-    })()
-  }
-
-  private tryApplyCachedAnimationFrame(phase: number): boolean {
-    const frameCount = this.animationCacheFrames.length
-    if (frameCount < 2) return false
-
-    const wrapped = ((phase % 1) + 1) % 1
-    const index = Math.min(frameCount - 1, Math.floor(wrapped * frameCount))
-    const frame = this.animationCacheFrames[index]
-    if (!frame) return false
-
-    if (this.currentCachedFrame !== index) {
-      this.volume.uploadVolume(frame)
-      this.currentCachedFrame = index
-    }
-
-    return true
+  private beginPass(prog: CompiledProgram): WebGL2RenderingContext {
+    const gl = this.ctx.gl
+    gl.useProgram(prog.program)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    return gl
   }
 
   private renderRaymarched(w: number, h: number) {
-    const gl = this.ctx.gl
     const { compiler } = this
     const prog = compiler.buildRaymarchShader()
-    gl.useProgram(prog.program)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    const gl = this.beginPass(prog)
 
     const preview = this.state.get('preview')
-    const depthScale = this.volume.depth / this.volume.resolution
-    const { eye, forward, right, up } = this.camera.getMatrices(w, h)
+    const settings = this.state.get('settings')
+    const vol = this.previewSource()
+    const depthScale = vol.depth / vol.resolution
+    const { eye, forward, right, up } = this.camera.getMatrices()
     const aspect = w / h
-    const tanHalfFov = Math.tan(Math.PI / 6)
+    const tanHalfFov = RAYMARCH_TAN_HALF_FOV
 
+    compiler.setUniform(prog, 'u_cutoff', settings.cutoff)
+    compiler.setUniform(prog, 'u_contrast', settings.contrast)
     compiler.setUniform(prog, 'u_cameraPos', eye[0], eye[1], eye[2])
     compiler.setUniform(prog, 'u_cameraForward', forward[0], forward[1], forward[2])
     compiler.setUniform(prog, 'u_cameraRight', right[0], right[1], right[2])
@@ -578,72 +326,55 @@ export class Viewport {
     compiler.setUniform(prog, 'u_tilePreviewDensity', preview.tilePreviewDensity)
     compiler.setUniformi(prog, 'u_stepCount', preview.stepCount)
     compiler.setUniform(prog, 'u_exposure', preview.exposure)
-    compiler.setUniform(prog, 'u_lightDir', 0.577, 0.577, 0.577)
+    compiler.setUniform(prog, 'u_lightDir', ...LIGHT_DIR)
 
-    this.volume.bind(0)
+    vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
-  private renderSlice() {
-    const gl = this.ctx.gl
+  private renderSlicePlane(isProjection: boolean) {
     const { compiler } = this
-    const prog = compiler.buildSliceShader()
-    gl.useProgram(prog.program)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    const prog = isProjection ? compiler.buildProjectionShader() : compiler.buildSliceShader()
+    const gl = this.beginPass(prog)
 
     const preview = this.state.get('preview')
-    const axisMap: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
-    const planeAspect = preview.sliceAxis === SliceAxis.Z ? 1 : this.volume.resolution / this.volume.depth
+    const settings = this.state.get('settings')
+    const vol = this.previewSource()
+    const planeAspect = preview.sliceAxis === SliceAxis.Z ? 1 : vol.resolution / vol.depth
     const screenAspect = this.canvas.width / this.canvas.height
 
-    compiler.setUniformi(prog, 'u_sliceAxis', axisMap[preview.sliceAxis])
-    compiler.setUniform(prog, 'u_slicePos', preview.slicePosition)
+    compiler.setUniform(prog, 'u_cutoff', settings.cutoff)
+    compiler.setUniform(prog, 'u_contrast', settings.contrast)
+    compiler.setUniformi(prog, 'u_sliceAxis', AXIS_MAP[preview.sliceAxis])
     compiler.setUniform(prog, 'u_exposure', preview.exposure)
     compiler.setUniform(prog, 'u_planeAspect', planeAspect)
     compiler.setUniform(prog, 'u_screenAspect', screenAspect)
 
-    this.volume.bind(0)
+    if (isProjection) {
+      const projMap: Record<ProjectionMode, number> = { average: 0, max: 1 }
+      compiler.setUniformi(prog, 'u_projMode', projMap[preview.projectionMode])
+      compiler.setUniformi(prog, 'u_steps', preview.stepCount)
+    } else {
+      compiler.setUniform(prog, 'u_slicePos', preview.slicePosition)
+    }
+
+    vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
-  private renderProjection() {
-    const gl = this.ctx.gl
-    const { compiler } = this
-    const prog = compiler.buildProjectionShader()
-    gl.useProgram(prog.program)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-
-    const preview = this.state.get('preview')
-    const axisMap: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
-    const projMap: Record<ProjectionMode, number> = { average: 0, max: 1 }
-    const planeAspect = preview.sliceAxis === SliceAxis.Z ? 1 : this.volume.resolution / this.volume.depth
-    const screenAspect = this.canvas.width / this.canvas.height
-
-    compiler.setUniformi(prog, 'u_sliceAxis', axisMap[preview.sliceAxis])
-    compiler.setUniformi(prog, 'u_projMode', projMap[preview.projectionMode])
-    compiler.setUniform(prog, 'u_exposure', preview.exposure)
-    compiler.setUniformi(prog, 'u_steps', preview.stepCount)
-    compiler.setUniform(prog, 'u_planeAspect', planeAspect)
-    compiler.setUniform(prog, 'u_screenAspect', screenAspect)
-
-    this.volume.bind(0)
-    compiler.setUniformi(prog, 'u_volume', 0)
-
-    gl.drawArrays(gl.TRIANGLES, 0, 3)
-  }
-
-  private async handleExport(opts: { format: string; filename: string; flipY: boolean }) {
+  private async handleExport(opts: ExportConfig) {
     if (this.exportInProgress) return
 
     this.exportInProgress = true
     try {
       const { ExportManager } = await import('../../core/export/ExportManager')
-      const mgr = new ExportManager(this.ctx.gl, this.volume)
-      await mgr.export(opts.format as never, opts.filename, opts.flipY)
+      const settings = this.state.get('settings')
+      const mgr = new ExportManager(this.ctx.gl, this.volume, settings.cutoff, settings.contrast)
+      await mgr.export(opts.format, opts.filenameBase, opts.flipY)
     } catch (error) {
       console.error('Export failed:', error)
       const message = describeViewportError(error)
@@ -653,64 +384,40 @@ export class Viewport {
     }
   }
 
-  private handleKey(e: KeyboardEvent) {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-
+  cyclePreviewMode() {
     const state = this.state
-    // Tab = cycle preview mode
-    if (e.key === 'Tab') {
-      e.preventDefault()
-      const modes = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
-      const cur = state.get('preview').mode
-      const next = modes[(modes.indexOf(cur) + 1) % modes.length]
-      state.update('preview', { ...state.get('preview'), mode: next })
-    }
-    // T = toggle tile preview
-    if (e.key === 't' || e.key === 'T') {
-      const preview = state.get('preview')
-      state.update('preview', { ...preview, showTilePreview: !preview.showTilePreview })
-    }
-    // F = focus/reset camera
-    if (e.key === 'f' || e.key === 'F') {
-      this.camera.reset()
-    }
-    // Delete = delete selected layer
-    if (e.key === 'Delete') {
-      const sel = state.get('selected')
-      if (sel) state.removeLayer(sel)
-    }
-    // Ctrl+D = duplicate
-    if (e.ctrlKey && e.key === 'd') {
-      e.preventDefault()
-      const sel = state.get('selected')
-      if (sel) state.duplicateLayer(sel)
-    }
-    // Ctrl+Shift+N = add layer
-    if (e.ctrlKey && e.shiftKey && e.key === 'N') {
-      e.preventDefault()
-      state.addLayer(defaultLayer())
-    }
-    // Ctrl+E = export
-    if (e.ctrlKey && e.key === 'e') {
-      e.preventDefault()
-      window.dispatchEvent(new CustomEvent('vol3d-show-export'))
-    }
+    const cur = state.get('preview').mode
+    const next = PREVIEW_MODE_ORDER[(PREVIEW_MODE_ORDER.indexOf(cur) + 1) % PREVIEW_MODE_ORDER.length]
+    state.update('preview', { ...state.get('preview'), mode: next })
+  }
+
+  toggleTilePreview() {
+    const preview = this.state.get('preview')
+    this.state.update('preview', { ...preview, showTilePreview: !preview.showTilePreview })
+  }
+
+  focusCamera() {
+    this.camera.reset()
   }
 
   destroy() {
     if (this.rafId !== null) cancelAnimationFrame(this.rafId)
+    if (this.dirtyTimer !== null) {
+      clearTimeout(this.dirtyTimer)
+      this.dirtyTimer = null
+    }
+    this.listeners.abort()
+    this.resizeObserver.disconnect()
+    this.unsubscribes.forEach(unsub => unsub())
+    this.unsubscribes = []
+    this.camera.destroy()
     this.generator.destroy()
     this.cacheGenerator.destroy()
     this.volume.destroy()
+    this.proxyGenerator.destroy()
+    this.proxyVolume.destroy()
+    this.ctx.gl.deleteVertexArray(this.vao)
   }
-}
-
-function attachRangeReset(input: HTMLInputElement, defaultValue: number, onReset: () => void) {
-  input.addEventListener('contextmenu', (e) => {
-    e.preventDefault()
-    input.value = String(defaultValue)
-    onReset()
-  })
 }
 
 function describeViewportError(error: unknown): string {

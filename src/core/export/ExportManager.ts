@@ -1,14 +1,23 @@
 import { VolumeTexture } from '../volume/VolumeTexture'
 import { ExportFormat } from '../../types/index'
 import { saveBytes } from '../../platform/fileAccess'
+import { redToGray } from '../../utils/imageChannels'
+import { applyDensityShaping } from '../volumeShaping'
 
 export class ExportManager {
   private gl: WebGL2RenderingContext
   private volume: VolumeTexture
+  private cutoff: number
+  private contrast: number
 
-  constructor(gl: WebGL2RenderingContext, volume: VolumeTexture) {
+  // The volume now stores RAW density (Task 3); cutoff/contrast must be
+  // re-applied here so exported bytes match what the preview shows (v1
+  // parity — v1 baked this shaping into the volume during generation).
+  constructor(gl: WebGL2RenderingContext, volume: VolumeTexture, cutoff: number, contrast: number) {
     this.gl = gl
     this.volume = volume
+    this.cutoff = cutoff
+    this.contrast = contrast
   }
 
   async export(format: ExportFormat, filename: string, flipY: boolean): Promise<void> {
@@ -18,13 +27,13 @@ export class ExportManager {
       case ExportFormat.SpriteSheet:
         return this.exportSpriteSheet(filename, flipY)
       case ExportFormat.RawR8:
-        return this.exportRaw(filename, 'r8')
+        return this.exportRaw(filename, 'r8', flipY)
       case ExportFormat.RawRGBA8:
-        return this.exportRaw(filename, 'rgba8')
+        return this.exportRaw(filename, 'rgba8', flipY)
       case ExportFormat.RawR32F:
-        return this.exportRaw(filename, 'r32f')
+        return this.exportRaw(filename, 'r32f', flipY)
       default:
-        return this.exportPNGSequence(filename, flipY)
+        throw new Error(`Unsupported export format: ${format}`)
     }
   }
 
@@ -46,6 +55,14 @@ export class ExportManager {
 
       const data = new Uint8Array(res * res * 4)
       gl.readPixels(0, 0, res, res, gl.RGBA, gl.UNSIGNED_BYTE, data)
+
+      // Re-apply shaping to the raw density red channel (g/b/a stay 0/0/255,
+      // exactly as they were pre-Task-3, since the R8 volume never carried
+      // anything but red) — this is what makes exported bytes match v1.
+      for (let i = 0; i < data.length; i += 4) {
+        const shaped = applyDensityShaping(data[i] / 255, this.cutoff, this.contrast)
+        data[i] = Math.round(shaped * 255)
+      }
 
       if (flipY) {
         // Flip rows
@@ -75,7 +92,7 @@ export class ExportManager {
     const files: Record<string, Uint8Array> = {}
 
     for (let z = 0; z < depth; z++) {
-      const rgba = this.readSlice(z, flipY)
+      const rgba = redToGray(this.readSlice(z, flipY))
       const canvas = document.createElement('canvas')
       canvas.width = res
       canvas.height = res
@@ -117,7 +134,7 @@ export class ExportManager {
     const ctx = this.getCanvas2DContext(canvas)
 
     for (let z = 0; z < depth; z++) {
-      const rgba = this.readSlice(z, flipY)
+      const rgba = redToGray(this.readSlice(z, flipY))
       const sliceCanvas = document.createElement('canvas')
       sliceCanvas.width = res
       sliceCanvas.height = res
@@ -138,7 +155,7 @@ export class ExportManager {
     })
   }
 
-  private async exportRaw(filename: string, mode: 'r8' | 'rgba8' | 'r32f'): Promise<void> {
+  private async exportRaw(filename: string, mode: 'r8' | 'rgba8' | 'r32f', flipY: boolean): Promise<void> {
     const { volume } = this
     const res = volume.resolution
     const depth = volume.depth
@@ -149,7 +166,7 @@ export class ExportManager {
       : new Uint8Array(res * res * depth * channels)
 
     for (let z = 0; z < depth; z++) {
-      const rgba = this.readSlice(z, false)
+      const rgba = this.readSlice(z, flipY)
       const offset = z * res * res * channels
       if (mode === 'r8') {
         for (let i = 0; i < res * res; i++) {
@@ -165,7 +182,7 @@ export class ExportManager {
       }
     }
 
-    const ext = isFloat ? 'raw' : 'raw'
+    const ext = 'raw'
     const mime = 'application/octet-stream'
     const suffix = mode === 'rgba8' ? '_rgba8' : mode === 'r32f' ? '_r32f' : '_r8'
     const buffer = out.buffer as ArrayBuffer

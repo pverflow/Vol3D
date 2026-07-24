@@ -6,7 +6,6 @@ export enum ExportFormat {
   SpriteSheet = 'sprite_sheet',
   RawR8 = 'raw_r8',
   RawRGBA8 = 'raw_rgba8',
-  RawR16F = 'raw_r16f',
   RawR32F = 'raw_r32f',
 }
 
@@ -24,3 +23,11 @@ export interface ExportConfig {
   filenameBase: string
   flipY: boolean
 }
+
+export const EXPORT_FORMAT_OPTIONS: { value: ExportFormat; label: string }[] = [
+  { value: ExportFormat.PNGSequence, label: 'PNG Sequence (ZIP)' },
+  { value: ExportFormat.SpriteSheet, label: 'Sprite Sheet (PNG)' },
+  { value: ExportFormat.RawR8, label: 'Raw R8 (grayscale bytes)' },
+  { value: ExportFormat.RawRGBA8, label: 'Raw RGBA8' },
+  { value: ExportFormat.RawR32F, label: 'Raw R32F (float)' },
+]
