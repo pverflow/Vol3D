@@ -19,7 +19,7 @@ export function boxField(p: Vec3, radius: number, softness: number): number {
 }
 export function coneField(p: Vec3, radius: number, softness: number): number {
   // simple capped cone along +Y, height = 2*radius, base radius = radius
-  const h = radius
+  const h = Math.max(radius, 1e-4)  // floor avoids divide-by-zero at radius=0
   const d2 = Math.hypot(p[0], p[2]) - radius * (1 - (p[1] + h) / (2 * h))
   const dy = Math.abs(p[1]) - h
   const sd = Math.max(d2, dy)
