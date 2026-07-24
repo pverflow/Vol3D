@@ -124,12 +124,12 @@
 }
 
 .curve-grid-line {
-  stroke: rgba(255,255,255,0.06);
+  stroke: rgba(var(--line-rgb),0.06);
   stroke-width: 1;
 }
 
 .curve-diagonal {
-  stroke: rgba(255,255,255,0.12);
+  stroke: rgba(var(--line-rgb),0.12);
   stroke-width: 1;
   stroke-dasharray: 4 4;
 }
@@ -148,7 +148,7 @@
 
 .curve-handle {
   fill: var(--accent);
-  stroke: rgba(255,255,255,0.9);
+  stroke: var(--text-primary);
   stroke-width: 1.5;
   cursor: grab;
 }

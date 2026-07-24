@@ -7,6 +7,7 @@ import { Toggle } from '../components/Toggle'
 import { HelpModal } from './HelpModal'
 import { ExportModal } from './ExportModal'
 import { PresetsMenu } from './PresetsMenu'
+import { getTheme, toggleTheme } from '../theme'
 
 export class TopBar {
   readonly el: HTMLElement
@@ -295,6 +296,18 @@ export class TopBar {
     const spacer = document.createElement('div')
     spacer.style.flex = '1'
     el.appendChild(spacer)
+
+    // Theme toggle
+    const themeBtn = document.createElement('button')
+    themeBtn.className = 'top-btn'
+    const syncThemeBtn = () => {
+      const light = getTheme() === 'light'
+      themeBtn.textContent = light ? '☾' : '☀'
+      themeBtn.title = light ? 'Switch to dark theme' : 'Switch to light theme'
+    }
+    syncThemeBtn()
+    themeBtn.addEventListener('click', () => { toggleTheme(); syncThemeBtn() })
+    el.appendChild(themeBtn)
 
     // Progress bar
     this.progressBar = document.createElement('div')

@@ -12,9 +12,13 @@ import { PropertiesPanel } from './ui/panels/PropertiesPanel'
 import { TopBar } from './ui/panels/TopBar'
 import { Viewport } from './ui/viewport/Viewport'
 import { KeyBindings } from './ui/KeyBindings'
+import { applyTheme, getTheme } from './ui/theme'
 
 function init() {
   const app = document.getElementById('app')!
+
+  // Apply saved theme before building UI (avoids a flash of the wrong theme)
+  applyTheme(getTheme())
 
   // Check WebGL2
   const testCanvas = document.createElement('canvas')

@@ -39,7 +39,7 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  background: rgba(11,11,15,0.7);
+  background: rgba(var(--overlay-rgb),0.7);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: var(--sp-1) var(--sp-2);
@@ -86,7 +86,7 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  background: rgba(11,11,15,0.7);
+  background: rgba(var(--overlay-rgb),0.7);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: var(--sp-1) var(--sp-2);
@@ -101,7 +101,7 @@
   bottom: var(--sp-4);
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(11,11,15,0.85);
+  background: rgba(var(--overlay-rgb),0.85);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: var(--sp-2) var(--sp-4);
