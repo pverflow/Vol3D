@@ -10,7 +10,8 @@ import type { StateManager } from '../../state/StateManager'
 import { shouldRegenerateOnSettings } from '../../state/StateManager'
 import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
-import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR, PROXY_RES_FACTOR, PROXY_MIN_RES } from '../../core/constants'
+import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
+import { proxyDimension } from './proxyDimension'
 
 const AXIS_MAP: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
 const PREVIEW_MODE_ORDER: PreviewMode[] = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
@@ -417,13 +418,6 @@ export class Viewport {
     this.proxyVolume.destroy()
     this.ctx.gl.deleteVertexArray(this.vao)
   }
-}
-
-// Low-res drag proxy (Task 4): max(PROXY_MIN_RES, floor(n / PROXY_RES_FACTOR)),
-// applied to both resolution and depth so the proxy volume keeps the full
-// volume's aspect ratio while cutting generation cost on every axis.
-function proxyDimension(n: number): number {
-  return Math.max(PROXY_MIN_RES, Math.floor(n / PROXY_RES_FACTOR))
 }
 
 function describeViewportError(error: unknown): string {

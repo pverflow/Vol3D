@@ -91,18 +91,35 @@ export class PropertiesPanel {
     this.contentEl.className = 'properties-content'
     this.el.appendChild(this.contentEl)
 
-    // Drag-proxy interaction signal (Task 4): every control in this panel
-    // edits a layer's noise/distortion/remap, i.e. always regeneration-
-    // affecting, so a single delegated listener covers all of them instead
-    // of touching each Slider/BezierCurveEditor call site individually.
+    // Drag-proxy interaction signal (Task 4): a single delegated listener
+    // covers every Slider/BezierCurveEditor in this panel instead of
+    // touching each call site individually, but it must only fire for an
+    // actual drag start on those two controls' own drag targets -- the
+    // slider track (Slider.ts's `track`, class "slider-track") and a bezier
+    // handle (BezierCurveEditor.ts's `handle1`/`handle2`, class
+    // "curve-handle"). A mousedown anywhere else in the panel -- opening a
+    // native <select>, a Toggle, a section header, a right-click reset --
+    // must NOT set interacting, otherwise closing a <select> popup (which
+    // doesn't reliably deliver a matching window mouseup) leaves interacting
+    // stuck true and every later edit renders proxy-only forever.
     // Capture phase so this still fires even though BezierCurveEditor's
     // handle mousedown calls stopPropagation() (capture runs on the way
     // down, before that stopPropagation takes effect during target/bubble).
+    this.contentEl.addEventListener('mousedown', (e) => {
+      const target = e.target as Element | null
+      if (!target?.closest('.slider-track, .curve-handle')) return
+      this.viewport.setInteracting(true)
+    }, { capture: true })
     // mouseup is listened on window (not contentEl) because Slider and
     // BezierCurveEditor both track drags via a window-level mouseup, so a
     // release can land anywhere on the page, not just back over the panel.
-    this.contentEl.addEventListener('mousedown', () => this.viewport.setInteracting(true), { capture: true })
     window.addEventListener('mouseup', () => this.viewport.setInteracting(false))
+    // Safety net: if focus/the window is lost mid-drag (alt-tab, devtools
+    // stealing focus, ...) the mouseup above may never arrive. Clearing on
+    // blur too keeps the invariant that interacting can't stay stuck true
+    // once the pointer or focus is gone, without rewriting Slider/
+    // BezierCurveEditor's mouse-event drag tracking to pointer capture.
+    window.addEventListener('blur', () => this.viewport.setInteracting(false))
 
     this.state.subscribe('selected', () => this.render())
     this.state.subscribe('layers', () => this.handleLayersChange())
