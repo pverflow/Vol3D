@@ -13,7 +13,7 @@
 import type { AppState } from './AppState'
 import { defaultLayer, defaultState } from './AppState'
 import type {
-  Layer, NoiseConfig, FBMConfig, DistortionConfig, RemapConfig, BezierCurve,
+  Layer, NoiseConfig, FBMConfig, SdfConfig, DistortionConfig, RemapConfig, BezierCurve,
   VolumeSettings, Resolution, SliceCount,
   PreviewSettings, AnimationSettings, CameraState,
 } from '../types/index'
@@ -21,7 +21,9 @@ import {
   BlendMode, NoiseType, WorleyMode, DistortionType, FeatherShape,
   PreviewMode, SliceAxis, ProjectionMode,
 } from '../types/index'
-import { normalizeBezierCurve } from './stateMigration'
+import { normalizeBezierCurve, normalizeSdf } from './stateMigration'
+
+const DEFAULT_SDF: SdfConfig = { radius: 0.3, softness: 0.1 }
 
 const BLEND_MODES = new Set<string>(Object.values(BlendMode))
 const NOISE_TYPES = new Set<string>(Object.values(NoiseType))
@@ -102,12 +104,18 @@ function sanitizeFbm(raw: unknown, fallback: FBMConfig): FBMConfig {
   }
 }
 
+function asSdfInput(v: unknown): Partial<SdfConfig> | undefined {
+  if (!isRecord(v)) return undefined
+  return { radius: asFiniteNumber(v.radius), softness: asFiniteNumber(v.softness) }
+}
+
 function sanitizeNoise(raw: unknown, fallback: NoiseConfig): NoiseConfig {
   const rec = isRecord(raw) ? raw : {}
   return {
     type: coerceEnum(rec.type, NOISE_TYPES, fallback.type),
     worleyMode: coerceEnum(rec.worleyMode, WORLEY_MODES, fallback.worleyMode),
     fbm: sanitizeFbm(rec.fbm, fallback.fbm),
+    sdf: normalizeSdf(asSdfInput(rec.sdf), fallback.sdf ?? DEFAULT_SDF),
     scale: asVec3(rec.scale, fallback.scale),
     amplitude: asFiniteNumber(rec.amplitude) ?? fallback.amplitude,
     offset: asVec3(rec.offset, fallback.offset),

@@ -10,6 +10,9 @@ import voronoi3d from '../../shaders/noise/voronoi3d.glsl?raw'
 import value3d from '../../shaders/noise/value3d.glsl?raw'
 import white3d from '../../shaders/noise/white3d.glsl?raw'
 import fbmGlsl from '../../shaders/noise/fbm.glsl?raw'
+import sdfSphere from '../../shaders/noise/sdf_sphere.glsl?raw'
+import sdfBox from '../../shaders/noise/sdf_box.glsl?raw'
+import sdfCone from '../../shaders/noise/sdf_cone.glsl?raw'
 
 import domainWarp from '../../shaders/distortion/domain_warp.glsl?raw'
 import curlGlsl from '../../shaders/distortion/curl.glsl?raw'
@@ -40,6 +43,9 @@ const NOISE_SNIPPETS: Record<NoiseType, string> = {
   [NoiseType.Value]: value3d,
   [NoiseType.White]: white3d,
   [NoiseType.FBM]: '',  // handled specially
+  [NoiseType.SdfSphere]: sdfSphere,
+  [NoiseType.SdfBox]: sdfBox,
+  [NoiseType.SdfCone]: sdfCone,
 }
 
 const DISTORTION_SNIPPETS: Record<DistortionType, string> = {

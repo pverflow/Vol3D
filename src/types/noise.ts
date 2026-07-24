@@ -6,6 +6,15 @@ export enum NoiseType {
   Value = 'value',
   White = 'white',
   FBM = 'fbm',
+  SdfSphere = 'sdf_sphere',
+  SdfBox = 'sdf_box',
+  SdfCone = 'sdf_cone',
+}
+
+// True for source types whose noiseEval is a signed-distance-based shape
+// (reads u_sdfRadius/u_sdfSoftness) rather than a procedural noise field.
+export function isSdfSource(t: NoiseType): boolean {
+  return t === NoiseType.SdfSphere || t === NoiseType.SdfBox || t === NoiseType.SdfCone
 }
 
 export enum WorleyMode {
@@ -21,10 +30,16 @@ export interface FBMConfig {
   lacunarity: number    // frequency scale per octave
 }
 
+export interface SdfConfig {
+  radius: number
+  softness: number
+}
+
 export interface NoiseConfig {
   type: NoiseType
   worleyMode: WorleyMode
   fbm: FBMConfig
+  sdf?: SdfConfig
   scale: [number, number, number]
   amplitude: number
   offset: [number, number, number]

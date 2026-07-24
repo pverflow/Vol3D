@@ -2,10 +2,16 @@
 // management. Handles old preset shapes (scalar `remapCurve`/`featherCurve` power
 // values, the old `edgeFeather` field) so presets exported by older Vol3D builds
 // keep loading correctly. Moved verbatim out of StateManager.
-import type { Layer } from '../types/index'
+import type { Layer, SdfConfig } from '../types/index'
 import { defaultLayer } from './AppState'
 
-export const CURRENT_PRESET_VERSION = 1
+export const CURRENT_PRESET_VERSION = 2
+
+// Bumped to 2: adds NoiseConfig.sdf (SDF primitive source layers, VFX-0 Task 1).
+// Presets from version 1 lack `sdf` entirely; normalizeLayer below fills it in
+// from defaultLayer's default, same as any other missing/legacy field.
+
+const DEFAULT_SDF: SdfConfig = { radius: 0.3, softness: 0.1 }
 
 export function normalizeLayer(layer: Layer): Layer {
   const base = defaultLayer(layer.name, layer.noise?.type)
@@ -17,6 +23,7 @@ export function normalizeLayer(layer: Layer): Layer {
       ...base.noise,
       ...layer.noise,
       fbm: { ...base.noise.fbm, ...layer.noise?.fbm },
+      sdf: normalizeSdf(layer.noise?.sdf, base.noise.sdf ?? DEFAULT_SDF),
     },
     distortion: {
       ...base.distortion,
@@ -24,6 +31,14 @@ export function normalizeLayer(layer: Layer): Layer {
     },
     remap: normalizedRemap,
   }
+}
+
+// Clamps sdf.radius/softness to 0..1, falling back to `base` for anything
+// missing or non-finite. Shared with presetValidation.ts's untrusted-JSON path.
+export function normalizeSdf(sdf: Partial<SdfConfig> | undefined, base: SdfConfig): SdfConfig {
+  const radius = typeof sdf?.radius === 'number' && Number.isFinite(sdf.radius) ? sdf.radius : base.radius
+  const softness = typeof sdf?.softness === 'number' && Number.isFinite(sdf.softness) ? sdf.softness : base.softness
+  return { radius: clamp01(radius), softness: clamp01(softness) }
 }
 
 export function normalizeRemap(

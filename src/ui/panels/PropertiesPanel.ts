@@ -1,7 +1,7 @@
 import type { StateManager } from '../../state/StateManager'
 import type { Viewport } from '../viewport/Viewport'
 import type { Layer } from '../../types/index'
-import { NoiseType, WorleyMode, DistortionType, FeatherShape } from '../../types/index'
+import { NoiseType, WorleyMode, DistortionType, FeatherShape, isSdfSource } from '../../types/index'
 import { defaultLayer } from '../../state/AppState'
 import { Slider } from '../components/Slider'
 import { Select } from '../components/Select'
@@ -11,6 +11,7 @@ import { NOISE_LABELS, NOISE_COLORS } from '../../utils/colorMap'
 
 // Single source of truth for slider/curve right-click reset defaults.
 const D = defaultLayer()
+const DEFAULT_SDF = D.noise.sdf ?? { radius: 0.3, softness: 0.1 }
 
 function section(
   title: string,
@@ -213,6 +214,23 @@ export class PropertiesPanel {
       wRow.appendChild(wLabel)
       wRow.appendChild(wSel.el)
       body.appendChild(wRow)
+    }
+
+    // Radius/softness (only for SDF sources)
+    if (isSdfSource(layer.noise.type)) {
+      const sdf = layer.noise.sdf ?? DEFAULT_SDF
+      body.appendChild(new Slider({
+        label: 'Radius', min: 0.05, max: 1, step: 0.01, value: sdf.radius,
+        defaultValue: DEFAULT_SDF.radius, decimals: 2,
+        onInput: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), radius: v } })),
+        onChange: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), radius: v } })),
+      }).el)
+      body.appendChild(new Slider({
+        label: 'Softness', min: 0.001, max: 1, step: 0.001, value: sdf.softness,
+        defaultValue: DEFAULT_SDF.softness, decimals: 3,
+        onInput: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), softness: v } })),
+        onChange: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), softness: v } })),
+      }).el)
     }
 
     // Scale XYZ
