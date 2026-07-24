@@ -37,10 +37,22 @@ export class VolumeGenerator {
     this.compiler = compiler
     this.sliceBuffer = new SliceBuffer(gl, resolution)
 
-    // Empty VAO for fullscreen triangle
-    this.vao = gl.createVertexArray()!
-    this.volumeTargetFbo = gl.createFramebuffer()!
+    // Empty VAO for fullscreen triangle + scratch FBO for the live path.
+    const targets = this.createLiveTargets()
+    this.vao = targets.vao
+    this.volumeTargetFbo = targets.volumeTargetFbo
     this.canRenderToVolume = this.probeCanRenderToVolume()
+  }
+
+  // Creates the fullscreen-triangle VAO and the scratch live-render FBO.
+  // Shared by the constructor and resize() so a context-restore rebuild
+  // (Viewport.handleContextRestored -> resizeVolume -> generator.resize)
+  // produces objects identical to a fresh construction.
+  private createLiveTargets(): { vao: WebGLVertexArrayObject; volumeTargetFbo: WebGLFramebuffer } {
+    return {
+      vao: this.gl.createVertexArray()!,
+      volumeTargetFbo: this.gl.createFramebuffer()!,
+    }
   }
 
   private probeCanRenderToVolume(): boolean {
@@ -301,7 +313,7 @@ export class VolumeGenerator {
     sliceBuffer.beginSlice()
 
     if (layers.length === 0) {
-      volume.bindAsRenderTarget(this.volumeTargetFbo, z)
+      this.bindVolumeTarget(volume, z)
       gl.clearColor(0, 0, 0, 1)
       gl.clear(gl.COLOR_BUFFER_BIT)
     } else {
@@ -310,7 +322,7 @@ export class VolumeGenerator {
         this.runLayerGenPass(layer, sliceZ, globalSeed, animPhase, animEvolutions)
         this.runCompositePass(layer, () =>
           isLast
-            ? volume.bindAsRenderTarget(this.volumeTargetFbo, z)
+            ? this.bindVolumeTarget(volume, z)
             : gl.bindFramebuffer(gl.FRAMEBUFFER, sliceBuffer.accumulatorWrite.framebuffer)
         )
         if (!isLast) sliceBuffer.swapAccumulators()
@@ -319,6 +331,16 @@ export class VolumeGenerator {
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     gl.bindVertexArray(null)
+  }
+
+  // Binds a volume layer as the live-path render target and, if the FBO
+  // isn't complete (e.g. rebuilt objects mid-restore), logs instead of
+  // silently rendering into nothing. Does not change the happy path.
+  private bindVolumeTarget(volume: VolumeTexture, z: number): void {
+    const status = volume.bindAsRenderTarget(this.volumeTargetFbo, z)
+    if (status !== this.gl.FRAMEBUFFER_COMPLETE) {
+      console.warn(`VolumeGenerator: live render target incomplete (status ${status}) at slice ${z}`)
+    }
   }
 
   cancel() {
@@ -332,6 +354,15 @@ export class VolumeGenerator {
     this.cancel()
     this.sliceBuffer.destroy()
     this.sliceBuffer = new SliceBuffer(this.gl, resolution)
+
+    // Rebuild the live-path VAO/FBO too: on WebGL context loss+restore these
+    // are left pointing at invalidated GL objects, which would otherwise bind
+    // a dead framebuffer in generateSliceLive() and render into nothing.
+    this.gl.deleteVertexArray(this.vao)
+    this.gl.deleteFramebuffer(this.volumeTargetFbo)
+    const targets = this.createLiveTargets()
+    this.vao = targets.vao
+    this.volumeTargetFbo = targets.volumeTargetFbo
   }
 
   destroy() {
