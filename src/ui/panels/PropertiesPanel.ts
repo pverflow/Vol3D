@@ -112,6 +112,12 @@ export class PropertiesPanel {
       if (e.button !== 0) return  // left-drag only; right-click is the slider reset gesture
       const target = e.target as Element | null
       if (!target?.closest('.slider-track, .curve-handle')) return
+      // GradientEditor (VFX-0 Task 4) reuses "curve-handle"/"slider-track" for
+      // its stop markers and alpha slider, but it only ever touches
+      // `preview.colorRamp` -- never a REGEN_TRIGGERS field -- so it must not
+      // engage the volume drag-proxy. Exclude its subtree here rather than
+      // renaming its classes, so it keeps the same marker/slider styling.
+      if (target.closest('.gradient-editor')) return
       this.viewport.setInteracting(true)
     }, { capture: true })
     // mouseup is listened on window (not contentEl) because Slider and

@@ -130,10 +130,11 @@ export class GradientEditor {
     this.bar.style.background = buildGradientCss(this.ramp.stops)
     this.ramp.stops.forEach((stop, index) => {
       const marker = document.createElement('div')
-      // "curve-handle" is the class PropertiesPanel's delegated mousedown
-      // listener whitelists as a real drag target (see its capture-phase
-      // listener comment) -- reusing it here means a gradient-stop drag gets
-      // the same viewport low-res-proxy interaction handling for free.
+      // "curve-handle" is reused here purely for its drag-marker styling.
+      // PropertiesPanel's capture-phase mousedown guard special-cases
+      // ".gradient-editor" (this.el's class) so this never engages the
+      // volume drag-proxy -- a ramp edit only touches `preview.colorRamp`,
+      // never a REGEN_TRIGGERS field.
       marker.className = 'curve-handle gradient-stop' + (index === this.selected ? ' selected' : '')
       marker.style.left = `${(stop.t * 100).toFixed(3)}%`
       marker.style.setProperty(
