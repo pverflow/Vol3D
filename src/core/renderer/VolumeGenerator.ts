@@ -12,6 +12,7 @@ const BLEND_MODE_INDEX: Record<BlendMode, number> = {
   [BlendMode.Screen]: 3,
   [BlendMode.Overlay]: 4,
   [BlendMode.Subtract]: 5,
+  [BlendMode.SmoothMin]: 6,
 }
 
 export type ProgressCallback = (progress: number) => void

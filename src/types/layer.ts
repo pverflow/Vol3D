@@ -7,6 +7,7 @@ export enum BlendMode {
   Screen = 'screen',
   Overlay = 'overlay',
   Subtract = 'subtract',
+  SmoothMin = 'smooth_min',
 }
 
 export enum DistortionType {
