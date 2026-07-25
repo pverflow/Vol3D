@@ -14,16 +14,43 @@ import { saveBytes, saveText } from '../../platform/fileAccess'
 import type { AnimationSettings, CameraState, FlipbookConfig, Layer, VolumeSettings } from '../../types/index'
 import { flipbookCell, flipbookRows } from './flipbookGrid'
 
-// Render hook supplied by Viewport: paint the colored raymarch (current
-// camera + ramp LUT + cutoff/contrast — the same uniforms renderRaymarched
-// uses on-screen) for `vol` into `fbo` at `w`×`h`. Factored out of
+// Render hook supplied by Viewport: paint the colored raymarch (camera +
+// ramp LUT + cutoff/contrast/density/etc — the same uniforms renderRaymarched
+// uses on-screen) for `vol` into `fbo` at `w`×`h`, using the frozen `params`
+// snapshot instead of live camera/state reads. Factored out of
 // Viewport.renderRaymarched so on-screen rendering is untouched.
-export type FlipbookRenderToTarget = (fbo: WebGLFramebuffer, w: number, h: number, vol: VolumeTexture) => void
+export type FlipbookRenderToTarget = (fbo: WebGLFramebuffer, w: number, h: number, vol: VolumeTexture, params: RaymarchParams) => void
 
 export interface FlipbookDeps {
   gl: WebGL2RenderingContext
   compiler: ShaderCompiler
   renderToTarget: FlipbookRenderToTarget
+}
+
+// Frozen render-time uniforms for one bake (VFX-0 Task 5 fix): everything
+// Viewport.setRaymarchUniforms would otherwise read live from
+// this.camera.getMatrices()/this.state.get('preview'|'settings') on every
+// frame. Captured ONCE at bake start (see Viewport.snapshotRaymarchParams)
+// so a mid-bake camera drag or Properties tweak can't change frames already
+// baked or still to come — every frame in one sprite sheet renders with the
+// exact same camera/shading. `colorRampTexture` is a bake-owned GL texture
+// (built from a snapshot of preview.colorRamp, not the shared live LUT
+// texture) that FlipbookExporter.bake deletes when done.
+export interface RaymarchParams {
+  eye: Float32Array
+  forward: Float32Array
+  right: Float32Array
+  up: Float32Array
+  aspect: number
+  cutoff: number
+  contrast: number
+  density: number
+  stepCount: number
+  exposure: number
+  showTilePreview: boolean
+  tilePreviewDensity: number
+  colorRampEnabled: boolean
+  colorRampTexture: WebGLTexture
 }
 
 export interface FlipbookMetadata {
@@ -45,6 +72,7 @@ export class FlipbookExporter {
     settings: VolumeSettings,
     animation: AnimationSettings,
     camera: CameraState,
+    renderParams: RaymarchParams,
     onProgress?: (p: number) => void,
   ): Promise<void> {
     const { gl, compiler, renderToTarget } = this.deps
@@ -81,7 +109,7 @@ export class FlipbookExporter {
         )
         bakeVolume.uploadVolume(frameData)
 
-        renderToTarget(target.fbo, tileRes, tileRes, bakeVolume)
+        renderToTarget(target.fbo, tileRes, tileRes, bakeVolume, renderParams)
         gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo)
         const pixels = new Uint8Array(tileRes * tileRes * 4)
         gl.readPixels(0, 0, tileRes, tileRes, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
@@ -143,6 +171,9 @@ export class FlipbookExporter {
       bakeVolume.destroy()
       gl.deleteFramebuffer(target.fbo)
       gl.deleteTexture(target.texture)
+      // renderParams.colorRampTexture was built just for this bake (see
+      // Viewport.snapshotRaymarchParams) — ownership passes to us here.
+      gl.deleteTexture(renderParams.colorRampTexture)
     }
   }
 }

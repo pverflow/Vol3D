@@ -14,6 +14,7 @@ import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/
 import { proxyDimension } from './proxyDimension'
 import { buildRampLUT } from '../../core/colorRamp'
 import type { ColorRamp } from '../../core/colorRamp'
+import type { RaymarchParams } from '../../core/export/FlipbookExporter'
 
 const AXIS_MAP: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
 const PREVIEW_MODE_ORDER: PreviewMode[] = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
@@ -238,12 +239,14 @@ export class Viewport {
 
   // Bind the LUT to its texture unit and set the two uniforms every render
   // path needs — called from renderRaymarched/renderSlicePlane right next
-  // to the volume bind.
-  private bindColorRamp(prog: CompiledProgram, enabled: boolean) {
+  // to the volume bind. `texture` defaults to the shared live LUT; the
+  // flipbook bake passes its own frozen snapshot texture instead (see
+  // RaymarchParams.colorRampTexture) so on-screen behavior is unchanged.
+  private bindColorRamp(prog: CompiledProgram, enabled: boolean, texture: WebGLTexture = this.lutTexture) {
     const { gl } = this.ctx
     const { compiler } = this
     gl.activeTexture(gl.TEXTURE0 + RAMP_LUT_TEXTURE_UNIT)
-    gl.bindTexture(gl.TEXTURE_2D, this.lutTexture)
+    gl.bindTexture(gl.TEXTURE_2D, texture)
     compiler.setUniformi(prog, 'u_colorRamp', RAMP_LUT_TEXTURE_UNIT)
     compiler.setUniformBool(prog, 'u_colorRampEnabled', enabled)
   }
@@ -374,52 +377,102 @@ export class Viewport {
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
+  // Build a RaymarchParams snapshot from the LIVE camera/state — what
+  // setRaymarchUniforms used to read directly every call. Used as the
+  // default when no snapshot is supplied, so the on-screen path's behavior
+  // is unchanged byte-for-byte.
+  private liveRaymarchParams(w: number, h: number): RaymarchParams {
+    const preview = this.state.get('preview')
+    const settings = this.state.get('settings')
+    const { eye, forward, right, up } = this.camera.getMatrices()
+    return {
+      eye, forward, right, up,
+      aspect: w / h,
+      cutoff: settings.cutoff,
+      contrast: settings.contrast,
+      density: preview.density,
+      stepCount: preview.stepCount,
+      exposure: preview.exposure,
+      showTilePreview: preview.showTilePreview,
+      tilePreviewDensity: preview.tilePreviewDensity,
+      colorRampEnabled: preview.colorRamp.enabled,
+      colorRampTexture: this.lutTexture,
+    }
+  }
+
+  // Freeze the render-time uniforms once at bake start (VFX-0 Task 5 fix):
+  // camera basis (for the square offscreen target, not the live canvas
+  // aspect) + the raymarch preview/shading fields + a dedicated LUT texture
+  // built from the current colorRamp so a later live ramp edit can't mutate
+  // frames already decided. showTilePreview is forced off — a flipbook frame
+  // shouldn't show the 3x3x3 neighbor-tile preview. Ownership of the
+  // returned colorRampTexture passes to FlipbookExporter.bake, which deletes
+  // it when the bake finishes.
+  snapshotRaymarchParams(): RaymarchParams {
+    const preview = this.state.get('preview')
+    const settings = this.state.get('settings')
+    const { eye, forward, right, up } = this.camera.getMatrices()
+    return {
+      eye, forward, right, up,
+      aspect: 1, // flipbook tiles are always square (tileRes x tileRes)
+      cutoff: settings.cutoff,
+      contrast: settings.contrast,
+      density: preview.density,
+      stepCount: preview.stepCount,
+      exposure: preview.exposure,
+      showTilePreview: false,
+      tilePreviewDensity: preview.tilePreviewDensity,
+      colorRampEnabled: preview.colorRamp.enabled,
+      colorRampTexture: this.createLutTexture(preview.colorRamp),
+    }
+  }
+
   // Shared by the on-screen raymarch pass and renderRaymarchToTarget (Task 5
   // flipbook bake) — the exact camera/ramp/cutoff/contrast uniform setup,
   // parameterized on which volume to sample so the bake can pass its own
-  // per-frame volume instead of previewSource().
-  private setRaymarchUniforms(prog: CompiledProgram, w: number, h: number, vol: VolumeTexture) {
+  // per-frame volume instead of previewSource(). `params`, when supplied,
+  // overrides every live read (bake path); when omitted, behaves exactly as
+  // before via liveRaymarchParams (on-screen path, unchanged).
+  private setRaymarchUniforms(prog: CompiledProgram, w: number, h: number, vol: VolumeTexture, params?: RaymarchParams) {
     const { compiler } = this
-    const preview = this.state.get('preview')
-    const settings = this.state.get('settings')
+    const p = params ?? this.liveRaymarchParams(w, h)
     const depthScale = vol.depth / vol.resolution
-    const { eye, forward, right, up } = this.camera.getMatrices()
-    const aspect = w / h
-    const tanHalfFov = RAYMARCH_TAN_HALF_FOV
 
-    compiler.setUniform(prog, 'u_cutoff', settings.cutoff)
-    compiler.setUniform(prog, 'u_contrast', settings.contrast)
-    compiler.setUniform(prog, 'u_cameraPos', eye[0], eye[1], eye[2])
-    compiler.setUniform(prog, 'u_cameraForward', forward[0], forward[1], forward[2])
-    compiler.setUniform(prog, 'u_cameraRight', right[0], right[1], right[2])
-    compiler.setUniform(prog, 'u_cameraUp', up[0], up[1], up[2])
+    compiler.setUniform(prog, 'u_cutoff', p.cutoff)
+    compiler.setUniform(prog, 'u_contrast', p.contrast)
+    compiler.setUniform(prog, 'u_cameraPos', p.eye[0], p.eye[1], p.eye[2])
+    compiler.setUniform(prog, 'u_cameraForward', p.forward[0], p.forward[1], p.forward[2])
+    compiler.setUniform(prog, 'u_cameraRight', p.right[0], p.right[1], p.right[2])
+    compiler.setUniform(prog, 'u_cameraUp', p.up[0], p.up[1], p.up[2])
     compiler.setUniform(prog, 'u_volumeSize', 1, 1, depthScale)
-    compiler.setUniform(prog, 'u_aspect', aspect)
-    compiler.setUniform(prog, 'u_tanHalfFov', tanHalfFov)
-    compiler.setUniform(prog, 'u_density', preview.density)
-    compiler.setUniformBool(prog, 'u_showTilePreview', preview.showTilePreview)
-    compiler.setUniform(prog, 'u_tilePreviewDensity', preview.tilePreviewDensity)
-    compiler.setUniformi(prog, 'u_stepCount', preview.stepCount)
-    compiler.setUniform(prog, 'u_exposure', preview.exposure)
+    compiler.setUniform(prog, 'u_aspect', p.aspect)
+    compiler.setUniform(prog, 'u_tanHalfFov', RAYMARCH_TAN_HALF_FOV)
+    compiler.setUniform(prog, 'u_density', p.density)
+    compiler.setUniformBool(prog, 'u_showTilePreview', p.showTilePreview)
+    compiler.setUniform(prog, 'u_tilePreviewDensity', p.tilePreviewDensity)
+    compiler.setUniformi(prog, 'u_stepCount', p.stepCount)
+    compiler.setUniform(prog, 'u_exposure', p.exposure)
     compiler.setUniform(prog, 'u_lightDir', ...LIGHT_DIR)
 
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
-    this.bindColorRamp(prog, preview.colorRamp.enabled)
+    this.bindColorRamp(prog, p.colorRampEnabled, p.colorRampTexture)
   }
 
   // Render hook for FlipbookExporter (Task 5): paints the colored raymarch —
-  // current camera, ramp LUT, cutoff/contrast, same as the on-screen path —
-  // for an arbitrary volume into an arbitrary offscreen framebuffer at w×h.
-  // Never called from the render loop; on-screen rendering is untouched.
-  renderRaymarchToTarget(fbo: WebGLFramebuffer, w: number, h: number, vol: VolumeTexture): void {
+  // camera, ramp LUT, cutoff/contrast, same as the on-screen path — for an
+  // arbitrary volume into an arbitrary offscreen framebuffer at w×h. `params`
+  // (supplied by the bake) overrides the live camera/state reads with the
+  // frozen snapshot; never called from the render loop, so on-screen
+  // rendering (which never passes params) is untouched.
+  renderRaymarchToTarget(fbo: WebGLFramebuffer, w: number, h: number, vol: VolumeTexture, params?: RaymarchParams): void {
     const { gl } = this.ctx
     const prog = this.compiler.buildRaymarchShader()
     gl.useProgram(prog.program)
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
     gl.viewport(0, 0, w, h)
     gl.bindVertexArray(this.vao)
-    this.setRaymarchUniforms(prog, w, h, vol)
+    this.setRaymarchUniforms(prog, w, h, vol, params)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
     gl.bindVertexArray(null)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
@@ -490,7 +543,7 @@ export class Viewport {
     const exporter = new FlipbookExporter({
       gl: this.ctx.gl,
       compiler: this.compiler,
-      renderToTarget: (fbo, w, h, vol) => this.renderRaymarchToTarget(fbo, w, h, vol),
+      renderToTarget: (fbo, w, h, vol, params) => this.renderRaymarchToTarget(fbo, w, h, vol, params),
     })
 
     const indicator = document.getElementById('gen-indicator')
@@ -498,13 +551,23 @@ export class Viewport {
     this.state.update('generating', true)
     this.state.update('progress', 0)
 
+    // Snapshot camera + render params ONCE, before the (chunked, awaited)
+    // per-frame bake loop starts, so a mid-bake camera drag or Properties
+    // tweak can't make frames within one sprite sheet inconsistent (VFX-0
+    // Task 5 fix). `camera` (for the JSON sidecar) and the matrices baked
+    // into renderParams both come from the same live state read here, with
+    // no await between them, so they can't drift apart.
+    const camera = this.state.get('camera')
+    const renderParams = this.snapshotRaymarchParams()
+
     try {
       await exporter.bake(
         config,
         this.state.get('layers'),
         this.state.get('settings'),
         this.state.get('animation'),
-        this.state.get('camera'),
+        camera,
+        renderParams,
         (p) => this.state.update('progress', p),
       )
     } finally {

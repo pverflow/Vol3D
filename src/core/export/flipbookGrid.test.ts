@@ -22,6 +22,9 @@ describe('flipbookRows', () => {
   it('never returns less than 1', () => {
     expect(flipbookRows(1, 8)).toBe(1)
   })
+  it('stacks every frame into one column when cols is 1', () => {
+    expect(flipbookRows(4, 1)).toBe(4)
+  })
 })
 
 describe('flipbookCell', () => {
@@ -30,5 +33,8 @@ describe('flipbookCell', () => {
     expect(flipbookCell(3, 4)).toEqual({ x: 3, y: 0 })
     expect(flipbookCell(4, 4)).toEqual({ x: 0, y: 1 })
     expect(flipbookCell(13, 4)).toEqual({ x: 1, y: 3 })
+  })
+  it('stacks vertically when cols is 1', () => {
+    expect(flipbookCell(2, 1)).toEqual({ x: 0, y: 2 })
   })
 })
