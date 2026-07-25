@@ -8,8 +8,8 @@ import { AnimationController } from './AnimationController'
 import { ViewportOverlay } from './ViewportOverlay'
 import type { StateManager } from '../../state/StateManager'
 import { shouldRegenerateOnSettings } from '../../state/StateManager'
-import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
-import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
+import type { AnimationSettings, ExportRequest, FlipbookConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
+import { PreviewMode, SliceAxis, ProjectionMode, ExportFormat } from '../../types/index'
 import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
 import { proxyDimension } from './proxyDimension'
 import { buildRampLUT } from '../../core/colorRamp'
@@ -152,7 +152,7 @@ export class Viewport {
 
     // Export handler
     window.addEventListener('vol3d-export', (e: Event) => {
-      const detail = (e as CustomEvent<ExportConfig>).detail
+      const detail = (e as CustomEvent<ExportRequest>).detail
       this.handleExport(detail)
     }, { signal: this.listeners.signal })
 
@@ -368,13 +368,20 @@ export class Viewport {
   }
 
   private renderRaymarched(w: number, h: number) {
-    const { compiler } = this
-    const prog = compiler.buildRaymarchShader()
+    const prog = this.compiler.buildRaymarchShader()
     const gl = this.beginPass(prog)
+    this.setRaymarchUniforms(prog, w, h, this.previewSource())
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+  }
 
+  // Shared by the on-screen raymarch pass and renderRaymarchToTarget (Task 5
+  // flipbook bake) — the exact camera/ramp/cutoff/contrast uniform setup,
+  // parameterized on which volume to sample so the bake can pass its own
+  // per-frame volume instead of previewSource().
+  private setRaymarchUniforms(prog: CompiledProgram, w: number, h: number, vol: VolumeTexture) {
+    const { compiler } = this
     const preview = this.state.get('preview')
     const settings = this.state.get('settings')
-    const vol = this.previewSource()
     const depthScale = vol.depth / vol.resolution
     const { eye, forward, right, up } = this.camera.getMatrices()
     const aspect = w / h
@@ -399,8 +406,23 @@ export class Viewport {
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
     this.bindColorRamp(prog, preview.colorRamp.enabled)
+  }
 
+  // Render hook for FlipbookExporter (Task 5): paints the colored raymarch —
+  // current camera, ramp LUT, cutoff/contrast, same as the on-screen path —
+  // for an arbitrary volume into an arbitrary offscreen framebuffer at w×h.
+  // Never called from the render loop; on-screen rendering is untouched.
+  renderRaymarchToTarget(fbo: WebGLFramebuffer, w: number, h: number, vol: VolumeTexture): void {
+    const { gl } = this.ctx
+    const prog = this.compiler.buildRaymarchShader()
+    gl.useProgram(prog.program)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
+    gl.viewport(0, 0, w, h)
+    gl.bindVertexArray(this.vao)
+    this.setRaymarchUniforms(prog, w, h, vol)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
+    gl.bindVertexArray(null)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   }
 
   private renderSlicePlane(isProjection: boolean) {
@@ -436,21 +458,59 @@ export class Viewport {
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
-  private async handleExport(opts: ExportConfig) {
+  private async handleExport(opts: ExportRequest) {
     if (this.exportInProgress) return
 
     this.exportInProgress = true
     try {
-      const { ExportManager } = await import('../../core/export/ExportManager')
-      const settings = this.state.get('settings')
-      const mgr = new ExportManager(this.ctx.gl, this.volume, settings.cutoff, settings.contrast)
-      await mgr.export(opts.format, opts.filenameBase, opts.flipY)
+      if (opts.format === ExportFormat.Flipbook) {
+        await this.runFlipbookExport(opts)
+      } else {
+        const { ExportManager } = await import('../../core/export/ExportManager')
+        const settings = this.state.get('settings')
+        const mgr = new ExportManager(this.ctx.gl, this.volume, settings.cutoff, settings.contrast)
+        await mgr.export(opts.format, opts.filenameBase, opts.flipY)
+      }
     } catch (error) {
       console.error('Export failed:', error)
       const message = describeViewportError(error)
       window.alert(`Export failed: ${message}`)
     } finally {
       this.exportInProgress = false
+    }
+  }
+
+  // Rendered-flipbook export (Task 5): bakes the colored raymarch over the
+  // animation loop using the FULL-res generator/volume path (never the drag
+  // proxy) via a dedicated FlipbookExporter instance. Reuses the same
+  // generating/progress state the normal full-res generation uses so the
+  // top-bar progress indicator reflects bake progress too.
+  private async runFlipbookExport(config: FlipbookConfig): Promise<void> {
+    const { FlipbookExporter } = await import('../../core/export/FlipbookExporter')
+    const exporter = new FlipbookExporter({
+      gl: this.ctx.gl,
+      compiler: this.compiler,
+      renderToTarget: (fbo, w, h, vol) => this.renderRaymarchToTarget(fbo, w, h, vol),
+    })
+
+    const indicator = document.getElementById('gen-indicator')
+    if (indicator) indicator.style.display = 'flex'
+    this.state.update('generating', true)
+    this.state.update('progress', 0)
+
+    try {
+      await exporter.bake(
+        config,
+        this.state.get('layers'),
+        this.state.get('settings'),
+        this.state.get('animation'),
+        this.state.get('camera'),
+        (p) => this.state.update('progress', p),
+      )
+    } finally {
+      this.state.update('generating', false)
+      this.state.update('progress', 1)
+      if (indicator) indicator.style.display = 'none'
     }
   }
 
