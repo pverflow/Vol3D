@@ -13,6 +13,8 @@ uniform float u_planeAspect;
 uniform float u_screenAspect;
 uniform float u_cutoff;
 uniform float u_contrast;
+uniform sampler2D u_colorRamp;
+uniform bool u_colorRampEnabled;
 
 bool fitPlaneUv(vec2 uv, out vec2 planeUv) {
   planeUv = uv;
@@ -43,7 +45,16 @@ void main() {
   float v = applyDensityShaping(texture(u_volume, uvw).r, u_cutoff, u_contrast);
   v = clamp(v * u_exposure, 0.0, 1.0);
 
-  // Apply a subtle false-color gradient for readability
-  vec3 col = mix(vec3(0.05, 0.05, 0.1), vec3(1.0, 1.0, 1.0), v);
+  vec3 bg = vec3(0.05, 0.05, 0.1);
+  vec3 col;
+  if (u_colorRampEnabled) {
+    // Colored transfer function (VFX-0 Task 3): composite the ramp's rgb
+    // over the same background using its alpha as opacity.
+    vec4 ramp = texture(u_colorRamp, vec2(v, 0.5));
+    col = mix(bg, ramp.rgb, ramp.a);
+  } else {
+    // Apply a subtle false-color gradient for readability
+    col = mix(bg, vec3(1.0, 1.0, 1.0), v);
+  }
   fragColor = vec4(col, 1.0);
 }

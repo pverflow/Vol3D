@@ -14,6 +14,8 @@ uniform float u_planeAspect;
 uniform float u_screenAspect;
 uniform float u_cutoff;
 uniform float u_contrast;
+uniform sampler2D u_colorRamp;
+uniform bool u_colorRampEnabled;
 
 bool fitPlaneUv(vec2 uv, out vec2 planeUv) {
   planeUv = uv;
@@ -53,6 +55,16 @@ void main() {
 
   float result = (u_projMode == 0) ? acc * invSteps : maxVal;
   result = clamp(result * u_exposure, 0.0, 1.0);
-  vec3 col = mix(vec3(0.05, 0.05, 0.1), vec3(1.0, 1.0, 1.0), result);
+
+  vec3 bg = vec3(0.05, 0.05, 0.1);
+  vec3 col;
+  if (u_colorRampEnabled) {
+    // Colored transfer function (VFX-0 Task 3): composite the ramp's rgb
+    // over the same background using its alpha as opacity.
+    vec4 ramp = texture(u_colorRamp, vec2(result, 0.5));
+    col = mix(bg, ramp.rgb, ramp.a);
+  } else {
+    col = mix(bg, vec3(1.0, 1.0, 1.0), result);
+  }
   fragColor = vec4(col, 1.0);
 }

@@ -2,6 +2,9 @@ import type { StateManager } from '../../state/StateManager'
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
 import { defaultState } from '../../state/AppState'
 import { Slider } from '../components/Slider'
+import { Toggle } from '../components/Toggle'
+import { Select } from '../components/Select'
+import { RAMP_PRESETS } from '../../core/colorRamp'
 
 export class ViewportOverlay {
   readonly el: HTMLElement
@@ -133,6 +136,34 @@ export class ViewportOverlay {
 
     overlay.appendChild(previewControls)
 
+    // Color ramp (VFX-0 Task 3): minimal enable toggle + preset picker so
+    // the ramp is actually reachable before Task 4's full gradient editor.
+    const rampControls = document.createElement('div')
+    rampControls.className = 'raymarch-controls'
+
+    const rampToggle = new Toggle('Color Ramp', state.get('preview').colorRamp.enabled, (v) => {
+      const preview = state.get('preview')
+      state.update('preview', { ...preview, colorRamp: { ...preview.colorRamp, enabled: v } })
+    })
+    rampControls.appendChild(rampToggle.el)
+
+    const rampPresetSelect = new Select(
+      [
+        { value: 'fire', label: 'Fire' },
+        { value: 'smoke', label: 'Smoke' },
+        { value: 'explosion', label: 'Explosion' },
+      ],
+      'fire',
+      (v) => {
+        const preview = state.get('preview')
+        const preset = RAMP_PRESETS[v as keyof typeof RAMP_PRESETS]
+        state.update('preview', { ...preview, colorRamp: { ...preview.colorRamp, stops: preset } })
+      }
+    )
+    rampControls.appendChild(rampPresetSelect.el)
+
+    overlay.appendChild(rampControls)
+
     const syncOverlay = () => {
       const preview = state.get('preview')
       modeButtons.forEach((btn, mode) => btn.classList.toggle('active', preview.mode === mode))
@@ -143,6 +174,7 @@ export class ViewportOverlay {
       densitySlider.setValueSilent(preview.density)
       stepSlider.setValueSilent(preview.stepCount)
       tilePreviewDensitySlider.setValueSilent(preview.tilePreviewDensity)
+      rampToggle.setValue(preview.colorRamp.enabled)
 
       sliceControls.style.display = preview.mode === PreviewMode.Slice || preview.mode === PreviewMode.Projection ? 'flex' : 'none'
       previewControls.style.display = preview.mode === PreviewMode.Raymarched || preview.mode === PreviewMode.Projection ? 'flex' : 'none'

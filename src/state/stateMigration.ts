@@ -6,11 +6,19 @@ import type { Layer, SdfConfig } from '../types/index'
 import { DEFAULT_SDF } from '../types/index'
 import { defaultLayer } from './AppState'
 
-export const CURRENT_PRESET_VERSION = 2
+export const CURRENT_PRESET_VERSION = 3
 
 // Bumped to 2: adds NoiseConfig.sdf (SDF primitive source layers, VFX-0 Task 1).
 // Presets from version 1 lack `sdf` entirely; normalizeLayer below fills it in
 // from defaultLayer's default, same as any other missing/legacy field.
+//
+// Bumped to 3: adds PreviewSettings.colorRamp (color-ramp transfer function,
+// VFX-0 Task 3). Presets from version <3 lack `colorRamp` entirely; absent ->
+// default (fire preset, disabled) via StateManager.loadState's shallow
+// `{ ...defaults.preview, ...state.preview }` merge (live-state path) and
+// presetValidation.sanitizeColorRamp's fallback (untrusted-JSON path) — no
+// per-field normalizer needed here since a missing key just isn't present to
+// spread over the default.
 
 export function normalizeLayer(layer: Layer): Layer {
   const base = defaultLayer(layer.name, layer.noise?.type)

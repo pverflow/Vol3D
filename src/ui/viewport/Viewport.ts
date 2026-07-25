@@ -12,9 +12,13 @@ import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSet
 import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
 import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
 import { proxyDimension } from './proxyDimension'
+import { buildRampLUT } from '../../core/colorRamp'
+import type { ColorRamp } from '../../core/colorRamp'
 
 const AXIS_MAP: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
 const PREVIEW_MODE_ORDER: PreviewMode[] = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
+const RAMP_LUT_SIZE = 256
+const RAMP_LUT_TEXTURE_UNIT = 1
 
 export class Viewport {
   readonly el: HTMLElement
@@ -47,6 +51,11 @@ export class Viewport {
   private state: StateManager
   private rafId: number | null = null
   private vao: WebGLVertexArrayObject
+  // Density -> RGBA color-ramp LUT texture (VFX-0 Task 3): a 256x1 RGBA8
+  // texture rebuilt from `preview.colorRamp` only when that slice changes
+  // (see the `preview` subscription below), not every frame.
+  private lutTexture: WebGLTexture
+  private lastColorRamp: ColorRamp
   private dirtyTimer: number | null = null
   private exportInProgress = false
   private readonly listeners = new AbortController()
@@ -101,6 +110,9 @@ export class Viewport {
     })
     this.camera.setVolumeDepth(settings.resolution, settings.depth)
 
+    this.lastColorRamp = state.get('preview').colorRamp
+    this.lutTexture = this.createLutTexture(this.lastColorRamp)
+
     this.vao = gl.createVertexArray()!
 
     // Resize observer
@@ -124,7 +136,15 @@ export class Viewport {
         this.scheduleGeneration()
       }
     }))
-    this.unsubscribes.push(state.subscribe('preview', () => { /* just re-render */ }))
+    this.unsubscribes.push(state.subscribe('preview', (p) => {
+      // Rebuild the LUT only when the colorRamp slice itself changed
+      // (reference check — every other preview.* update leaves it
+      // untouched), not on every unrelated preview tweak.
+      if (p.colorRamp !== this.lastColorRamp) {
+        this.lastColorRamp = p.colorRamp
+        this.uploadRampLUT(p.colorRamp)
+      }
+    }))
     this.unsubscribes.push(state.subscribe('animation', (anim) => this.animation.handleAnimationChange(anim as AnimationSettings)))
     this.unsubscribes.push(state.subscribe('camera', (cam) => {
       this.camera.updateCamera(cam as typeof cam)
@@ -177,7 +197,55 @@ export class Viewport {
     this.animation.invalidateAnimationCache()
     const s = this.state.get('settings')
     this.resizeVolume(s) // rebuilds VolumeTexture + generator slice buffers
+    this.ctx.gl.deleteTexture(this.lutTexture) // GL textures don't survive context loss
+    this.lutTexture = this.createLutTexture(this.lastColorRamp)
     this.scheduleGeneration()
+  }
+
+  // Allocate the 256x1 RGBA8 LUT texture and seed it with `ramp`'s data.
+  // LINEAR filtering gives smooth interpolation between texels (the LUT
+  // builder already interpolates between stops at 256 texels of
+  // resolution, so this just smooths the last mile); CLAMP_TO_EDGE avoids
+  // wrap-around bleeding at t=0/t=1.
+  private createLutTexture(ramp: ColorRamp): WebGLTexture {
+    const { gl } = this.ctx
+    const tex = gl.createTexture()
+    if (!tex) throw new Error('Failed to create color-ramp LUT texture')
+    gl.bindTexture(gl.TEXTURE_2D, tex)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGBA8,
+      RAMP_LUT_SIZE, 1, 0,
+      gl.RGBA, gl.UNSIGNED_BYTE, buildRampLUT(ramp, RAMP_LUT_SIZE)
+    )
+    gl.bindTexture(gl.TEXTURE_2D, null)
+    return tex
+  }
+
+  private uploadRampLUT(ramp: ColorRamp) {
+    const { gl } = this.ctx
+    gl.bindTexture(gl.TEXTURE_2D, this.lutTexture)
+    gl.texSubImage2D(
+      gl.TEXTURE_2D, 0, 0, 0,
+      RAMP_LUT_SIZE, 1,
+      gl.RGBA, gl.UNSIGNED_BYTE, buildRampLUT(ramp, RAMP_LUT_SIZE)
+    )
+    gl.bindTexture(gl.TEXTURE_2D, null)
+  }
+
+  // Bind the LUT to its texture unit and set the two uniforms every render
+  // path needs — called from renderRaymarched/renderSlicePlane right next
+  // to the volume bind.
+  private bindColorRamp(prog: CompiledProgram, enabled: boolean) {
+    const { gl } = this.ctx
+    const { compiler } = this
+    gl.activeTexture(gl.TEXTURE0 + RAMP_LUT_TEXTURE_UNIT)
+    gl.bindTexture(gl.TEXTURE_2D, this.lutTexture)
+    compiler.setUniformi(prog, 'u_colorRamp', RAMP_LUT_TEXTURE_UNIT)
+    compiler.setUniformBool(prog, 'u_colorRampEnabled', enabled)
   }
 
   scheduleGeneration() {
@@ -330,6 +398,7 @@ export class Viewport {
 
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
+    this.bindColorRamp(prog, preview.colorRamp.enabled)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
@@ -362,6 +431,7 @@ export class Viewport {
 
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
+    this.bindColorRamp(prog, preview.colorRamp.enabled)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
@@ -416,6 +486,7 @@ export class Viewport {
     this.volume.destroy()
     this.proxyGenerator.destroy()
     this.proxyVolume.destroy()
+    this.ctx.gl.deleteTexture(this.lutTexture)
     this.ctx.gl.deleteVertexArray(this.vao)
   }
 }

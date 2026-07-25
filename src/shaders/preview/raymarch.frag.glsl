@@ -21,6 +21,8 @@ uniform float u_exposure;
 uniform vec3 u_lightDir;
 uniform float u_cutoff;
 uniform float u_contrast;
+uniform sampler2D u_colorRamp;
+uniform bool u_colorRampEnabled;
 
 const vec3 BACKGROUND_COLOR = vec3(0.0);
 const float EXTINCTION_SCALE = 12.0;
@@ -87,23 +89,38 @@ void main() {
     float densityMul;
     if (sampleScene(worldPos, volumePos, densityMul)) {
       float sampleValue = applyDensityShaping(texture(u_volume, volumePos).r, u_cutoff, u_contrast);
-      float density = sampleValue * (u_density * densityMul);
 
-      if (density > 0.001) {
-        // Simple lighting: sample slightly toward light
-        vec3 lightWorldPos = worldPos + u_lightDir * 0.05;
-        float shadow = 1.0;
-        vec3 lightVolumePos;
-        float lightDensityMul;
-        if (sampleScene(lightWorldPos, lightVolumePos, lightDensityMul)) {
-          float lightSample = applyDensityShaping(texture(u_volume, lightVolumePos).r, u_cutoff, u_contrast);
-          shadow = 1.0 - lightSample * lightDensityMul * 0.75;
+      if (u_colorRampEnabled) {
+        // Colored transfer function (VFX-0 Task 3): the ramp's rgb is an
+        // emissive color (no external lighting/shadow term) and its alpha
+        // drives the per-sample opacity fed into the same extinction
+        // formula the grayscale path uses below.
+        vec4 ramp = texture(u_colorRamp, vec2(sampleValue, 0.5));
+        float density = ramp.a * (u_density * densityMul);
+        if (density > 0.001) {
+          float alpha = 1.0 - exp(-density * stepSize * EXTINCTION_SCALE);
+          accumulatedColor += ramp.rgb * alpha * transmittance;
+          transmittance *= (1.0 - alpha);
         }
+      } else {
+        float density = sampleValue * (u_density * densityMul);
 
-        float alpha = 1.0 - exp(-density * stepSize * EXTINCTION_SCALE);
-        vec3 voxelColor = mix(shadowColor, cloudColor, clamp(shadow, 0.0, 1.0));
-        accumulatedColor += voxelColor * alpha * transmittance;
-        transmittance *= (1.0 - alpha);
+        if (density > 0.001) {
+          // Simple lighting: sample slightly toward light
+          vec3 lightWorldPos = worldPos + u_lightDir * 0.05;
+          float shadow = 1.0;
+          vec3 lightVolumePos;
+          float lightDensityMul;
+          if (sampleScene(lightWorldPos, lightVolumePos, lightDensityMul)) {
+            float lightSample = applyDensityShaping(texture(u_volume, lightVolumePos).r, u_cutoff, u_contrast);
+            shadow = 1.0 - lightSample * lightDensityMul * 0.75;
+          }
+
+          float alpha = 1.0 - exp(-density * stepSize * EXTINCTION_SCALE);
+          vec3 voxelColor = mix(shadowColor, cloudColor, clamp(shadow, 0.0, 1.0));
+          accumulatedColor += voxelColor * alpha * transmittance;
+          transmittance *= (1.0 - alpha);
+        }
       }
     }
 

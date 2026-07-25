@@ -17,6 +17,7 @@ import type {
   VolumeSettings, Resolution, SliceCount,
   PreviewSettings, AnimationSettings, CameraState,
 } from '../types/index'
+import type { ColorRamp, RampStop } from '../core/colorRamp'
 import {
   BlendMode, NoiseType, WorleyMode, DistortionType, FeatherShape,
   PreviewMode, SliceAxis, ProjectionMode, DEFAULT_SDF,
@@ -201,6 +202,36 @@ function sanitizeSettings(rec: Record<string, unknown>): VolumeSettings {
   }
 }
 
+// A malformed stop (missing/non-finite field, out-of-range t/color/alpha) is
+// dropped rather than clamped or defaulted, per the color-ramp validation
+// contract (VFX-0 Task 3) — a single bad stop in an otherwise-good ramp just
+// disappears instead of corrupting the gradient with a guessed value.
+function asRampStop(v: unknown): RampStop | undefined {
+  if (!isRecord(v)) return undefined
+  const t = asFiniteNumber(v.t)
+  const alpha = asFiniteNumber(v.alpha)
+  const color = v.color
+  if (t === undefined || alpha === undefined) return undefined
+  if (t < 0 || t > 1 || alpha < 0 || alpha > 255) return undefined
+  if (!Array.isArray(color) || color.length !== 3 || !color.every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 255)) {
+    return undefined
+  }
+  const [r, g, b] = color as [number, number, number]
+  return { t, color: [r, g, b], alpha }
+}
+
+// Whole ramp falls back to `fallback` if `stops` is absent/not-an-array or
+// every stop turns out malformed; otherwise keeps whichever individual
+// stops survive asRampStop.
+function sanitizeColorRamp(raw: unknown, fallback: ColorRamp): ColorRamp {
+  const rec = isRecord(raw) ? raw : {}
+  const enabled = asBoolean(rec.enabled) ?? fallback.enabled
+  const stops = Array.isArray(rec.stops)
+    ? rec.stops.map(asRampStop).filter((s): s is RampStop => s !== undefined)
+    : []
+  return { enabled, stops: stops.length > 0 ? stops : fallback.stops }
+}
+
 function sanitizePreview(rec: Record<string, unknown>): PreviewSettings {
   const defaults = defaultState().preview
   return {
@@ -213,6 +244,7 @@ function sanitizePreview(rec: Record<string, unknown>): PreviewSettings {
     exposure: asFiniteNumber(rec.exposure) ?? defaults.exposure,
     showTilePreview: asBoolean(rec.showTilePreview) ?? defaults.showTilePreview,
     tilePreviewDensity: asFiniteNumber(rec.tilePreviewDensity) ?? defaults.tilePreviewDensity,
+    colorRamp: sanitizeColorRamp(rec.colorRamp, defaults.colorRamp),
   }
 }
 

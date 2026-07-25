@@ -4,6 +4,7 @@ import {
 } from '../types/index'
 import type { Layer, VolumeSettings, PreviewSettings, CameraState, AnimationSettings } from '../types/index'
 import { uid } from '../utils/uid'
+import { RAMP_PRESETS } from '../core/colorRamp'
 
 export function defaultLayer(name?: string, noiseType: NoiseType = NoiseType.Perlin): Layer {
   return {
@@ -87,6 +88,7 @@ export function defaultState(): AppState {
       exposure: 1.0,
       showTilePreview: false,
       tilePreviewDensity: 0.45,
+      colorRamp: { enabled: false, stops: RAMP_PRESETS.fire },
     },
     animation: {
       phase: 0,
