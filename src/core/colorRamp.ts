@@ -26,8 +26,9 @@ function lerp(a: number, b: number, f: number): number {
 
 // Sample the (sorted) stop list at t, clamping to the first/last stop
 // outside their range and linearly interpolating color+alpha between the
-// bracketing pair otherwise.
-function sampleStops(stops: RampStop[], t: number): [number, number, number, number] {
+// bracketing pair otherwise. Exported for GradientEditor.ts (VFX-0 Task 4),
+// which reuses it to color a newly-inserted stop at the clicked t.
+export function sampleStops(stops: RampStop[], t: number): [number, number, number, number] {
   const first = stops[0]
   if (t <= first.t) return [first.color[0], first.color[1], first.color[2], first.alpha]
 
@@ -70,6 +71,19 @@ export function buildRampLUT(ramp: ColorRamp, size = 256): Uint8Array {
     lut[o + 3] = a
   }
   return lut
+}
+
+// Clamp every stop's t to [0,1] and its color/alpha to byte range, then sort
+// ascending by t. Used by GradientEditor.ts (VFX-0 Task 4) after every edit
+// (drag/add/remove/recolor) so onChange always emits well-formed stops.
+export function normalizeRampStops(stops: RampStop[]): RampStop[] {
+  return stops
+    .map((s) => ({
+      t: Math.max(0, Math.min(1, s.t)),
+      color: [clampByte(s.color[0]), clampByte(s.color[1]), clampByte(s.color[2])] as [number, number, number],
+      alpha: clampByte(s.alpha),
+    }))
+    .sort((a, b) => a.t - b.t)
 }
 
 export const RAMP_PRESETS: Record<'fire' | 'smoke' | 'explosion', RampStop[]> = {

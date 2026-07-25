@@ -7,7 +7,9 @@ import { Slider } from '../components/Slider'
 import { Select } from '../components/Select'
 import { Toggle } from '../components/Toggle'
 import { BezierCurveEditor } from '../components/BezierCurveEditor'
+import { GradientEditor } from '../components/GradientEditor'
 import { NOISE_LABELS, NOISE_COLORS } from '../../utils/colorMap'
+import { RAMP_PRESETS, type RampStop } from '../../core/colorRamp'
 
 // Single source of truth for slider/curve right-click reset defaults.
 const D = defaultLayer()
@@ -53,6 +55,7 @@ export class PropertiesPanel {
   private sectionState = new Map<string, boolean>()
   private currentLayerSignature: string | null = null
   private viewport: Viewport
+  private readonly colorSectionEl: HTMLElement
 
   private getLayerById(id: string): Layer | null {
     return this.state.get('layers').find(layer => layer.id === id) ?? null
@@ -122,6 +125,11 @@ export class PropertiesPanel {
     // BezierCurveEditor's mouse-event drag tracking to pointer capture.
     window.addEventListener('blur', () => this.viewport.setInteracting(false))
 
+    // Color (VFX-0 Task 4): built once and re-appended (not rebuilt) on every
+    // render() -- it's a `preview.colorRamp` control, not per-layer, and its
+    // GradientEditor holds live drag state that a teardown/rebuild would lose.
+    this.colorSectionEl = this.buildColorSection()
+
     this.state.subscribe('selected', () => this.render())
     this.state.subscribe('layers', () => this.handleLayersChange())
     this.render()
@@ -140,6 +148,7 @@ export class PropertiesPanel {
       msg.className = 'prop-empty'
       msg.textContent = 'Select a layer to edit properties'
       this.contentEl.appendChild(msg)
+      this.contentEl.appendChild(this.colorSectionEl)
       return
     }
 
@@ -150,6 +159,7 @@ export class PropertiesPanel {
     this.contentEl.appendChild(this.buildTransformSection(layer))
     this.contentEl.appendChild(this.buildDistortionSection(layer))
     this.contentEl.appendChild(this.buildRemapSection(layer))
+    this.contentEl.appendChild(this.colorSectionEl)
   }
 
   private handleLayersChange() {
@@ -548,6 +558,89 @@ export class PropertiesPanel {
     )
   }
 
+  // Color ramp (VFX-0 Task 4): enable toggle + preset dropdown + the full
+  // GradientEditor. Layer-independent (writes `preview.colorRamp`, which is
+  // not a regen trigger -- see StateManager.REGEN_TRIGGERS), so this is built
+  // once in the constructor and shown regardless of layer selection. This
+  // replaces the Task-3 placeholder toggle+select that lived in
+  // ViewportOverlay -- that duplicate control was removed so there's a single
+  // place to edit the ramp instead of two competing ones.
+  private buildColorSection(): HTMLElement {
+    const body = document.createElement('div')
+    body.className = 'prop-body'
+    const preview = this.state.get('preview')
+
+    const enableToggle = new Toggle('Enabled', preview.colorRamp.enabled, (v) => {
+      const p = this.state.get('preview')
+      this.state.update('preview', { ...p, colorRamp: { ...p.colorRamp, enabled: v } })
+    })
+    body.appendChild(enableToggle.el)
+
+    const presetRow = document.createElement('div')
+    presetRow.className = 'prop-row'
+    const presetLabel = document.createElement('span')
+    presetLabel.className = 'prop-label'
+    presetLabel.textContent = 'Preset'
+    const presetOptions = [
+      ...Object.keys(RAMP_PRESETS).map((k) => ({ value: k, label: k[0].toUpperCase() + k.slice(1) })),
+      { value: 'custom', label: 'Custom' },
+    ]
+    const presetSelect = new Select(presetOptions, matchPreset(preview.colorRamp.stops), (v) => {
+      if (v === 'custom') return // "Custom" isn't a loadable preset -- it only ever appears as a readout
+      const p = this.state.get('preview')
+      const stops = RAMP_PRESETS[v as keyof typeof RAMP_PRESETS]
+      this.state.update('preview', { ...p, colorRamp: { ...p.colorRamp, stops } })
+    })
+    presetRow.appendChild(presetLabel)
+    presetRow.appendChild(presetSelect.el)
+    body.appendChild(presetRow)
+
+    // Guards against the editor's own onChange (fired live on every drag
+    // tick) echoing back into editor.setRamp() and tearing down its picker
+    // mid-edit (e.g. closing an open native color-picker popup). External
+    // changes -- preset load, project load, undo -- still sync normally.
+    let selfUpdate = false
+    const editor = new GradientEditor(preview.colorRamp, (ramp) => {
+      const p = this.state.get('preview')
+      selfUpdate = true
+      this.state.update('preview', { ...p, colorRamp: { ...p.colorRamp, stops: ramp.stops } })
+      selfUpdate = false
+    })
+    body.appendChild(editor.el)
+
+    this.state.subscribe('preview', (p) => {
+      enableToggle.setValue(p.colorRamp.enabled)
+      presetSelect.setValue(matchPreset(p.colorRamp.stops))
+      if (!selfUpdate) editor.setRamp(p.colorRamp)
+    })
+
+    return section(
+      'Color',
+      body,
+      this.getSectionOpen('global', 'Color', true),
+      (open) => this.setSectionOpen('global', 'Color', open)
+    )
+  }
+
+}
+
+// Resolves the preset <select>'s displayed value from actual state (VFX-0
+// Task 4 fix for the Task-3 minor: a stale-looking dropdown after a preset
+// load or undo). Falls back to "custom" whenever the stops don't exactly
+// match a known preset -- e.g. after any manual edit in the GradientEditor.
+function matchPreset(stops: RampStop[]): string {
+  for (const [key, preset] of Object.entries(RAMP_PRESETS)) {
+    if (stopsEqual(stops, preset)) return key
+  }
+  return 'custom'
+}
+
+function stopsEqual(a: RampStop[], b: RampStop[]): boolean {
+  if (a.length !== b.length) return false
+  return a.every((s, i) =>
+    s.t === b[i].t && s.alpha === b[i].alpha &&
+    s.color[0] === b[i].color[0] && s.color[1] === b[i].color[1] && s.color[2] === b[i].color[2]
+  )
 }
 
 function getLayerEditorSignature(layer: Layer | null): string | null {
