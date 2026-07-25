@@ -81,22 +81,34 @@ export class FlipbookExporter {
     const rows = flipbookRows(frames, cols)
     const tileRes = Math.max(1, Math.floor(config.tileRes))
 
-    const generator = new VolumeGenerator(gl, compiler, settings.resolution)
-    const bakeVolume = new VolumeTexture(gl, settings.resolution, settings.depth)
-    const target = createRenderTarget(gl, tileRes)
-
+    // Allocate canvases and tracking objects outside try (no GL resources);
+    // all GL-owned resources (generator, bakeVolume, target, contexts) are
+    // allocated inside try so the finally cleanup covers allocation failures.
     const sheet = document.createElement('canvas')
     sheet.width = cols * tileRes
     sheet.height = rows * tileRes
-    const sheetCtx = get2dContext(sheet)
 
     const frameCanvas = document.createElement('canvas')
     frameCanvas.width = tileRes
     frameCanvas.height = tileRes
-    const frameCtx = config.pngSequence ? get2dContext(frameCanvas) : null
     const pngFiles: Record<string, Uint8Array> = {}
 
+    let generator: VolumeGenerator | null = null
+    let bakeVolume: VolumeTexture | null = null
+    let target: { fbo: WebGLFramebuffer; texture: WebGLTexture } | null = null
+    let sheetCtx: CanvasRenderingContext2D | null = null
+    let frameCtx: CanvasRenderingContext2D | null = null
+
     try {
+      // Allocate all GL-owned resources inside try block so finally cleanup
+      // runs even if any allocation throws (e.g., createRenderTarget FBO
+      // creation fails, or get2dContext unavailable).
+      generator = new VolumeGenerator(gl, compiler, settings.resolution)
+      bakeVolume = new VolumeTexture(gl, settings.resolution, settings.depth)
+      target = createRenderTarget(gl, tileRes)
+      sheetCtx = get2dContext(sheet)
+      frameCtx = config.pngSequence ? get2dContext(frameCanvas) : null
+
       for (let i = 0; i < frames; i++) {
         const phase = i / frames
         const frameData = await generator.generateFrameData(
@@ -167,10 +179,13 @@ export class FlipbookExporter {
         filters: [{ name: 'JSON Metadata', extensions: ['json'] }],
       })
     } finally {
-      generator.destroy()
-      bakeVolume.destroy()
-      gl.deleteFramebuffer(target.fbo)
-      gl.deleteTexture(target.texture)
+      // Null-guard each resource: only delete what was actually created.
+      if (generator) generator.destroy()
+      if (bakeVolume) bakeVolume.destroy()
+      if (target) {
+        gl.deleteFramebuffer(target.fbo)
+        gl.deleteTexture(target.texture)
+      }
       // renderParams.colorRampTexture was built just for this bake (see
       // Viewport.snapshotRaymarchParams) — ownership passes to us here.
       gl.deleteTexture(renderParams.colorRampTexture)
