@@ -14,58 +14,106 @@ export type PackedFrame = {
   indirection: Uint8Array
 }
 
-function macroDims(res: number, depth: number): [number, number, number] {
+export function macroDims(res: number, depth: number): [number, number, number] {
   const mx = Math.ceil(res / BRICK)
   const my = Math.ceil(res / BRICK)
   const mz = Math.ceil(depth / BRICK)
   return [mx, my, mz]
 }
 
+// Cubic-ish brick grid edge length for a given brick budget: the smallest
+// `bpa` whose cube (bpa^3 slots) covers maxBricks. Growing all three axes
+// together (instead of a fixed base-256 decomposition that forced a
+// 256-brick-wide == 4096-texel atlas past 256 bricks) keeps the atlas within
+// a typical `MAX_3D_TEXTURE_SIZE` (often 2048) — see BrickCache.computeMaxBricks,
+// which sizes maxBricks from both the VRAM budget and that GL limit.
+export function bricksPerAxis(maxBricks: number): number {
+  return Math.max(1, Math.ceil(Math.cbrt(Math.max(1, maxBricks))))
+}
+
+// Whole RG bricks (2 bytes/voxel) a VRAM budget affords.
+export function maxBricksForBudget(budgetBytes: number, brick: number = BRICK): number {
+  const bytesPerBrick = brick * brick * brick * 2
+  return Math.max(1, Math.floor(budgetBytes / bytesPerBrick))
+}
+
 // Maps an insertion-order slot index to its xyz coordinates in the atlas
-// brick grid, as a fixed base-256 decomposition (x = low byte, y = mid byte,
-// z = high byte). This is deliberately independent of the atlas's final
-// dimensions: a frame is packed (and its indirection texel written) before
-// the loop-wide atlas size is known — later frames can still add bricks
-// after this one. Using a fixed radix (not modulo by the eventual atlas
-// width) means the same slot always maps to the same xyz no matter how many
-// more bricks get appended afterward. `AtlasBuilder.data()` (placing bricks)
-// and `packFrame` (writing indirection) both call this — the one shared
-// source of truth reconstruct's callers rely on via the indirection texel.
-function slotToXYZ(slot: number): [number, number, number] {
-  const x = slot % 256
-  const y = Math.floor(slot / 256) % 256
-  const z = Math.floor(slot / 65536)
+// brick grid, cubic-decomposed against a FIXED `bpa` (bricksPerAxis) shared
+// by every call for the lifetime of one AtlasBuilder. `bpa` must be decided
+// once, upfront (from a brick budget — see bricksPerAxis), independent of how
+// many bricks actually end up used: a frame is packed (and its indirection
+// texel written) before later frames have added their own bricks, so the
+// same slot must always map to the same xyz no matter how many more bricks
+// get appended afterward. `AtlasBuilder.data()` (placing bricks) and
+// `packFrame` (writing indirection) both call this with the same `bpa` — the
+// one shared source of truth reconstruct's callers rely on via the
+// indirection texel.
+function slotToXYZ(slot: number, bpa: number): [number, number, number] {
+  const x = slot % bpa
+  const y = Math.floor(slot / bpa) % bpa
+  const z = Math.floor(slot / (bpa * bpa))
   return [x, y, z]
 }
 
 // Accumulates active bricks (RG, BRICK^3 voxels each) across frames into a
-// growing flat list. `data()` lays the accumulated bricks out into a 3D grid
-// of BRICK^3 slots (positioned via slotToXYZ) for upload as a single RG atlas
-// texture. `atlasDimsInBricks` only needs to be large enough to contain every
-// used slot's xyz — it does not affect where a given slot lands.
+// growing flat list, up to a fixed `maxBricks` budget (see bricksPerAxis).
+// `data()` lays the accumulated bricks out into a cubic 3D grid of BRICK^3
+// slots (positioned via slotToXYZ) for upload as a single RG atlas texture.
 export class AtlasBuilder {
   private readonly brick: number
+  private readonly bpa: number
+  private readonly capacity: number
   private readonly bricks: Uint8Array[] = []
+  private warnedFull = false
 
-  constructor(brick: number) {
+  constructor(brick: number, maxBricks: number) {
     this.brick = brick
+    this.bpa = bricksPerAxis(maxBricks)
+    this.capacity = this.bpa * this.bpa * this.bpa
   }
 
   get bricksUsed(): number {
     return this.bricks.length
   }
 
-  // Appends one BRICK^3 RG brick (length brick*brick*brick*2), returns its slot index.
+  // Fixed cubic grid edge (in bricks) this builder places slots against —
+  // callers that need to re-derive slot xyz (e.g. tests) must use this, not
+  // a value computed from `bricksUsed`.
+  get bricksPerAxis(): number {
+    return this.bpa
+  }
+
+  // Atlas dims (in units of bricks) `data()` lays bricks out into — always
+  // the full cube, not a tight bounding box of used slots (simpler, and the
+  // unused headroom is cheap: it's just texels, not extra bricks).
+  get atlasDimsInBricks(): [number, number, number] {
+    return [this.bpa, this.bpa, this.bpa]
+  }
+
+  // Appends one BRICK^3 RG brick (length brick*brick*brick*2), returns its
+  // slot index, or -1 if the brick budget (bpa^3 slots) is exhausted.
+  // ponytail: a hard cap, not cross-frame dedup — fire/smoke bricks rarely
+  // repeat byte-for-byte across frames, so hashing them would rarely pay for
+  // its own bookkeeping. Upgrade path if VRAM gets tight: per-brick LRU
+  // eviction instead of a hard reject (dropped macrocells just stay empty).
   append(brickRG: Uint8Array): number {
+    if (this.bricks.length >= this.capacity) {
+      if (!this.warnedFull) {
+        console.warn(
+          `AtlasBuilder: brick budget (${this.capacity}) exhausted — further active macrocells are dropped (left empty) instead of overflowing the atlas.`
+        )
+        this.warnedFull = true
+      }
+      return -1
+    }
     this.bricks.push(brickRG)
     return this.bricks.length - 1
   }
 
-  // Packs all accumulated bricks into a single RG atlas sized atlasDimsInBricks
-  // (in units of bricks, not voxels).
-  data(atlasDimsInBricks: readonly [number, number, number]): Uint8Array {
+  // Packs all accumulated bricks into a single RG atlas sized atlasDimsInBricks.
+  data(): Uint8Array {
     const b = this.brick
-    const [ax, ay, az] = atlasDimsInBricks
+    const [ax, ay, az] = this.atlasDimsInBricks
     const atlasResX = ax * b
     const atlasResY = ay * b
     const atlasResZ = az * b
@@ -73,7 +121,7 @@ export class AtlasBuilder {
 
     for (let slot = 0; slot < this.bricks.length; slot++) {
       const brickData = this.bricks[slot]
-      const [sx, sy, sz] = slotToXYZ(slot)
+      const [sx, sy, sz] = slotToXYZ(slot, this.bpa)
       const originX = sx * b
       const originY = sy * b
       const originZ = sz * b
@@ -145,11 +193,15 @@ export function packFrame(
         const macroI = (mz_ * mx * my + my_ * mx + mx_) * 4
         if (active) {
           const slot = builder.append(brickData)
-          const [sx, sy, sz] = slotToXYZ(slot)
-          indirection[macroI] = sx
-          indirection[macroI + 1] = sy
-          indirection[macroI + 2] = sz
-          indirection[macroI + 3] = 255
+          if (slot >= 0) {
+            const [sx, sy, sz] = slotToXYZ(slot, builder.bricksPerAxis)
+            indirection[macroI] = sx
+            indirection[macroI + 1] = sy
+            indirection[macroI + 2] = sz
+            indirection[macroI + 3] = 255
+          }
+          // else: brick budget exhausted (builder already warned) — leave
+          // this macrocell's texel at [0,0,0,0], same as a genuinely empty one.
         }
         // else: leave the texel at [0,0,0,0] (Uint8Array default) — empty.
       }
@@ -160,10 +212,10 @@ export function packFrame(
 }
 
 // Rebuilds the dense RG frame (res*res*depth*2) from `atlas` + `packed.indirection`.
-// Empty macrocells become all-zero. `atlasDimsInBricks` must match the dims
-// passed to AtlasBuilder.data() when the atlas was produced (it only affects
-// the atlas's own flat-array layout — slot placement itself is fixed, see
-// slotToXYZ above).
+// Empty macrocells become all-zero. `atlasDimsInBricks` must match the
+// builder's `atlasDimsInBricks` when the atlas was produced by `data()` (it
+// only affects the atlas's own flat-array layout — slot placement itself is
+// fixed, see slotToXYZ above).
 export function reconstruct(
   atlas: Uint8Array,
   atlasDimsInBricks: [number, number, number],

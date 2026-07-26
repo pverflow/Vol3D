@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { AtlasBuilder, packFrame, reconstruct, BRICK } from './brickPack'
+import { AtlasBuilder, packFrame, reconstruct, BRICK, bricksPerAxis, maxBricksForBudget } from './brickPack'
 
 // tiny volume: res=32, depth=32 → macrocells 2x2x2 (BRICK=16)
 function makeDense(res: number, depth: number, fill: (x: number, y: number, z: number) => [number, number]) {
@@ -21,10 +21,10 @@ describe('brickPack round-trip', () => {
       depth = 32
     // one active brick: the (0,0,0) 16^3 corner has density 200
     const dense = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [200, 50] : [0, 0]))
-    const builder = new AtlasBuilder(BRICK)
+    const builder = new AtlasBuilder(BRICK, 8) // 2x2x2 macro grid -> at most 8 bricks
     const packed = packFrame(dense, res, depth, builder, 0)
-    const atlasDims: [number, number, number] = [Math.max(builder.bricksUsed, 1), 1, 1]
-    const recon = reconstruct(builder.data(atlasDims), atlasDims, packed, res, depth, BRICK)
+    const atlasDims = builder.atlasDimsInBricks
+    const recon = reconstruct(builder.data(), atlasDims, packed, res, depth, BRICK)
     // active corner preserved
     expect(recon[0]).toBe(200)
     expect(recon[1]).toBe(50)
@@ -44,14 +44,14 @@ describe('brickPack round-trip', () => {
     // frame B: the opposite corner (16,16,16) active
     const denseB = makeDense(res, depth, (x, y, z) => (x >= 16 && y >= 16 && z >= 16 ? [222, 22] : [0, 0]))
 
-    const builder = new AtlasBuilder(BRICK)
+    const builder = new AtlasBuilder(BRICK, 8)
     const packedA = packFrame(denseA, res, depth, builder, 0)
     const packedB = packFrame(denseB, res, depth, builder, 0)
 
     expect(builder.bricksUsed).toBe(2)
 
-    const atlasDims: [number, number, number] = [builder.bricksUsed, 1, 1]
-    const atlas = builder.data(atlasDims)
+    const atlasDims = builder.atlasDimsInBricks
+    const atlas = builder.data()
 
     const reconA = reconstruct(atlas, atlasDims, packedA, res, depth, BRICK)
     const reconB = reconstruct(atlas, atlasDims, packedB, res, depth, BRICK)
@@ -69,5 +69,68 @@ describe('brickPack round-trip', () => {
     expect(reconB[kB + 1]).toBe(22)
     expect(reconB[0]).toBe(0)
     expect(reconB[1]).toBe(0)
+  })
+})
+
+describe('cubic atlas layout (past the old 256-brick cliff)', () => {
+  it('bricksPerAxis grows as a cube root, not a fixed 256-wide axis', () => {
+    expect(bricksPerAxis(1)).toBe(1)
+    expect(bricksPerAxis(8)).toBe(2)
+    expect(bricksPerAxis(9)).toBe(3) // cbrt(9) ~ 2.08 -> rounds up
+    expect(bricksPerAxis(300)).toBe(7) // 6^3=216 < 300 <= 343=7^3
+  })
+
+  it('maxBricksForBudget divides the VRAM budget by bytes-per-brick', () => {
+    // BRICK=16 -> 16^3*2 = 8192 bytes/brick; 96MB budget -> 12288 bricks
+    expect(maxBricksForBudget(96 * 1024 * 1024, BRICK)).toBe(12288)
+  })
+
+  it('keeps atlas dims small and cubic even with >256 bricks used, and round-trips slots past the old 256 cliff', () => {
+    const maxBricks = 300
+    const builder = new AtlasBuilder(BRICK, maxBricks)
+
+    // Append 260 distinct bricks (each stamped with its own slot as a marker
+    // at the brick's local origin voxel) — this alone exceeds the old fixed
+    // base-256 scheme's per-axis width, which would have forced a
+    // 256*16=4096-texel-wide atlas axis (past most MAX_3D_TEXTURE_SIZE limits).
+    const bricksUsedTarget = 260
+    for (let slot = 0; slot < bricksUsedTarget; slot++) {
+      const brickData = new Uint8Array(BRICK * BRICK * BRICK * 2)
+      brickData[0] = slot % 256
+      brickData[1] = Math.floor(slot / 256)
+      expect(builder.append(brickData)).toBe(slot)
+    }
+    expect(builder.bricksUsed).toBe(bricksUsedTarget)
+
+    // bpa = ceil(cbrt(300)) = 7 -> atlas is 7x7x7 bricks (112 texels/axis),
+    // nowhere near the old scheme's forced 256-wide (4096-texel) axis.
+    const bpa = builder.bricksPerAxis
+    expect(bpa).toBe(7)
+    expect(builder.atlasDimsInBricks).toEqual([7, 7, 7])
+
+    const atlas = builder.data()
+    const atlasResX = bpa * BRICK
+    const atlasResY = bpa * BRICK
+
+    // Spot-check slots straddling the old 256 cliff round-trip correctly.
+    for (const slot of [0, 255, 256, 259]) {
+      const sx = slot % bpa
+      const sy = Math.floor(slot / bpa) % bpa
+      const sz = Math.floor(slot / (bpa * bpa))
+      const i = (sz * BRICK * atlasResX * atlasResY + sy * BRICK * atlasResX + sx * BRICK) * 2
+      expect(atlas[i]).toBe(slot % 256)
+      expect(atlas[i + 1]).toBe(Math.floor(slot / 256))
+    }
+  })
+
+  it('caps appends at the brick budget (bpa^3 capacity) instead of overflowing the atlas', () => {
+    const builder = new AtlasBuilder(BRICK, 8) // bpa=2 -> capacity=8, exact
+    for (let i = 0; i < 8; i++) {
+      expect(builder.append(new Uint8Array(BRICK * BRICK * BRICK * 2))).toBe(i)
+    }
+    // 9th append is past capacity -> rejected, not silently overflowing into
+    // another slot's territory.
+    expect(builder.append(new Uint8Array(BRICK * BRICK * BRICK * 2))).toBe(-1)
+    expect(builder.bricksUsed).toBe(8)
   })
 })
