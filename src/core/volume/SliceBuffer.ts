@@ -116,7 +116,7 @@ export class SliceBuffer {
     const { gl } = this
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.framebuffer)
     gl.viewport(0, 0, this.resolution, this.resolution)
-    gl.clearColor(0, 0, 0, 1)
+    gl.clearColor(0, 0, 0, 0)  // [colorRGB, density] — density (alpha) starts at 0 (VFX-2)
     gl.clear(gl.COLOR_BUFFER_BIT)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   }

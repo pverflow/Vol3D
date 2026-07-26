@@ -1,4 +1,5 @@
 import type { NoiseConfig } from './noise'
+import type { ColorRamp } from '../core/colorRamp'
 
 export enum BlendMode {
   Normal = 'normal',
@@ -58,4 +59,5 @@ export interface Layer {
   distortion: DistortionConfig
   remap: RemapConfig
   invert: boolean
+  colorRamp: ColorRamp  // per-layer color (VFX-2). Maps this layer's own value 0..1 -> RGBA.
 }

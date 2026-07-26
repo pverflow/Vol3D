@@ -14,14 +14,12 @@ uniform float u_planeAspect;
 uniform float u_screenAspect;
 uniform float u_cutoff;
 uniform float u_contrast;
-uniform sampler2D u_colorRamp;
-uniform bool u_colorRampEnabled;
 
-// Dense-vs-sparse switch (VFX-1 Task 4) — see raymarch.frag.glsl's copy for
-// the full rationale (byte-identical dense path when !u_sparseEnabled).
-vec2 sampleVolume(vec3 p) {
+// Dense-vs-sparse switch — returns [colorRGB, density] (VFX-2). See
+// raymarch.frag.glsl's copy for the full rationale.
+vec4 sampleVolume(vec3 p) {
   if (u_sparseEnabled) return sampleSparse(p);
-  return texture(u_volume, p).rg;
+  return texture(u_volume, p);
 }
 
 bool fitPlaneUv(vec2 uv, out vec2 planeUv) {
@@ -43,8 +41,8 @@ void main() {
 
   float acc = 0.0;
   float maxVal = 0.0;
-  float heatAcc = 0.0;
-  float heatAtMax = 0.0;
+  vec3 colorAcc = vec3(0.0);
+  vec3 colorAtMax = vec3(0.0);
 
   int steps = max(u_steps, 8);
   float invSteps = 1.0 / float(steps);
@@ -57,32 +55,21 @@ void main() {
     else if (u_sliceAxis == 1) uvw = vec3(planeUv.x, t, planeUv.y);
     else uvw = vec3(planeUv.x, planeUv.y, t);
 
-    vec2 rg = sampleVolume(uvw);
-    float v = applyDensityShaping(rg.r, u_cutoff, u_contrast);
+    vec4 texel = sampleVolume(uvw);   // [colorRGB, density]
+    float v = applyDensityShaping(texel.a, u_cutoff, u_contrast);
     acc += v;
-    heatAcc += rg.g;
+    colorAcc += texel.rgb;
     if (v > maxVal) {
       maxVal = v;
-      heatAtMax = rg.g;
+      colorAtMax = texel.rgb;
     }
   }
 
   float result = (u_projMode == 0) ? acc * invSteps : maxVal;
-  float heat = (u_projMode == 0) ? heatAcc * invSteps : heatAtMax;
+  vec3 color = (u_projMode == 0) ? colorAcc * invSteps : colorAtMax;
   result = clamp(result * u_exposure, 0.0, 1.0);
 
-  vec3 bg = vec3(0.05, 0.05, 0.1);
-  vec3 col;
-  if (u_colorRampEnabled) {
-    // Smoke + glow (VFX-1 UX fix): dark smoke grey from projected density,
-    // plus additive fire emission from the ramp looked up by projected heat.
-    const float EMISSION_GAIN = 3.0;
-    vec3 smoke = mix(vec3(0.02), vec3(0.18), result);
-    vec4 ramp = texture(u_colorRamp, vec2(heat, 0.5));
-    vec3 emission = ramp.rgb * ramp.a * EMISSION_GAIN;
-    col = smoke + emission;
-  } else {
-    col = mix(bg, vec3(1.0, 1.0, 1.0), result);
-  }
+  // Flat projection: small density-grey ambient + the stored per-layer color.
+  vec3 col = mix(vec3(0.02), vec3(0.18), result) + color;
   fragColor = vec4(col, 1.0);
 }

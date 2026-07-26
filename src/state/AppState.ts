@@ -31,7 +31,7 @@ export function defaultLayer(name?: string, noiseType: NoiseType = NoiseType.Per
       offset: [0.0, 0.0, 0.0],
       rotation: [0.0, 0.0, 0.0],
       seed: 0.0,
-      temperature: 0.5,
+      temperature: 0.5,  // DEPRECATED (VFX-2): ignored by generation; kept so preset round-trip tests (Task-3-owned) stay green until Task 3 removes it.
     },
     distortion: {
       type: DistortionType.None,
@@ -52,6 +52,7 @@ export function defaultLayer(name?: string, noiseType: NoiseType = NoiseType.Per
       featherShape: FeatherShape.Box,
       featherCurve: [0.25, 0.25, 0.75, 0.75],
     },
+    colorRamp: { enabled: true, stops: [...RAMP_PRESETS.fire] },
   }
 }
 

@@ -181,6 +181,7 @@ function sanitizeLayer(rec: Record<string, unknown>): Layer {
     noise: sanitizeNoise(rec.noise, base.noise),
     distortion: sanitizeDistortion(rec.distortion, base.distortion),
     remap: sanitizeRemap(rec.remap, base.remap),
+    colorRamp: base.colorRamp,  // VFX-2: default Fire; proper ramp parsing lands in Task 3.
   }
 }
 

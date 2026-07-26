@@ -13,14 +13,12 @@ uniform float u_planeAspect;
 uniform float u_screenAspect;
 uniform float u_cutoff;
 uniform float u_contrast;
-uniform sampler2D u_colorRamp;
-uniform bool u_colorRampEnabled;
 
-// Dense-vs-sparse switch (VFX-1 Task 4) — see raymarch.frag.glsl's copy for
-// the full rationale (byte-identical dense path when !u_sparseEnabled).
-vec2 sampleVolume(vec3 p) {
+// Dense-vs-sparse switch — returns [colorRGB, density] (VFX-2). See
+// raymarch.frag.glsl's copy for the full rationale.
+vec4 sampleVolume(vec3 p) {
   if (u_sparseEnabled) return sampleSparse(p);
-  return texture(u_volume, p).rg;
+  return texture(u_volume, p);
 }
 
 bool fitPlaneUv(vec2 uv, out vec2 planeUv) {
@@ -49,23 +47,11 @@ void main() {
     uvw = vec3(planeUv.x, planeUv.y, u_slicePos);
   }
 
-  vec2 rg = sampleVolume(uvw);
-  float v = applyDensityShaping(rg.r, u_cutoff, u_contrast);
+  vec4 texel = sampleVolume(uvw);   // [colorRGB, density]
+  float v = applyDensityShaping(texel.a, u_cutoff, u_contrast);
   v = clamp(v * u_exposure, 0.0, 1.0);
 
-  vec3 bg = vec3(0.05, 0.05, 0.1);
-  vec3 col;
-  if (u_colorRampEnabled) {
-    // Smoke + glow (VFX-1 UX fix): dark smoke grey from shaped density,
-    // plus additive fire emission from the ramp looked up by heat.
-    const float EMISSION_GAIN = 3.0;
-    vec3 smoke = mix(vec3(0.02), vec3(0.18), v);
-    vec4 ramp = texture(u_colorRamp, vec2(rg.g, 0.5));
-    vec3 emission = ramp.rgb * ramp.a * EMISSION_GAIN;
-    col = smoke + emission;
-  } else {
-    // Apply a subtle false-color gradient for readability
-    col = mix(bg, vec3(1.0, 1.0, 1.0), v);
-  }
+  // Flat plane view: small density-grey ambient + the stored per-layer color.
+  vec3 col = mix(vec3(0.02), vec3(0.18), v) + texel.rgb;
   fragColor = vec4(col, 1.0);
 }

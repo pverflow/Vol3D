@@ -22,16 +22,16 @@ export class VolumeTexture {
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.REPEAT)
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.REPEAT)
 
-    // Allocate storage — RG8: R=density, G=derived heat (VFX-1 Task 2)
+    // Allocate storage — RGBA8: RGB=per-layer color, A=density (VFX-2)
     gl.texImage3D(
-      gl.TEXTURE_3D, 0, gl.RG8,
+      gl.TEXTURE_3D, 0, gl.RGBA8,
       resolution, resolution, depth,
-      0, gl.RG, gl.UNSIGNED_BYTE, null
+      0, gl.RGBA, gl.UNSIGNED_BYTE, null
     )
     gl.bindTexture(gl.TEXTURE_3D, null)
   }
 
-  // Upload a single Z-slice from a Uint8Array (resolution x resolution, RG interleaved: 2 bytes/voxel)
+  // Upload a single Z-slice from a Uint8Array (resolution x resolution, RGBA interleaved: 4 bytes/voxel)
   uploadSlice(z: number, data: Uint8Array) {
     const { gl, resolution } = this
     gl.bindTexture(gl.TEXTURE_3D, this.texture)
@@ -39,12 +39,12 @@ export class VolumeTexture {
       gl.TEXTURE_3D, 0,
       0, 0, z,
       resolution, resolution, 1,
-      gl.RG, gl.UNSIGNED_BYTE, data
+      gl.RGBA, gl.UNSIGNED_BYTE, data
     )
     gl.bindTexture(gl.TEXTURE_3D, null)
   }
 
-  // data is RG interleaved: 2 bytes/voxel (resolution * resolution * depth * 2)
+  // data is RGBA interleaved: 4 bytes/voxel (resolution * resolution * depth * 4)
   uploadVolume(data: Uint8Array) {
     const { gl, resolution, depth } = this
     gl.bindTexture(gl.TEXTURE_3D, this.texture)
@@ -52,7 +52,7 @@ export class VolumeTexture {
       gl.TEXTURE_3D, 0,
       0, 0, 0,
       resolution, resolution, depth,
-      gl.RG, gl.UNSIGNED_BYTE, data
+      gl.RGBA, gl.UNSIGNED_BYTE, data
     )
     gl.bindTexture(gl.TEXTURE_3D, null)
   }
@@ -63,7 +63,7 @@ export class VolumeTexture {
   }
 
   // Attach Z-layer `z` of this 3D texture as COLOR_ATTACHMENT0 of `fb` so a
-  // fragment shader can render raw density+heat (RG) directly into that slice
+  // fragment shader can render raw color+density (RGBA) directly into that slice
   // (Task 3 live generation path). Returns the framebuffer completeness
   // status — caller checks against gl.FRAMEBUFFER_COMPLETE. Mirrors the
   // pattern in ExportManager.readSlice.

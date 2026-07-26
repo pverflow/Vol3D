@@ -20,9 +20,8 @@ import type { RaymarchParams } from '../../core/export/FlipbookExporter'
 const AXIS_MAP: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
 const PREVIEW_MODE_ORDER: PreviewMode[] = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
 const RAMP_LUT_SIZE = 256
-const RAMP_LUT_TEXTURE_UNIT = 1
 // Sparse brick cache (VFX-1 Task 4): dedicated units so they never collide
-// with u_volume (0) or the color-ramp LUT (1).
+// with u_volume (0). Unit 1 is free (was the removed global color-ramp LUT).
 const SPARSE_ATLAS_TEXTURE_UNIT = 2
 const SPARSE_INDIRECTION_TEXTURE_UNIT = 3
 
@@ -276,20 +275,6 @@ export class Viewport {
     gl.bindTexture(gl.TEXTURE_2D, null)
   }
 
-  // Bind the LUT to its texture unit and set the two uniforms every render
-  // path needs — called from renderRaymarched/renderSlicePlane right next
-  // to the volume bind. `texture` defaults to the shared live LUT; the
-  // flipbook bake passes its own frozen snapshot texture instead (see
-  // RaymarchParams.colorRampTexture) so on-screen behavior is unchanged.
-  private bindColorRamp(prog: CompiledProgram, enabled: boolean, texture: WebGLTexture = this.lutTexture) {
-    const { gl } = this.ctx
-    const { compiler } = this
-    gl.activeTexture(gl.TEXTURE0 + RAMP_LUT_TEXTURE_UNIT)
-    gl.bindTexture(gl.TEXTURE_2D, texture)
-    compiler.setUniformi(prog, 'u_colorRamp', RAMP_LUT_TEXTURE_UNIT)
-    compiler.setUniformBool(prog, 'u_colorRampEnabled', enabled)
-  }
-
   scheduleGeneration() {
     if (this.dirtyTimer !== null) return
     this.dirtyTimer = window.setTimeout(() => {
@@ -506,7 +491,8 @@ export class Viewport {
 
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
-    this.bindColorRamp(prog, p.colorRampEnabled, p.colorRampTexture)
+    // VFX-2: color is the stored per-voxel RGB now; the preview shaders no
+    // longer take a global color ramp (u_colorRamp* removed).
     this.bindSparseUniforms(prog)
   }
 
@@ -567,7 +553,6 @@ export class Viewport {
 
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
-    this.bindColorRamp(prog, preview.colorRamp.enabled)
     this.bindSparseUniforms(prog)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)

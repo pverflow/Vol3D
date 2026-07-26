@@ -6,24 +6,23 @@ out vec4 fragColor;
 
 uniform sampler2D u_accumulator;
 uniform sampler2D u_layerOutput;
+uniform sampler2D u_layerRamp;   // per-layer color LUT (256x1 RGBA8), VFX-2
 uniform float u_opacity;
 uniform int u_blendMode;
-uniform float u_temperature;
-
-// accumulateHeat(float,float,float) injected via HEAT_ACCUM_GLSL (ShaderCompiler)
 
 void main() {
-  float base = texture(u_accumulator, vUv).r;
-  float heatIn = texture(u_accumulator, vUv).g;
-  float layer = texture(u_layerOutput, vUv).r;
+  vec4 acc = texture(u_accumulator, vUv);   // [colorRGB, density]
+  float base = acc.a;
+  float v = texture(u_layerOutput, vUv).r;  // this layer's own value 0..1
 
-  float blended = applyBlend(u_blendMode, base, layer);
+  // Density / shape — UNCHANGED math, now on the alpha channel.
+  float blended = applyBlend(u_blendMode, base, v);
   float density = mix(base, blended, u_opacity);
 
-  // Heat is derived, not its own noise field: density (post-opacity, the same
-  // value just written to .r this layer) weighted by this layer's temperature,
-  // accumulated on top of whatever heat prior layers deposited.
-  float heat = accumulateHeat(heatIn, density, u_temperature);
+  // Color — independent painter's "over" of this layer's ramp(value).
+  vec4 c = texture(u_layerRamp, vec2(v, 0.5));
+  float a = c.a * u_opacity;
+  vec3 rgb = c.rgb * a + acc.rgb * (1.0 - a);
 
-  fragColor = vec4(density, heat, 0.0, 1.0);
+  fragColor = vec4(rgb, density);
 }

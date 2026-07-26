@@ -21,15 +21,17 @@ uniform bool u_sparseEnabled;
 // voxels — so the two can never drift out of sync.
 const float SPARSE_BRICK = ${BRICK_SIZE.toFixed(1)};
 
-// (density, heat) at \`volumePos\` (same normalized [0,1)^3 volume-local coord
-// the dense \`texture(u_volume, volumePos)\` call takes) via the sparse brick
-// atlas. Empty macrocells (no packed brick) return vec2(0.0) — reconstruct()
-// substitutes exact zero for those too (bytes below SPARSE_ACTIVE_THRESHOLD
-// are already lost at pack time), so this is not a new source of error.
-vec2 sampleSparse(vec3 volumePos) {
+// [colorRGB, density] at \`volumePos\` (same normalized [0,1)^3 volume-local
+// coord the dense \`texture(u_volume, volumePos)\` call takes) via the sparse
+// brick atlas. Empty macrocells (no packed brick) return vec4(0.0) —
+// reconstruct() substitutes exact zero for those too (bytes below
+// SPARSE_ACTIVE_THRESHOLD are already lost at pack time), so this is not a new
+// source of error. (VFX-2: the atlas becomes RGBA8 in Task 2; until then the
+// color channels are placeholder — expected intermediate state.)
+vec4 sampleSparse(vec3 volumePos) {
   vec3 mc = floor(volumePos * u_macroDims);
   vec4 ind = texture(u_indirection, (mc + 0.5) / u_macroDims);
-  if (ind.a < 0.5) return vec2(0.0);
+  if (ind.a < 0.5) return vec4(0.0);
 
   // Slot bytes round-trip exactly through the RGBA8 texture (0..255 over
   // 256 levels): +0.5 before floor undoes the /255 normalization safely.
@@ -38,6 +40,6 @@ vec2 sampleSparse(vec3 volumePos) {
   vec3 voxel = clamp(floor(local * SPARSE_BRICK), vec3(0.0), vec3(SPARSE_BRICK - 1.0));
   vec3 atlasVoxel = slot * SPARSE_BRICK + voxel;
   vec3 atlasUvw = (atlasVoxel + 0.5) / (u_atlasDimsBricks * SPARSE_BRICK);
-  return texture(u_atlas, atlasUvw).rg;
+  return texture(u_atlas, atlasUvw);   // [colorRGB, density]
 }
 `
