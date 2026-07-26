@@ -29,14 +29,6 @@ export class StateManager {
   private subscribers = new Map<StateKey, Set<Subscriber<unknown>>>()
   private dirtyTimer: number | null = null
   private onDirty: (() => void) | null = null
-  // Ref-counts overlapping "generation in progress" sources (dense full-res
-  // generation, flipbook export bake, sparse-cache bake — VFX-1 Task 5
-  // carry-forward). Before this, each source called
-  // update('generating', true/false) directly, so one source finishing
-  // (its `finally`) could stomp `generating` back to false while ANOTHER
-  // source was still actively running. beginGenerating/endGenerating make
-  // "generating" only go false once every source that started has ended.
-  private generatingRefCount = 0
 
   constructor(onDirty?: () => void) {
     this.state = defaultState()
@@ -57,26 +49,6 @@ export class StateManager {
 
   update<K extends StateKey>(key: K, value: AppState[K]) {
     this.applyUpdate(key, value, 'update')
-  }
-
-  // Call once per generation source when it starts; pair with exactly one
-  // endGenerating() call (typically in a finally block) when it finishes,
-  // fails, or is superseded. `generating` only flips true->false when the
-  // last outstanding source ends, so two overlapping sources (e.g. a
-  // dense settle-regen and a sparse-cache bake both running around a
-  // play-start) can't have one's completion hide the other's indicator.
-  beginGenerating(): void {
-    this.generatingRefCount++
-    this.update('generating', true)
-    this.update('progress', 0)
-  }
-
-  endGenerating(): void {
-    this.generatingRefCount = Math.max(0, this.generatingRefCount - 1)
-    if (this.generatingRefCount === 0) {
-      this.update('generating', false)
-      this.update('progress', 1)
-    }
   }
 
   private applyUpdate<K extends StateKey>(key: K, value: AppState[K], source: string) {

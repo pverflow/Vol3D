@@ -83,6 +83,24 @@ export class Viewport {
   // a preview-only shading tweak (cutoff/contrast) that the render loop
   // already picks up live via u_cutoff/u_contrast — no regen needed.
   private lastSettings: VolumeSettings
+  // Sole owner of state.generating/progress (VFX-1 Task 5 regression fix).
+  // Bumped at the start of every generateFull()/runFlipbookExport() call;
+  // each call's completion only writes generating=false/progress=1 if its
+  // own id still matches. This matters because generateFull() shares
+  // `this.generator` with any earlier still-running generateFull() call —
+  // VolumeGenerator.runSliceLoop cancels an in-flight chunked-rAF loop the
+  // moment generate() is called again on the same instance, and the
+  // cancelled call's onComplete is simply never invoked. Under the old
+  // ref-counted beginGenerating/endGenerating scheme that meant the
+  // superseded call's endGenerating() never ran, leaking the count and
+  // leaving `generating` stuck true forever. With this id guard, only the
+  // LATEST generateFull()/export call's completion can ever actually fire
+  // (earlier ones are the ones getting cancelled), so it's always the one
+  // whose id still matches — no leak possible, and no explicit "cancel the
+  // old one" bookkeeping needed. The sparse-cache bake (AnimationController)
+  // deliberately does NOT participate in this id or write generating/progress
+  // at all — see buildSparseCache's doc comment for why.
+  private generationId = 0
 
   constructor(state: StateManager) {
     this.state = state
@@ -311,7 +329,9 @@ export class Viewport {
   private generateFull() {
     const { state } = this
     this.animation.resetAppliedFrame()
-    state.beginGenerating()
+    const id = ++this.generationId
+    state.update('generating', true)
+    state.update('progress', 0)
 
     const indicator = document.getElementById('gen-indicator')
     if (indicator) indicator.style.display = 'flex'
@@ -322,9 +342,14 @@ export class Viewport {
       state.get('settings').globalSeed,
       state.get('animation').phase,
       state.get('animation').evolutions,
-      (p) => state.update('progress', p),
+      (p) => { if (id === this.generationId) state.update('progress', p) },
       () => {
-        state.endGenerating()
+        // Superseded by a newer generateFull()/export — that newer call
+        // owns generating/progress now (and will clear them itself when it
+        // finishes), so this stale completion must not touch shared state.
+        if (id !== this.generationId) return
+        state.update('generating', false)
+        state.update('progress', 1)
         if (indicator) indicator.style.display = 'none'
         this.settling = false
         this.animation.buildAnimationCacheIfNeeded()
@@ -572,9 +597,16 @@ export class Viewport {
 
   // Rendered-flipbook export (Task 5): bakes the colored raymarch over the
   // animation loop using the FULL-res generator/volume path (never the drag
-  // proxy) via a dedicated FlipbookExporter instance. Reuses the same
-  // generating/progress state the normal full-res generation uses so the
-  // top-bar progress indicator reflects bake progress too.
+  // proxy) via a dedicated FlipbookExporter instance. Shares the same
+  // generationId scheme generateFull() uses so the top-bar progress
+  // indicator reflects bake progress too, and a concurrent generateFull()
+  // can't have this export's completion hide its still-in-progress bar (or
+  // vice versa) — see the generationId field's doc comment. Export never
+  // supersedes ITSELF (handleExport's exportInProgress guard) and always
+  // completes for real (its own dedicated generator, sequentially awaited —
+  // nothing cancels it), so unlike generateFull it never needs the id guard
+  // to protect against a dropped completion; it only needs one so it
+  // doesn't stomp an overlapping generateFull's still-running indicator.
   private async runFlipbookExport(config: FlipbookConfig): Promise<void> {
     const { FlipbookExporter } = await import('../../core/export/FlipbookExporter')
     const exporter = new FlipbookExporter({
@@ -585,7 +617,9 @@ export class Viewport {
 
     const indicator = document.getElementById('gen-indicator')
     if (indicator) indicator.style.display = 'flex'
-    this.state.beginGenerating()
+    const id = ++this.generationId
+    this.state.update('generating', true)
+    this.state.update('progress', 0)
 
     // Snapshot camera + render params ONCE, before the (chunked, awaited)
     // per-frame bake loop starts, so a mid-bake camera drag or Properties
@@ -604,11 +638,14 @@ export class Viewport {
         this.state.get('animation'),
         camera,
         renderParams,
-        (p) => this.state.update('progress', p),
+        (p) => { if (id === this.generationId) this.state.update('progress', p) },
       )
     } finally {
-      this.state.endGenerating()
-      if (indicator) indicator.style.display = 'none'
+      if (id === this.generationId) {
+        this.state.update('generating', false)
+        this.state.update('progress', 1)
+        if (indicator) indicator.style.display = 'none'
+      }
     }
   }
 

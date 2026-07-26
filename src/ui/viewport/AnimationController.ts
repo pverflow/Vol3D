@@ -229,6 +229,28 @@ export class AnimationController {
   // in-flight bake cleanly. Consumed by playback via advanceAnimation's
   // brickCache.frameCount check (Task 5) — once this succeeds, playback binds
   // frames straight from brickCache instead of touching the dense path.
+  //
+  // Deliberately does NOT touch state.generating/progress (regression fix,
+  // VFX-1 Task 5 carry-forward): this bake runs silently in the background.
+  // It used to call beginGenerating()/endGenerating() (a ref count meant to
+  // let multiple overlapping "generation in progress" sources share one
+  // indicator), but that pairing isn't actually guaranteed here — like
+  // Viewport.generateFull(), this bake's own completion is reached via an
+  // awaited chunked-rAF loop (sparseGenerator.generateFrameData) that another
+  // caller can cancel out from under it (e.g. an edit mid-bake calling
+  // invalidateSparseCache() -> sparseGenerator.cancel()); when that happens
+  // the in-flight await never resolves, so this async function never reaches
+  // its finally block and the matching endGenerating() would never run —
+  // exactly the "stuck generating=true forever" bug this fix removes. Rather
+  // than build a second id-guard scheme for a bake nobody's blocked on (the
+  // dense frame already on screen keeps playing while this bakes), the
+  // simplest robust fix is for it to just not own any part of the shared
+  // indicator: Viewport's generationId scheme (generateFull/export) is the
+  // sole owner, so this bake can never stomp it, and this bake's own
+  // cancellation/hang risk can never leak into it either. Failures/clamps
+  // still get a console.warn (see below), which is enough signal for a
+  // background operation whose absence just means "playback stays on the
+  // dense per-frame path" rather than any visible breakage.
   buildSparseCache(): void {
     const key = this.getAnimationCacheKey()
     // Sticky failed-key guard: this exact scene already failed to bake once
@@ -251,7 +273,6 @@ export class AnimationController {
     this.sparseCacheKey = key
     this.sparseCacheAvailable = false
     this.sparseGenerator.cancel()
-    this.state.beginGenerating()
 
     const { layers, settings, animation } = this.state.getState()
     const { resolution, depth, globalSeed } = settings
@@ -297,12 +318,11 @@ export class AnimationController {
         const dense = await this.sparseGenerator.generateFrameData(layers, resolution, depth, globalSeed, phase, evolutions)
 
         // Superseded by a newer bake (edit/invalidate/another play-start) —
-        // bail before touching shared state (brickCache, progress).
+        // bail before touching shared state (brickCache).
         if (buildId !== this.sparseCacheBuildId) return
 
         const packed = packFrame(dense, resolution, depth, builder, SPARSE_ACTIVE_THRESHOLD)
         indirections.push(packed.indirection)
-        this.state.update('progress', (i + 1) / frameCount)
       }
 
       if (buildId !== this.sparseCacheBuildId) return
@@ -325,13 +345,11 @@ export class AnimationController {
       if (buildId === this.sparseCacheBuildId) {
         this.sparseCacheBuilding = false
       }
-      // Ref-counted (StateManager.endGenerating): always pairs with this
-      // bake's own beginGenerating() exactly once, whether it succeeded,
-      // failed, or was superseded — but only flips the shared indicator off
-      // once every other outstanding source (e.g. a concurrent
-      // Viewport.generateFull()) has also ended, instead of unconditionally
-      // stomping it.
-      this.state.endGenerating()
+      // No endGenerating() here — see buildSparseCache's doc comment above
+      // for why this bake never touches state.generating/progress at all.
+      // (Also worth noting: this finally itself isn't even guaranteed to run
+      // when superseded — see the same comment — which is exactly why this
+      // bake must not be the thing responsible for clearing shared state.)
     }
   }
 
