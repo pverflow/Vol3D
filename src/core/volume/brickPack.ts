@@ -61,6 +61,28 @@ function slotToXYZ(slot: number, bpa: number): [number, number, number] {
   return [x, y, z]
 }
 
+// 32-bit FNV-1a over a brick's raw RG bytes — a fast, deterministic content
+// fingerprint used to dedup byte-identical bricks across frames (see
+// AtlasBuilder.append). Not cryptographic: collisions are handled by a
+// full byte-equality check on every hash hit, so a hash collision only ever
+// costs a missed dedup opportunity (an extra slot), never a wrong one.
+function fnv1aHex(data: Uint8Array): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < data.length; i++) {
+    h ^= data[i]
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(16)
+}
+
+function bricksEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
 // Accumulates active bricks (RG, BRICK^3 voxels each) across frames into a
 // growing flat list, up to a fixed `maxBricks` budget (see bricksPerAxis).
 // `data()` lays the accumulated bricks out into a cubic 3D grid of BRICK^3
@@ -70,6 +92,12 @@ export class AtlasBuilder {
   private readonly bpa: number
   private readonly capacity: number
   private readonly bricks: Uint8Array[] = []
+  // Content-hash -> slot, for cross-frame dedup (see append()). Keyed by a
+  // cheap FNV-1a fingerprint, not the brick bytes themselves — full bytes are
+  // only compared on a hash hit, to guard against the (astronomically
+  // unlikely, for the few thousand bricks a loop bake ever appends) case of
+  // two different bricks hashing the same.
+  private readonly hashToSlot = new Map<string, number>()
   private warnedFull = false
 
   constructor(brick: number, maxBricks: number) {
@@ -98,11 +126,21 @@ export class AtlasBuilder {
 
   // Appends one BRICK^3 RG brick (length brick*brick*brick*2), returns its
   // slot index, or -1 if the brick budget (bpa^3 slots) is exhausted.
-  // ponytail: a hard cap, not cross-frame dedup — fire/smoke bricks rarely
-  // repeat byte-for-byte across frames, so hashing them would rarely pay for
-  // its own bookkeeping. Upgrade path if VRAM gets tight: per-brick LRU
-  // eviction instead of a hard reject (dropped macrocells just stay empty).
+  // Cross-frame dedup: a brick byte-identical to one already in the atlas
+  // reuses that brick's existing slot instead of consuming a fresh one —
+  // static/background regions of a loop (e.g. a still base of embers, or a
+  // macrocell that's fully settled between two frames) are common enough in
+  // fire/smoke loops to make this worth the bookkeeping, and it's a cheap
+  // Map lookup, not a scan. Upgrade path if VRAM is still tight after dedup:
+  // per-brick LRU eviction instead of a hard reject (dropped macrocells just
+  // stay empty).
   append(brickRG: Uint8Array): number {
+    const hash = fnv1aHex(brickRG)
+    const existingSlot = this.hashToSlot.get(hash)
+    if (existingSlot !== undefined && bricksEqual(this.bricks[existingSlot], brickRG)) {
+      return existingSlot
+    }
+
     if (this.bricks.length >= this.capacity) {
       if (!this.warnedFull) {
         console.warn(
@@ -112,8 +150,17 @@ export class AtlasBuilder {
       }
       return -1
     }
+
     this.bricks.push(brickRG)
-    return this.bricks.length - 1
+    const slot = this.bricks.length - 1
+    // Only claim this hash if it wasn't already claimed by a *different*
+    // brick (a collision) — leave the original mapping alone so its own
+    // future duplicates keep deduping correctly instead of chasing a slot
+    // that no longer matches them.
+    if (existingSlot === undefined) {
+      this.hashToSlot.set(hash, slot)
+    }
+    return slot
   }
 
   // Packs all accumulated bricks into a single RG atlas sized atlasDimsInBricks.

@@ -2,10 +2,18 @@
 export const REGEN_DEBOUNCE_MS = 150
 // Minimum wall-clock between animation phase advances (~10fps playback).
 export const ANIMATION_MIN_FRAME_MS = 100
-// Memory budget for the pre-baked animation frame cache. Also reused as the
-// VRAM cap for the sparse brick-atlas animation cache (VFX-1 sparse cache).
+// Memory budget for the pre-baked (dense, per-frame) animation frame cache.
 export const ANIMATION_CACHE_BUDGET_BYTES = 96 * 1024 * 1024
 export const ANIMATION_CACHE_MAX_FRAMES = 24
+// Dedicated VRAM cap for the sparse brick-atlas animation cache (VFX-1 Task
+// 1 tuning). Kept separate from ANIMATION_CACHE_BUDGET_BYTES above: the
+// sparse atlas is a single shared GPU texture (bricks are deduped across the
+// whole loop, not duplicated per frame — see AtlasBuilder), so it affords a
+// much bigger budget than a dense cache that stores every frame's full
+// volume. 512MB is comfortably inside a typical discrete GPU's VRAM and
+// still miles below the 256^3-bpa / MAX_3D_TEXTURE_SIZE atlas ceilings that
+// BrickCache.computeMaxBricks also folds in.
+export const SPARSE_CACHE_BUDGET_BYTES = 512 * 1024 * 1024
 // Sparse brick-grid animation cache: brick edge (voxels) and default loop length.
 export const BRICK_SIZE = 16
 export const ANIM_LOOP_FRAMES_DEFAULT = 32

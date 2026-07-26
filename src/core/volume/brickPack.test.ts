@@ -72,6 +72,35 @@ describe('brickPack round-trip', () => {
   })
 })
 
+describe('cross-frame brick dedup', () => {
+  it('reuses the same atlas slot for a byte-identical brick in a later frame', () => {
+    const res = 32,
+      depth = 32
+    // frame A and frame B share byte-identical content in their one active brick
+    const denseA = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [123, 45] : [0, 0]))
+    const denseB = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [123, 45] : [0, 0]))
+    // frame C's active brick differs by one byte -> must NOT dedup with A/B
+    const denseC = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [200, 45] : [0, 0]))
+
+    const builder = new AtlasBuilder(BRICK, 8)
+    const packedA = packFrame(denseA, res, depth, builder, 0)
+    expect(builder.bricksUsed).toBe(1)
+
+    const packedB = packFrame(denseB, res, depth, builder, 0)
+    // identical content -> deduped onto A's existing slot, no new brick appended
+    expect(builder.bricksUsed).toBe(1)
+    expect(packedB.indirection[0]).toBe(packedA.indirection[0])
+    expect(packedB.indirection[1]).toBe(packedA.indirection[1])
+    expect(packedB.indirection[2]).toBe(packedA.indirection[2])
+    expect(packedB.indirection[3]).toBe(255)
+
+    const packedC = packFrame(denseC, res, depth, builder, 0)
+    // different content -> a genuinely new brick
+    expect(builder.bricksUsed).toBe(2)
+    expect(packedC.indirection[3]).toBe(255)
+  })
+})
+
 describe('cubic atlas layout (past the old 256-brick cliff)', () => {
   it('bricksPerAxis grows as a cube root, not a fixed 256-wide axis', () => {
     expect(bricksPerAxis(1)).toBe(1)
@@ -130,12 +159,18 @@ describe('cubic atlas layout (past the old 256-brick cliff)', () => {
 
   it('caps appends at the brick budget (bpa^3 capacity) instead of overflowing the atlas', () => {
     const builder = new AtlasBuilder(BRICK, 8) // bpa=2 -> capacity=8, exact
+    // Distinct content per brick (marker byte = i) so dedup doesn't collapse
+    // these into one slot — this test is about the capacity cap, not dedup.
     for (let i = 0; i < 8; i++) {
-      expect(builder.append(new Uint8Array(BRICK * BRICK * BRICK * 2))).toBe(i)
+      const brickData = new Uint8Array(BRICK * BRICK * BRICK * 2)
+      brickData[0] = i
+      expect(builder.append(brickData)).toBe(i)
     }
-    // 9th append is past capacity -> rejected, not silently overflowing into
-    // another slot's territory.
-    expect(builder.append(new Uint8Array(BRICK * BRICK * BRICK * 2))).toBe(-1)
+    // 9th append (also distinct content) is past capacity -> rejected, not
+    // silently overflowing into another slot's territory.
+    const overflow = new Uint8Array(BRICK * BRICK * BRICK * 2)
+    overflow[0] = 8
+    expect(builder.append(overflow)).toBe(-1)
     expect(builder.bricksUsed).toBe(8)
   })
 })

@@ -5,7 +5,7 @@
 // the atlas (or "empty"). Task 4 samples both per raymarch step: look up the
 // indirection texel for the current macrocell, then sample the atlas at the
 // brick's slot offset + local position.
-import { BRICK_SIZE, ANIMATION_CACHE_BUDGET_BYTES } from '../constants'
+import { BRICK_SIZE, SPARSE_CACHE_BUDGET_BYTES } from '../constants'
 import { AtlasBuilder, macroDims } from './brickPack'
 
 export class BrickCache {
@@ -37,7 +37,7 @@ export class BrickCache {
   // brickPack.ts, so the cap can't be applied retroactively in build()).
   static computeMaxBricks(
     gl: WebGL2RenderingContext,
-    budgetBytes: number = ANIMATION_CACHE_BUDGET_BYTES,
+    budgetBytes: number = SPARSE_CACHE_BUDGET_BYTES,
     brick: number = BRICK_SIZE
   ): number {
     const bytesPerBrick = brick * brick * brick * 2
