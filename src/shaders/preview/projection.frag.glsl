@@ -36,6 +36,8 @@ void main() {
 
   float acc = 0.0;
   float maxVal = 0.0;
+  float heatAcc = 0.0;
+  float heatAtMax = 0.0;
 
   int steps = max(u_steps, 8);
   float invSteps = 1.0 / float(steps);
@@ -48,21 +50,28 @@ void main() {
     else if (u_sliceAxis == 1) uvw = vec3(planeUv.x, t, planeUv.y);
     else uvw = vec3(planeUv.x, planeUv.y, t);
 
-    float v = applyDensityShaping(texture(u_volume, uvw).r, u_cutoff, u_contrast);
+    vec2 rg = texture(u_volume, uvw).rg;
+    float v = applyDensityShaping(rg.r, u_cutoff, u_contrast);
     acc += v;
-    maxVal = max(maxVal, v);
+    heatAcc += rg.g;
+    if (v > maxVal) {
+      maxVal = v;
+      heatAtMax = rg.g;
+    }
   }
 
   float result = (u_projMode == 0) ? acc * invSteps : maxVal;
+  float heat = (u_projMode == 0) ? heatAcc * invSteps : heatAtMax;
   result = clamp(result * u_exposure, 0.0, 1.0);
 
   vec3 bg = vec3(0.05, 0.05, 0.1);
   vec3 col;
   if (u_colorRampEnabled) {
-    // Colored transfer function (VFX-0 Task 3): composite the ramp's rgb
-    // over the same background using its alpha as opacity.
-    vec4 ramp = texture(u_colorRamp, vec2(result, 0.5));
-    col = mix(bg, ramp.rgb, ramp.a);
+    // Heat-driven emission (VFX-1 Task 3): color comes from the ramp
+    // looked up by projected heat; coverage stays density-driven (result),
+    // with the ramp's alpha as an emission-strength multiplier.
+    vec4 ramp = texture(u_colorRamp, vec2(heat, 0.5));
+    col = mix(bg, ramp.rgb, result * ramp.a);
   } else {
     col = mix(bg, vec3(1.0, 1.0, 1.0), result);
   }

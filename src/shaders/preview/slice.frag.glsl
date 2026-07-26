@@ -42,16 +42,18 @@ void main() {
     uvw = vec3(planeUv.x, planeUv.y, u_slicePos);
   }
 
-  float v = applyDensityShaping(texture(u_volume, uvw).r, u_cutoff, u_contrast);
+  vec2 rg = texture(u_volume, uvw).rg;
+  float v = applyDensityShaping(rg.r, u_cutoff, u_contrast);
   v = clamp(v * u_exposure, 0.0, 1.0);
 
   vec3 bg = vec3(0.05, 0.05, 0.1);
   vec3 col;
   if (u_colorRampEnabled) {
-    // Colored transfer function (VFX-0 Task 3): composite the ramp's rgb
-    // over the same background using its alpha as opacity.
-    vec4 ramp = texture(u_colorRamp, vec2(v, 0.5));
-    col = mix(bg, ramp.rgb, ramp.a);
+    // Heat-driven emission (VFX-1 Task 3): color comes from the ramp
+    // looked up by heat; coverage stays density-driven (v), with the
+    // ramp's alpha as an emission-strength multiplier.
+    vec4 ramp = texture(u_colorRamp, vec2(rg.g, 0.5));
+    col = mix(bg, ramp.rgb, v * ramp.a);
   } else {
     // Apply a subtle false-color gradient for readability
     col = mix(bg, vec3(1.0, 1.0, 1.0), v);

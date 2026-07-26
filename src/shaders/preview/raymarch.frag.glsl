@@ -88,18 +88,20 @@ void main() {
     vec3 volumePos;
     float densityMul;
     if (sampleScene(worldPos, volumePos, densityMul)) {
-      float sampleValue = applyDensityShaping(texture(u_volume, volumePos).r, u_cutoff, u_contrast);
+      vec2 rg = texture(u_volume, volumePos).rg;
+      float sampleValue = applyDensityShaping(rg.r, u_cutoff, u_contrast);
+      float heat = rg.g;
 
       if (u_colorRampEnabled) {
-        // Colored transfer function (VFX-0 Task 3): the ramp's rgb is an
-        // emissive color (no external lighting/shadow term) and its alpha
-        // drives the per-sample opacity fed into the same extinction
-        // formula the grayscale path uses below.
-        vec4 ramp = texture(u_colorRamp, vec2(sampleValue, 0.5));
-        float density = ramp.a * (u_density * densityMul);
+        // Heat-driven emission (VFX-1 Task 3): color comes from the ramp
+        // looked up by heat; opacity stays density-driven (same formula as
+        // the grayscale path below), and the ramp's alpha is an emission-
+        // strength multiplier on top of that opacity.
+        float density = sampleValue * (u_density * densityMul);
         if (density > 0.001) {
           float alpha = 1.0 - exp(-density * stepSize * EXTINCTION_SCALE);
-          accumulatedColor += ramp.rgb * alpha * transmittance;
+          vec4 ramp = texture(u_colorRamp, vec2(heat, 0.5));
+          accumulatedColor += ramp.rgb * ramp.a * alpha * transmittance;
           transmittance *= (1.0 - alpha);
         }
       } else {
