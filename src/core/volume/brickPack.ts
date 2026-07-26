@@ -27,8 +27,14 @@ export function macroDims(res: number, depth: number): [number, number, number] 
 // 256-brick-wide == 4096-texel atlas past 256 bricks) keeps the atlas within
 // a typical `MAX_3D_TEXTURE_SIZE` (often 2048) — see BrickCache.computeMaxBricks,
 // which sizes maxBricks from both the VRAM budget and that GL limit.
+// Clamped to 256: the indirection texture is RGBA8, so a brick's slot xyz
+// (one coordinate per channel, see slotToXYZ) must fit 0..255 per axis — bpa
+// can never exceed 256 no matter how large a budget maxBricks implies.
+// BrickCache.computeMaxBricks folds this same ceiling into its own budget
+// calculation so callers are never handed a maxBricks that would ask for
+// more than this function can actually deliver.
 export function bricksPerAxis(maxBricks: number): number {
-  return Math.max(1, Math.ceil(Math.cbrt(Math.max(1, maxBricks))))
+  return Math.min(256, Math.max(1, Math.ceil(Math.cbrt(Math.max(1, maxBricks)))))
 }
 
 // Whole RG bricks (2 bytes/voxel) a VRAM budget affords.

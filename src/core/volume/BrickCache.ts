@@ -45,7 +45,13 @@ export class BrickCache {
     const maxTexSize = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) as number
     const bpaLimit = Math.max(1, Math.floor(maxTexSize / brick))
     const byGL = bpaLimit * bpaLimit * bpaLimit
-    return Math.min(byBudget, byGL)
+    // Indirection texel encodes slot xyz one coordinate per RGBA8 channel
+    // (0..255) — bricksPerAxis (brickPack.ts) can never exceed 256 regardless
+    // of budget/GL headroom, so fold that same ceiling in here too (T2 carry-
+    // forward): a caller sizing an AtlasBuilder off this return value should
+    // never get a number bricksPerAxis would silently clamp out from under it.
+    const byIndirectionEncoding = 256 ** 3
+    return Math.min(byBudget, byGL, byIndirectionEncoding)
   }
 
   // Uploads the atlas + one indirection texture per frame. Frees any

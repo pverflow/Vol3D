@@ -80,6 +80,11 @@ describe('cubic atlas layout (past the old 256-brick cliff)', () => {
     expect(bricksPerAxis(300)).toBe(7) // 6^3=216 < 300 <= 343=7^3
   })
 
+  it('bricksPerAxis clamps at 256 — the indirection texel can only encode 0..255 per axis', () => {
+    expect(bricksPerAxis(256 ** 3)).toBe(256)
+    expect(bricksPerAxis(256 ** 3 + 1)).toBe(256) // a bigger budget still can't ask for more
+  })
+
   it('maxBricksForBudget divides the VRAM budget by bytes-per-brick', () => {
     // BRICK=16 -> 16^3*2 = 8192 bytes/brick; 96MB budget -> 12288 bricks
     expect(maxBricksForBudget(96 * 1024 * 1024, BRICK)).toBe(12288)

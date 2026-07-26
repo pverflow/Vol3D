@@ -9,6 +9,13 @@ export const ANIMATION_CACHE_MAX_FRAMES = 24
 // Sparse brick-grid animation cache: brick edge (voxels) and default loop length.
 export const BRICK_SIZE = 16
 export const ANIM_LOOP_FRAMES_DEFAULT = 32
+// "Active" epsilon (density/heat, 0..255) a brick must exceed to be packed
+// into the sparse cache atlas (VFX-1 Task 3 bake). A bare >0 threshold would
+// treat almost every macrocell as active for continuous noise fields (the
+// noise floor is rarely exactly zero) and defeat the point of culling empty
+// space; a small epsilon keeps genuinely empty regions out while still
+// packing faint smoke.
+export const SPARSE_ACTIVE_THRESHOLD = 1
 // Raymarch camera: tan(fov/2) with a 60deg vertical FOV.
 export const RAYMARCH_TAN_HALF_FOV = Math.tan(Math.PI / 6)
 export const LIGHT_DIR: readonly [number, number, number] = [0.577, 0.577, 0.577]

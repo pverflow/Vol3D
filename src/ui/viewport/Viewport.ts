@@ -3,6 +3,7 @@ import { ShaderCompiler } from '../../core/renderer/ShaderCompiler'
 import type { CompiledProgram } from '../../core/renderer/ShaderCompiler'
 import { VolumeGenerator } from '../../core/renderer/VolumeGenerator'
 import { VolumeTexture } from '../../core/volume/VolumeTexture'
+import { BrickCache } from '../../core/volume/BrickCache'
 import { CameraController } from './CameraController'
 import { AnimationController } from './AnimationController'
 import { ViewportOverlay } from './ViewportOverlay'
@@ -28,6 +29,16 @@ export class Viewport {
   private compiler: ShaderCompiler
   private generator: VolumeGenerator
   private cacheGenerator: VolumeGenerator
+  // Dedicated generator for the sparse-cache bake (VFX-1 Task 3) — separate
+  // from cacheGenerator so the bake's chunked-rAF loop never contends with
+  // the dense per-frame cache build's own loop (VolumeGenerator only tracks
+  // one in-flight loop per instance; see AnimationController's doc comment).
+  private sparseCacheGenerator: VolumeGenerator
+  // GPU-resident sparse brick atlas + per-frame indirection textures
+  // (VFX-1 Task 3). Built by AnimationController.buildSparseCache(); not yet
+  // sampled by any render path (T4/T5) — owned here so it can be freed on
+  // destroy/context-restore like every other GL resource.
+  private brickCache: BrickCache
   private volume: VolumeTexture
   // Low-res drag proxy (Task 4): a second, cheap VolumeTexture + its own
   // VolumeGenerator (own SliceBuffer sized at proxy resolution) so dragging
@@ -95,6 +106,8 @@ export class Viewport {
     this.volume = new VolumeTexture(gl, settings.resolution as Resolution, settings.depth as SliceCount)
     this.generator = new VolumeGenerator(gl, this.compiler, settings.resolution)
     this.cacheGenerator = new VolumeGenerator(gl, this.compiler, settings.resolution)
+    this.sparseCacheGenerator = new VolumeGenerator(gl, this.compiler, settings.resolution)
+    this.brickCache = new BrickCache(gl)
 
     const proxyRes = proxyDimension(settings.resolution)
     this.proxyVolume = new VolumeTexture(gl, proxyRes as Resolution, proxyDimension(settings.depth) as SliceCount)
@@ -102,6 +115,9 @@ export class Viewport {
     this.animation = new AnimationController({
       state,
       cacheGenerator: this.cacheGenerator,
+      sparseGenerator: this.sparseCacheGenerator,
+      brickCache: this.brickCache,
+      gl,
       getVolume: () => this.volume,
       onNeedsGeneration: () => this.scheduleGeneration(),
     })
@@ -184,6 +200,7 @@ export class Viewport {
     this.volume = new VolumeTexture(this.ctx.gl, settings.resolution as Resolution, settings.depth as SliceCount)
     this.generator.resize(settings.resolution)
     this.cacheGenerator.resize(settings.resolution)
+    this.sparseCacheGenerator.resize(settings.resolution)
     this.animation.invalidateAnimationCache()
 
     const proxyRes = proxyDimension(settings.resolution)
@@ -309,6 +326,12 @@ export class Viewport {
         if (indicator) indicator.style.display = 'none'
         this.settling = false
         this.animation.buildAnimationCacheIfNeeded()
+        // Sparse cache (VFX-1 Task 3): rebuild once settled, but only while
+        // actually playing — an edit made while paused shouldn't pay for a
+        // bake nobody's about to watch; it'll build on the next play-start.
+        if (this.state.get('animation').playing) {
+          this.animation.buildSparseCache()
+        }
       }
     )
   }
@@ -606,6 +629,8 @@ export class Viewport {
     this.camera.destroy()
     this.generator.destroy()
     this.cacheGenerator.destroy()
+    this.sparseCacheGenerator.destroy()
+    this.brickCache.destroy()
     this.volume.destroy()
     this.proxyGenerator.destroy()
     this.proxyVolume.destroy()
