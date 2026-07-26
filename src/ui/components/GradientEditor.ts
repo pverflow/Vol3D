@@ -2,9 +2,9 @@
 // gradient bar with draggable stop markers: drag a marker to retime it,
 // click empty bar to add a stop, right-click a marker to remove it, and edit
 // the selected stop's color/alpha below the bar. Every edit is normalized
-// (sorted, clamped) and pushed out via onChange -- purely a `preview.colorRamp`
-// concern, so editing here never triggers a volume regeneration (see
-// StateManager's REGEN_TRIGGERS, which doesn't include `preview`).
+// (sorted, clamped) and pushed out via onChange. Bound to the selected
+// layer's `colorRamp` (VFX-2): edits write via updateLayer, so they DO trigger
+// a volume regeneration (color is baked into the RGBA8 volume at generation).
 import type { ColorRamp, RampStop } from '../../core/colorRamp'
 import { sampleStops, normalizeRampStops } from '../../core/colorRamp'
 import { Slider } from './Slider'
@@ -40,7 +40,8 @@ export class GradientEditor {
     this.renderPicker()
   }
 
-  // External sync (preset load, project load, undo/...) -- never emits onChange.
+  // External sync (preset dropdown, enabled toggle, layer switch, project
+  // load, undo/...) -- updates this.ramp and redraws; never emits onChange.
   setRamp(ramp: ColorRamp) {
     this.ramp = { ...ramp, stops: normalizeRampStops(ramp.stops) }
     if (this.selected !== null && this.selected >= this.ramp.stops.length) this.selected = null
@@ -130,11 +131,10 @@ export class GradientEditor {
     this.bar.style.background = buildGradientCss(this.ramp.stops)
     this.ramp.stops.forEach((stop, index) => {
       const marker = document.createElement('div')
-      // "curve-handle" is reused here purely for its drag-marker styling.
-      // PropertiesPanel's capture-phase mousedown guard special-cases
-      // ".gradient-editor" (this.el's class) so this never engages the
-      // volume drag-proxy -- a ramp edit only touches `preview.colorRamp`,
-      // never a REGEN_TRIGGERS field.
+      // "curve-handle" is reused here purely for its drag-marker styling; it
+      // also lets PropertiesPanel's capture-phase mousedown guard engage the
+      // volume drag-proxy on a stop drag, like every other regen control (a
+      // per-layer ramp edit IS a REGEN_TRIGGERS field via updateLayer).
       marker.className = 'curve-handle gradient-stop' + (index === this.selected ? ' selected' : '')
       marker.style.left = `${(stop.t * 100).toFixed(3)}%`
       marker.style.setProperty(

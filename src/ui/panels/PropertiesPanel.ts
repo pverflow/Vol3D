@@ -580,7 +580,9 @@ export class PropertiesPanel {
     const enableToggle = new Toggle('Enabled', layer.colorRamp.enabled, (v) => {
       const l = this.getLayerById(id)
       if (!l) return
-      this.state.updateLayer(id, { colorRamp: { ...l.colorRamp, enabled: v } })
+      const next = { ...l.colorRamp, enabled: v }
+      this.state.updateLayer(id, { colorRamp: next })
+      editor.setRamp(next)  // re-sync the editor's own copy (enabled flag) to what was stored
     })
     body.appendChild(enableToggle.el)
 
@@ -597,8 +599,9 @@ export class PropertiesPanel {
       if (v === 'custom') return // "Custom" isn't a loadable preset -- it only ever appears as a readout
       const l = this.getLayerById(id)
       if (!l) return
-      const stops = RAMP_PRESETS[v as keyof typeof RAMP_PRESETS]
-      this.state.updateLayer(id, { colorRamp: { ...l.colorRamp, stops: [...stops] } })
+      const next = { ...l.colorRamp, stops: [...RAMP_PRESETS[v as keyof typeof RAMP_PRESETS]] }
+      this.state.updateLayer(id, { colorRamp: next })
+      editor.setRamp(next)  // re-sync the bar to the picked preset's stops so the next bar edit doesn't revert it
     })
     presetRow.appendChild(presetLabel)
     presetRow.appendChild(presetSelect.el)
