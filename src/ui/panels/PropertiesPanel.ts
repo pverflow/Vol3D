@@ -55,7 +55,6 @@ export class PropertiesPanel {
   private sectionState = new Map<string, boolean>()
   private currentLayerSignature: string | null = null
   private viewport: Viewport
-  private readonly colorSectionEl: HTMLElement
 
   private getLayerById(id: string): Layer | null {
     return this.state.get('layers').find(layer => layer.id === id) ?? null
@@ -112,12 +111,10 @@ export class PropertiesPanel {
       if (e.button !== 0) return  // left-drag only; right-click is the slider reset gesture
       const target = e.target as Element | null
       if (!target?.closest('.slider-track, .curve-handle')) return
-      // GradientEditor (VFX-0 Task 4) reuses "curve-handle"/"slider-track" for
-      // its stop markers and alpha slider, but it only ever touches
-      // `preview.colorRamp` -- never a REGEN_TRIGGERS field -- so it must not
-      // engage the volume drag-proxy. Exclude its subtree here rather than
-      // renaming its classes, so it keeps the same marker/slider styling.
-      if (target.closest('.gradient-editor')) return
+      // GradientEditor (VFX-2) reuses "curve-handle"/"slider-track" for its
+      // stop markers and alpha slider. Per-layer ramp edits write via
+      // updateLayer -- a REGEN_TRIGGERS field -- so a ramp drag SHOULD engage
+      // the volume drag-proxy just like every other slider/curve here.
       this.viewport.setInteracting(true)
     }, { capture: true })
     // mouseup is listened on window (not contentEl) because Slider and
@@ -130,11 +127,6 @@ export class PropertiesPanel {
     // once the pointer or focus is gone, without rewriting Slider/
     // BezierCurveEditor's mouse-event drag tracking to pointer capture.
     window.addEventListener('blur', () => this.viewport.setInteracting(false))
-
-    // Color (VFX-0 Task 4): built once and re-appended (not rebuilt) on every
-    // render() -- it's a `preview.colorRamp` control, not per-layer, and its
-    // GradientEditor holds live drag state that a teardown/rebuild would lose.
-    this.colorSectionEl = this.buildColorSection()
 
     this.state.subscribe('selected', () => this.render())
     this.state.subscribe('layers', () => this.handleLayersChange())
@@ -154,7 +146,6 @@ export class PropertiesPanel {
       msg.className = 'prop-empty'
       msg.textContent = 'Select a layer to edit properties'
       this.contentEl.appendChild(msg)
-      this.contentEl.appendChild(this.colorSectionEl)
       return
     }
 
@@ -165,7 +156,7 @@ export class PropertiesPanel {
     this.contentEl.appendChild(this.buildTransformSection(layer))
     this.contentEl.appendChild(this.buildDistortionSection(layer))
     this.contentEl.appendChild(this.buildRemapSection(layer))
-    this.contentEl.appendChild(this.colorSectionEl)
+    this.contentEl.appendChild(this.buildColorSection(layer))
   }
 
   private handleLayersChange() {
@@ -290,13 +281,6 @@ export class PropertiesPanel {
       defaultValue: 0, decimals: 0,
       onInput: (v) => this.updateNoise(id, () => ({ seed: v })),
       onChange: (v) => this.updateNoise(id, () => ({ seed: v })),
-    }).el)
-
-    body.appendChild(new Slider({
-      label: 'Temperature', min: 0, max: 1, step: 0.01, value: layer.noise.temperature ?? 0,
-      defaultValue: 0, decimals: 2,
-      onInput: (v) => this.updateNoise(id, () => ({ temperature: v })),
-      onChange: (v) => this.updateNoise(id, () => ({ temperature: v })),
     }).el)
 
     return section(
@@ -581,21 +565,22 @@ export class PropertiesPanel {
     )
   }
 
-  // Color ramp (VFX-0 Task 4): enable toggle + preset dropdown + the full
-  // GradientEditor. Layer-independent (writes `preview.colorRamp`, which is
-  // not a regen trigger -- see StateManager.REGEN_TRIGGERS), so this is built
-  // once in the constructor and shown regardless of layer selection. This
-  // replaces the Task-3 placeholder toggle+select that lived in
-  // ViewportOverlay -- that duplicate control was removed so there's a single
-  // place to edit the ramp instead of two competing ones.
-  private buildColorSection(): HTMLElement {
+  // Per-layer color ramp (VFX-2): enable toggle + preset dropdown + the full
+  // GradientEditor, bound to the selected layer's own `colorRamp`. Writes back
+  // via updateLayer (a REGEN_TRIGGERS field -- the color is baked into the
+  // RGBA8 volume at generation time), so an edit regenerates the volume like
+  // any other layer field (debounced). Built fresh per render() like the other
+  // per-layer sections; ramp edits don't change the render signature, so the
+  // GradientEditor isn't torn down mid-drag.
+  private buildColorSection(layer: Layer): HTMLElement {
+    const id = layer.id
     const body = document.createElement('div')
     body.className = 'prop-body'
-    const preview = this.state.get('preview')
 
-    const enableToggle = new Toggle('Enabled', preview.colorRamp.enabled, (v) => {
-      const p = this.state.get('preview')
-      this.state.update('preview', { ...p, colorRamp: { ...p.colorRamp, enabled: v } })
+    const enableToggle = new Toggle('Enabled', layer.colorRamp.enabled, (v) => {
+      const l = this.getLayerById(id)
+      if (!l) return
+      this.state.updateLayer(id, { colorRamp: { ...l.colorRamp, enabled: v } })
     })
     body.appendChild(enableToggle.el)
 
@@ -608,40 +593,30 @@ export class PropertiesPanel {
       ...Object.keys(RAMP_PRESETS).map((k) => ({ value: k, label: k[0].toUpperCase() + k.slice(1) })),
       { value: 'custom', label: 'Custom' },
     ]
-    const presetSelect = new Select(presetOptions, matchPreset(preview.colorRamp.stops), (v) => {
+    const presetSelect = new Select(presetOptions, matchPreset(layer.colorRamp.stops), (v) => {
       if (v === 'custom') return // "Custom" isn't a loadable preset -- it only ever appears as a readout
-      const p = this.state.get('preview')
+      const l = this.getLayerById(id)
+      if (!l) return
       const stops = RAMP_PRESETS[v as keyof typeof RAMP_PRESETS]
-      this.state.update('preview', { ...p, colorRamp: { ...p.colorRamp, stops } })
+      this.state.updateLayer(id, { colorRamp: { ...l.colorRamp, stops: [...stops] } })
     })
     presetRow.appendChild(presetLabel)
     presetRow.appendChild(presetSelect.el)
     body.appendChild(presetRow)
 
-    // Guards against the editor's own onChange (fired live on every drag
-    // tick) echoing back into editor.setRamp() and tearing down its picker
-    // mid-edit (e.g. closing an open native color-picker popup). External
-    // changes -- preset load, project load, undo -- still sync normally.
-    let selfUpdate = false
-    const editor = new GradientEditor(preview.colorRamp, (ramp) => {
-      const p = this.state.get('preview')
-      selfUpdate = true
-      this.state.update('preview', { ...p, colorRamp: { ...p.colorRamp, stops: ramp.stops } })
-      selfUpdate = false
+    const editor = new GradientEditor(layer.colorRamp, (ramp) => {
+      const l = this.getLayerById(id)
+      if (!l) return
+      presetSelect.setValue(matchPreset(ramp.stops))
+      this.state.updateLayer(id, { colorRamp: { ...l.colorRamp, stops: ramp.stops } })
     })
     body.appendChild(editor.el)
-
-    this.state.subscribe('preview', (p) => {
-      enableToggle.setValue(p.colorRamp.enabled)
-      presetSelect.setValue(matchPreset(p.colorRamp.stops))
-      if (!selfUpdate) editor.setRamp(p.colorRamp)
-    })
 
     return section(
       'Color',
       body,
-      this.getSectionOpen('global', 'Color', true),
-      (open) => this.setSectionOpen('global', 'Color', open)
+      this.getSectionOpen(id, 'Color', true),
+      (open) => this.setSectionOpen(id, 'Color', open)
     )
   }
 

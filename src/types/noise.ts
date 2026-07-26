@@ -58,5 +58,4 @@ export interface NoiseConfig {
   offset: [number, number, number]
   rotation: [number, number, number]  // Euler XYZ degrees
   seed: number
-  temperature?: number  // DEPRECATED (VFX-2): superseded by per-layer colorRamp; ignored by generation.
 }

@@ -57,10 +57,23 @@ describe('parsePreset', () => {
     if (r.ok) expect(r.data.settings!.resolution).toBe(128)
   })
 
-  it('clamps layer temperature to 0..1 and defaults when absent', () => {
-    const hot = parsePreset(JSON.stringify({ layers: [{ noise: { type: 'perlin', temperature: 5 } }] }))
-    if (hot.ok) expect(hot.data.layers![0].noise.temperature).toBeLessThanOrEqual(1)
-    const absent = parsePreset(JSON.stringify({ layers: [{ noise: { type: 'perlin' } }] }))
-    if (absent.ok) expect(absent.data.layers![0].noise.temperature).toBe(0)
+  it('preserves a valid custom per-layer colorRamp (round-trip, not defaulted to fire)', () => {
+    const custom = {
+      enabled: false,
+      stops: [
+        { t: 0, color: [10, 20, 30], alpha: 0 },
+        { t: 1, color: [200, 100, 50], alpha: 255 },
+      ],
+    }
+    const r = parsePreset(JSON.stringify({ layers: [{ noise: { type: 'perlin' }, colorRamp: custom }] }))
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.data.layers![0].colorRamp).toEqual(custom)
+  })
+
+  it('defaults a layer with no colorRamp to the fire preset', () => {
+    const r = parsePreset(JSON.stringify({ layers: [{ noise: { type: 'perlin' } }] }))
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.data.layers![0].colorRamp.stops.length).toBeGreaterThan(0)
+    if (r.ok) expect(r.data.layers![0].colorRamp.enabled).toBe(true)
   })
 })

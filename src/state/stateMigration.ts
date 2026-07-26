@@ -20,10 +20,9 @@ export const CURRENT_PRESET_VERSION = 5
 // per-field normalizer needed here since a missing key just isn't present to
 // spread over the default.
 //
-// Bumped to 4: adds NoiseConfig.temperature (per-layer heat input, VFX-1 Task
-// 1; no render effect yet). Presets from version <4 lack `temperature`
-// entirely; normalizeLayer below defaults it to 0, same as any other
-// missing/legacy field.
+// Bumped to 4: added NoiseConfig.temperature (per-layer heat input, VFX-1 Task
+// 1). REMOVED again in VFX-2 (superseded by per-layer colorRamp): the field is
+// gone from the type, and any `temperature` on an old preset is simply ignored.
 //
 // Bumped to 5: adds SdfConfig.height (elongated SDF shapes -- plume/capsule/
 // cylinder, VFX-1 Task 1). Presets from version <5 lack `sdf.height`
@@ -42,7 +41,6 @@ export function normalizeLayer(layer: Layer): Layer {
       ...layer.noise,
       fbm: { ...base.noise.fbm, ...layer.noise?.fbm },
       sdf: normalizeSdf(layer.noise?.sdf, base.noise.sdf ?? DEFAULT_SDF),
-      temperature: layer.noise?.temperature ?? 0,
     },
     distortion: {
       ...base.distortion,

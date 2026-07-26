@@ -26,8 +26,8 @@ const float SPARSE_BRICK = ${BRICK_SIZE.toFixed(1)};
 // brick atlas. Empty macrocells (no packed brick) return vec4(0.0) —
 // reconstruct() substitutes exact zero for those too (bytes below
 // SPARSE_ACTIVE_THRESHOLD are already lost at pack time), so this is not a new
-// source of error. (VFX-2: the atlas becomes RGBA8 in Task 2; until then the
-// color channels are placeholder — expected intermediate state.)
+// source of error. (VFX-2: the atlas is RGBA8, so the color channels carry the
+// per-voxel color that composited into the brick.)
 vec4 sampleSparse(vec3 volumePos) {
   vec3 mc = floor(volumePos * u_macroDims);
   vec4 ind = texture(u_indirection, (mc + 0.5) / u_macroDims);

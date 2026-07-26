@@ -22,7 +22,7 @@ import {
   BlendMode, NoiseType, WorleyMode, DistortionType, FeatherShape,
   PreviewMode, SliceAxis, ProjectionMode, DEFAULT_SDF,
 } from '../types/index'
-import { normalizeBezierCurve, normalizeSdf, clamp01 } from './stateMigration'
+import { normalizeBezierCurve, normalizeSdf } from './stateMigration'
 
 const BLEND_MODES = new Set<string>(Object.values(BlendMode))
 const NOISE_TYPES = new Set<string>(Object.values(NoiseType))
@@ -120,7 +120,6 @@ function sanitizeNoise(raw: unknown, fallback: NoiseConfig): NoiseConfig {
     offset: asVec3(rec.offset, fallback.offset),
     rotation: asVec3(rec.rotation, fallback.rotation),
     seed: asFiniteNumber(rec.seed) ?? fallback.seed,
-    temperature: clamp01(asFiniteNumber(rec.temperature) ?? 0),
   }
 }
 
@@ -181,7 +180,7 @@ function sanitizeLayer(rec: Record<string, unknown>): Layer {
     noise: sanitizeNoise(rec.noise, base.noise),
     distortion: sanitizeDistortion(rec.distortion, base.distortion),
     remap: sanitizeRemap(rec.remap, base.remap),
-    colorRamp: base.colorRamp,  // VFX-2: default Fire; proper ramp parsing lands in Task 3.
+    colorRamp: sanitizeColorRamp(rec.colorRamp, base.colorRamp),  // VFX-2: parse a saved per-layer ramp; Fire only when absent/invalid.
   }
 }
 
