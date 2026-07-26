@@ -25,3 +25,28 @@ export function coneField(p: Vec3, radius: number, softness: number): number {
   const sd = Math.max(d2, dy)
   return field(sd, softness)
 }
+export function capsuleField(p: Vec3, radius: number, softness: number, height: number): number {
+  // capsule along +Y: `height` is the half-height of the straight segment between the two end caps
+  const h = Math.max(height, 1e-4)
+  const cy = Math.max(-h, Math.min(h, p[1]))
+  const d = Math.hypot(p[0], p[1] - cy, p[2]) - radius
+  return field(d, softness)
+}
+export function cylinderField(p: Vec3, radius: number, softness: number, height: number): number {
+  // flat-capped cylinder along +Y; `height` is the half-height
+  const h = Math.max(height, 1e-4)
+  const dx = Math.hypot(p[0], p[2]) - radius
+  const dy = Math.abs(p[1]) - h
+  const outside = Math.hypot(Math.max(dx, 0), Math.max(dy, 0))
+  const inside = Math.min(Math.max(dx, dy), 0)
+  return field(outside + inside, softness)
+}
+export function plumeField(p: Vec3, radius: number, softness: number, height: number): number {
+  // tapered capsule: radius shrinks linearly base->top (flame silhouette)
+  const h = Math.max(height, 1e-4)
+  const t = Math.max(0, Math.min(1, (p[1] + h) / (2 * h)))  // 0 base, 1 top
+  const rr = radius * (1 - 0.85 * t)                        // taper to 15%
+  const cy = Math.max(-h, Math.min(h, p[1]))
+  const d = Math.hypot(p[0], p[1] - cy, p[2]) - rr
+  return field(d, softness)
+}

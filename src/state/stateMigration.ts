@@ -6,7 +6,7 @@ import type { Layer, SdfConfig } from '../types/index'
 import { DEFAULT_SDF } from '../types/index'
 import { defaultLayer } from './AppState'
 
-export const CURRENT_PRESET_VERSION = 4
+export const CURRENT_PRESET_VERSION = 5
 
 // Bumped to 2: adds NoiseConfig.sdf (SDF primitive source layers, VFX-0 Task 1).
 // Presets from version 1 lack `sdf` entirely; normalizeLayer below fills it in
@@ -24,6 +24,12 @@ export const CURRENT_PRESET_VERSION = 4
 // 1; no render effect yet). Presets from version <4 lack `temperature`
 // entirely; normalizeLayer below defaults it to 0, same as any other
 // missing/legacy field.
+//
+// Bumped to 5: adds SdfConfig.height (elongated SDF shapes -- plume/capsule/
+// cylinder, VFX-1 Task 1). Presets from version <5 lack `sdf.height`
+// entirely; normalizeSdf below defaults it to DEFAULT_SDF.height (1.0), same
+// as any other missing/legacy field. Only affects the three elongated
+// shapes -- sphere/box/cone ignore it.
 
 export function normalizeLayer(layer: Layer): Layer {
   const base = defaultLayer(layer.name, layer.noise?.type)
@@ -46,12 +52,14 @@ export function normalizeLayer(layer: Layer): Layer {
   }
 }
 
-// Clamps sdf.radius/softness to 0..1, falling back to `base` for anything
-// missing or non-finite. Shared with presetValidation.ts's untrusted-JSON path.
+// Clamps sdf.radius/softness to 0..1 and sdf.height to 0.1..2, falling back
+// to `base` for anything missing or non-finite. Shared with
+// presetValidation.ts's untrusted-JSON path.
 export function normalizeSdf(sdf: Partial<SdfConfig> | undefined, base: SdfConfig): SdfConfig {
   const radius = typeof sdf?.radius === 'number' && Number.isFinite(sdf.radius) ? sdf.radius : base.radius
   const softness = typeof sdf?.softness === 'number' && Number.isFinite(sdf.softness) ? sdf.softness : base.softness
-  return { radius: clamp01(radius), softness: clamp01(softness) }
+  const height = typeof sdf?.height === 'number' && Number.isFinite(sdf.height) ? sdf.height : base.height
+  return { radius: clamp01(radius), softness: clamp01(softness), height: Math.min(2, Math.max(0.1, height)) }
 }
 
 export function normalizeRemap(

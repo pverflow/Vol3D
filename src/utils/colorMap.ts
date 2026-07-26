@@ -11,6 +11,9 @@ export const NOISE_COLORS: Record<NoiseType, string> = {
   [NoiseType.SdfSphere]: '#4dd8c4',
   [NoiseType.SdfBox]:    '#e0c341',
   [NoiseType.SdfCone]:   '#e05d8f',
+  [NoiseType.SdfPlume]:    '#ff7a3d',
+  [NoiseType.SdfCapsule]:  '#5dc9e0',
+  [NoiseType.SdfCylinder]: '#9be05d',
 }
 
 export const NOISE_LABELS: Record<NoiseType, string> = {
@@ -24,4 +27,7 @@ export const NOISE_LABELS: Record<NoiseType, string> = {
   [NoiseType.SdfSphere]: 'SDF Sphere',
   [NoiseType.SdfBox]:    'SDF Box',
   [NoiseType.SdfCone]:   'SDF Cone',
+  [NoiseType.SdfPlume]:    'SDF Plume',
+  [NoiseType.SdfCapsule]:  'SDF Capsule',
+  [NoiseType.SdfCylinder]: 'SDF Cylinder',
 }

@@ -13,6 +13,9 @@ import fbmGlsl from '../../shaders/noise/fbm.glsl?raw'
 import sdfSphere from '../../shaders/noise/sdf_sphere.glsl?raw'
 import sdfBox from '../../shaders/noise/sdf_box.glsl?raw'
 import sdfCone from '../../shaders/noise/sdf_cone.glsl?raw'
+import sdfPlume from '../../shaders/noise/sdf_plume.glsl?raw'
+import sdfCapsule from '../../shaders/noise/sdf_capsule.glsl?raw'
+import sdfCylinder from '../../shaders/noise/sdf_cylinder.glsl?raw'
 
 import domainWarp from '../../shaders/distortion/domain_warp.glsl?raw'
 import curlGlsl from '../../shaders/distortion/curl.glsl?raw'
@@ -47,6 +50,9 @@ const NOISE_SNIPPETS: Record<NoiseType, string> = {
   [NoiseType.SdfSphere]: sdfSphere,
   [NoiseType.SdfBox]: sdfBox,
   [NoiseType.SdfCone]: sdfCone,
+  [NoiseType.SdfPlume]: sdfPlume,
+  [NoiseType.SdfCapsule]: sdfCapsule,
+  [NoiseType.SdfCylinder]: sdfCylinder,
 }
 
 const DISTORTION_SNIPPETS: Record<DistortionType, string> = {

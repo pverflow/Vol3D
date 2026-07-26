@@ -105,7 +105,7 @@ function sanitizeFbm(raw: unknown, fallback: FBMConfig): FBMConfig {
 
 function asSdfInput(v: unknown): Partial<SdfConfig> | undefined {
   if (!isRecord(v)) return undefined
-  return { radius: asFiniteNumber(v.radius), softness: asFiniteNumber(v.softness) }
+  return { radius: asFiniteNumber(v.radius), softness: asFiniteNumber(v.softness), height: asFiniteNumber(v.height) }
 }
 
 function sanitizeNoise(raw: unknown, fallback: NoiseConfig): NoiseConfig {

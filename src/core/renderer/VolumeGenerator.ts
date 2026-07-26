@@ -235,6 +235,7 @@ export class VolumeGenerator {
       const sdf = layer.noise.sdf ?? DEFAULT_SDF
       compiler.setUniform(genProg, 'u_sdfRadius', sdf.radius)
       compiler.setUniform(genProg, 'u_sdfSoftness', sdf.softness)
+      compiler.setUniform(genProg, 'u_sdfHeight', sdf.height)
     }
 
     // Distortion uniforms

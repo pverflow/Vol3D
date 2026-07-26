@@ -246,6 +246,16 @@ export class PropertiesPanel {
         onInput: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), softness: v } })),
         onChange: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), softness: v } })),
       }).el)
+      // Shown for all SDF shapes, not just the elongated three -- harmless
+      // no-op for sphere/box/cone since their GLSL never reads u_sdfHeight,
+      // and this keeps the block a single shared list instead of branching
+      // on which SDF shape is selected.
+      body.appendChild(new Slider({
+        label: 'Height', min: 0.1, max: 2, step: 0.01, value: sdf.height,
+        defaultValue: DEFAULT_SDF.height, decimals: 2,
+        onInput: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), height: v } })),
+        onChange: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), height: v } })),
+      }).el)
     }
 
     // Scale XYZ
