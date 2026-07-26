@@ -21,6 +21,10 @@ const AXIS_MAP: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
 const PREVIEW_MODE_ORDER: PreviewMode[] = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
 const RAMP_LUT_SIZE = 256
 const RAMP_LUT_TEXTURE_UNIT = 1
+// Sparse brick cache (VFX-1 Task 4): dedicated units so they never collide
+// with u_volume (0) or the color-ramp LUT (1).
+const SPARSE_ATLAS_TEXTURE_UNIT = 2
+const SPARSE_INDIRECTION_TEXTURE_UNIT = 3
 
 export class Viewport {
   readonly el: HTMLElement
@@ -79,6 +83,13 @@ export class Viewport {
   // a preview-only shading tweak (cutoff/contrast) that the render loop
   // already picks up live via u_cutoff/u_contrast — no regen needed.
   private lastSettings: VolumeSettings
+  // TEST HOOK (VFX-1 Task 4 parity smoke) — not read by any real UI path.
+  // When set, every render binds brickCache frame `sparseTestFrame` and
+  // samples it sparsely (u_sparseEnabled=true) instead of the normal dense
+  // volume, so a Playwright parity test can screenshot a baked sparse frame
+  // next to the dense render of the same phase. T5 wires real sparse
+  // playback through AnimationController; this hook can be removed then.
+  private sparseTestFrame: number | null = null
 
   constructor(state: StateManager) {
     this.state = state
@@ -480,6 +491,7 @@ export class Viewport {
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
     this.bindColorRamp(prog, p.colorRampEnabled, p.colorRampTexture)
+    this.bindSparseTestUniforms(prog)
   }
 
   // Render hook for FlipbookExporter (Task 5): paints the colored raymarch —
@@ -530,6 +542,7 @@ export class Viewport {
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
     this.bindColorRamp(prog, preview.colorRamp.enabled)
+    this.bindSparseTestUniforms(prog)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
@@ -614,6 +627,73 @@ export class Viewport {
 
   focusCamera() {
     this.camera.reset()
+  }
+
+  // --- TEST HOOKS (VFX-1 Task 4 parity smoke) ---------------------------
+  // Not used by any real UI path; exist only so a Playwright parity test can
+  // drive the sparse brick cache deterministically. Remove/replace once T5
+  // wires real sparse playback.
+
+  // Kicks off the same sparse bake AnimationController normally only starts
+  // on play-start. Fire-and-forget like the real method; poll `generating`
+  // (state) or sparseCacheFrameCountForTest() to know when it settles.
+  buildSparseCacheForTest(): void {
+    this.animation.buildSparseCache()
+  }
+
+  // Regenerates `this.volume` at an EXPLICIT phase, bypassing the
+  // state.animation.phase subscription (and both animation caches it can
+  // snap to) entirely: driving phase through state.update('animation', ...)
+  // would risk tryApplyCachedAnimationFrame silently serving a nearby frame
+  // from the dense per-frame cache's OWN (different) frame grid — see
+  // computeCacheFrameCount vs ANIM_LOOP_FRAMES_DEFAULT — instead of
+  // regenerating the exact requested phase. This uses the same
+  // generateFrameData path the sparse bake itself uses, so the dense
+  // comparison frame is generated the same way the sparse cache's source
+  // frame was.
+  async regenerateDenseFrameForTest(phase: number): Promise<void> {
+    const { state } = this
+    const data = await this.generator.generateFrameData(
+      state.get('layers'),
+      this.volume.resolution,
+      this.volume.depth,
+      state.get('settings').globalSeed,
+      phase,
+      state.get('animation').evolutions,
+    )
+    this.volume.uploadVolume(data)
+    this.animation.resetAppliedFrame()
+  }
+
+  // Number of frames currently baked into the sparse brick cache (0 until a
+  // build finishes successfully).
+  get sparseCacheFrameCountForTest(): number {
+    return this.brickCache.frameCount
+  }
+
+  // When `frameIndex` is non-null, every subsequent render binds that
+  // brickCache frame and flips u_sparseEnabled on for it instead of sampling
+  // the normal dense volume; null restores the normal dense path.
+  setSparseTestFrame(frameIndex: number | null): void {
+    this.sparseTestFrame = frameIndex
+  }
+
+  // Binds the sparse uniforms for the current sparseTestFrame (if any) onto
+  // `prog`; otherwise leaves u_sparseEnabled false so the dense path is
+  // untouched. Shared by the raymarch and slice/projection render paths.
+  private bindSparseTestUniforms(prog: CompiledProgram): void {
+    const { compiler } = this
+    const frameIndex = this.sparseTestFrame
+    if (frameIndex === null || frameIndex >= this.brickCache.frameCount) {
+      compiler.setUniformBool(prog, 'u_sparseEnabled', false)
+      return
+    }
+    this.brickCache.bindForFrame(frameIndex, SPARSE_ATLAS_TEXTURE_UNIT, SPARSE_INDIRECTION_TEXTURE_UNIT)
+    compiler.setUniformi(prog, 'u_atlas', SPARSE_ATLAS_TEXTURE_UNIT)
+    compiler.setUniformi(prog, 'u_indirection', SPARSE_INDIRECTION_TEXTURE_UNIT)
+    compiler.setUniform(prog, 'u_macroDims', ...this.brickCache.macroDims)
+    compiler.setUniform(prog, 'u_atlasDimsBricks', ...this.brickCache.atlasDimsInBricks)
+    compiler.setUniformBool(prog, 'u_sparseEnabled', true)
   }
 
   destroy() {

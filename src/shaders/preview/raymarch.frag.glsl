@@ -30,6 +30,15 @@ const vec3 SMOKE_SHADOW = vec3(0.015, 0.015, 0.02);
 const vec3 SMOKE_LIT = vec3(0.16, 0.16, 0.18);
 const float EMISSION_GAIN = 3.0;
 
+// Dense-vs-sparse switch (VFX-1 Task 4). When u_sparseEnabled is false this
+// is EXACTLY texture(u_volume, p).rg — the pre-T4 dense path, byte-identical
+// (no-regression requirement). sampleSparse is the shared helper injected by
+// ShaderCompiler.injectShared (see sparseSample.ts).
+vec2 sampleVolume(vec3 p) {
+  if (u_sparseEnabled) return sampleSparse(p);
+  return texture(u_volume, p).rg;
+}
+
 vec2 intersectAABB(vec3 ro, vec3 rd, vec3 bMin, vec3 bMax) {
   vec3 tMin = (bMin - ro) / rd;
   vec3 tMax = (bMax - ro) / rd;
@@ -91,7 +100,30 @@ void main() {
     vec3 volumePos;
     float densityMul;
     if (sampleScene(worldPos, volumePos, densityMul)) {
-      vec2 rg = texture(u_volume, volumePos).rg;
+      if (u_sparseEnabled) {
+        // Empty-macrocell skip (perf; correctness comes first — see
+        // sampleSparse for the byte-exact reconstruction this reuses).
+        // ind.a<0.5 means NO brick was packed for this macrocell, i.e. every
+        // voxel in it is guaranteed zero (packFrame only packs a brick when
+        // at least one voxel exceeds the active threshold) — so it's safe to
+        // jump straight to its far edge instead of marching through it one
+        // fine step at a time. Reuses intersectAABB's slab test (same math
+        // already used for the outer volume box) against the macrocell's own
+        // box, in the same volumePos-local frame sampleScene produced; rd
+        // scaled by u_volumeSize is this frame's ray direction in that space
+        // because volumePos = fract(worldPos / u_volumeSize) is linear in
+        // worldPos between tile seams.
+        vec3 mc = floor(volumePos * u_macroDims);
+        vec4 ind = texture(u_indirection, (mc + 0.5) / u_macroDims);
+        if (ind.a < 0.5) {
+          vec3 rdLocal = rd / u_volumeSize;
+          vec2 exitT = intersectAABB(volumePos, rdLocal, mc / u_macroDims, (mc + 1.0) / u_macroDims);
+          t += max(stepSize, exitT.y + 1e-4);
+          continue;
+        }
+      }
+
+      vec2 rg = sampleVolume(volumePos);
       float sampleValue = applyDensityShaping(rg.r, u_cutoff, u_contrast);
       float heat = rg.g;
 
@@ -108,7 +140,7 @@ void main() {
           vec3 lightVolumePos;
           float lightDensityMul;
           if (sampleScene(lightWorldPos, lightVolumePos, lightDensityMul)) {
-            float lightSample = applyDensityShaping(texture(u_volume, lightVolumePos).r, u_cutoff, u_contrast);
+            float lightSample = applyDensityShaping(sampleVolume(lightVolumePos).r, u_cutoff, u_contrast);
             shadow = 1.0 - lightSample * lightDensityMul * 0.75;
           }
 
@@ -130,7 +162,7 @@ void main() {
           vec3 lightVolumePos;
           float lightDensityMul;
           if (sampleScene(lightWorldPos, lightVolumePos, lightDensityMul)) {
-            float lightSample = applyDensityShaping(texture(u_volume, lightVolumePos).r, u_cutoff, u_contrast);
+            float lightSample = applyDensityShaping(sampleVolume(lightVolumePos).r, u_cutoff, u_contrast);
             shadow = 1.0 - lightSample * lightDensityMul * 0.75;
           }
 

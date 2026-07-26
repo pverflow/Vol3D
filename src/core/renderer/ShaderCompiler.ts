@@ -34,6 +34,7 @@ import projectionFrag from '../../shaders/preview/projection.frag.glsl?raw'
 import { NoiseType, DistortionType, isSdfSource } from '../../types/index'
 import { SHADING_GLSL } from '../volumeShaping'
 import { HEAT_ACCUM_GLSL } from '../heatAccum'
+import { SPARSE_SAMPLE_GLSL } from '../sparseSample'
 
 const IDENTITY_DISTORTION = `
 vec3 applyDistortion(vec3 p) { return p; }
@@ -162,24 +163,28 @@ export class ShaderCompiler {
   }
 
   buildRaymarchShader(): CompiledProgram {
-    return this.buildSimpleProgram('raymarch', raymarchVert, this.injectShading(raymarchFrag), 'Raymarch')
+    return this.buildSimpleProgram('raymarch', raymarchVert, this.injectShared(raymarchFrag), 'Raymarch')
   }
 
   buildSliceShader(): CompiledProgram {
-    return this.buildSimpleProgram('slice', fullscreenVert, this.injectShading(sliceFrag), 'Slice')
+    return this.buildSimpleProgram('slice', fullscreenVert, this.injectShared(sliceFrag), 'Slice')
   }
 
   buildProjectionShader(): CompiledProgram {
-    return this.buildSimpleProgram('projection', fullscreenVert, this.injectShading(projectionFrag), 'Projection')
+    return this.buildSimpleProgram('projection', fullscreenVert, this.injectShared(projectionFrag), 'Projection')
   }
 
-  // Concatenate SHADING_GLSL (applyDensityShaping) right after the version/
-  // precision preamble shared by all three preview fragment shaders, so they
-  // can apply cutoff/contrast to sampled density at preview time (Task 3).
-  private injectShading(source: string): string {
+  // Concatenate SHADING_GLSL (applyDensityShaping, Task 3) and SPARSE_SAMPLE_GLSL
+  // (sampleSparse, Task 4) right after the version/precision preamble shared by
+  // all three preview fragment shaders. SPARSE_SAMPLE_GLSL declares its own
+  // uniforms (u_atlas/u_indirection/u_macroDims/u_atlasDimsBricks/u_sparseEnabled)
+  // and only reads them + sampleSparse's own locals — it never references
+  // u_volume, so injecting before each shader's own uniform block (which does
+  // declare u_volume) is safe (GLSL requires declaration-before-use).
+  private injectShared(source: string): string {
     return source.replace(
       /(#version 300 es\s*\nprecision highp float;\s*\nprecision highp sampler3D;\s*\n)/,
-      `$1\n${SHADING_GLSL}\n`
+      `$1\n${SHADING_GLSL}\n${SPARSE_SAMPLE_GLSL}\n`
     )
   }
 

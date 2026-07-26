@@ -17,6 +17,13 @@ uniform float u_contrast;
 uniform sampler2D u_colorRamp;
 uniform bool u_colorRampEnabled;
 
+// Dense-vs-sparse switch (VFX-1 Task 4) — see raymarch.frag.glsl's copy for
+// the full rationale (byte-identical dense path when !u_sparseEnabled).
+vec2 sampleVolume(vec3 p) {
+  if (u_sparseEnabled) return sampleSparse(p);
+  return texture(u_volume, p).rg;
+}
+
 bool fitPlaneUv(vec2 uv, out vec2 planeUv) {
   planeUv = uv;
   if (u_screenAspect > u_planeAspect) {
@@ -50,7 +57,7 @@ void main() {
     else if (u_sliceAxis == 1) uvw = vec3(planeUv.x, t, planeUv.y);
     else uvw = vec3(planeUv.x, planeUv.y, t);
 
-    vec2 rg = texture(u_volume, uvw).rg;
+    vec2 rg = sampleVolume(uvw);
     float v = applyDensityShaping(rg.r, u_cutoff, u_contrast);
     acc += v;
     heatAcc += rg.g;

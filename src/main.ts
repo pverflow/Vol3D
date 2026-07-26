@@ -50,6 +50,11 @@ function init() {
   new KeyBindings(state, viewport)
   const propsPanel = new PropertiesPanel(state, viewport)
 
+  // TEST HOOK (VFX-1 Task 4 parity smoke) — not used by any real UI path.
+  // Lets an external Playwright script drive state + the sparse-cache test
+  // hooks (Viewport.buildSparseCacheForTest/setSparseTestFrame) directly.
+  ;(window as unknown as { __VOL3D_TEST__?: { state: StateManager; viewport: Viewport } }).__VOL3D_TEST__ = { state, viewport }
+
   // Layout
   app.appendChild(topBar.el)
 
