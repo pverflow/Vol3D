@@ -124,8 +124,8 @@ export class SliceBuffer {
   // Read back pixels from the accumulator as Uint8Array (RGBA). If the
   // accumulator is a float target, blit it into the RGBA8 resolve FBO first —
   // readPixels(..., UNSIGNED_BYTE) on a float framebuffer is invalid.
-  // Since VFX-1 Task 2 the accumulator's .r/.g hold density/heat (the .b/.a
-  // channels are unused padding); callers extract [i*4]=density, [i*4+1]=heat.
+  // Layout is RGBA8 [colorR, colorG, colorB, density] (VFX-2): the .rgb
+  // channels hold per-voxel color and the .a channel holds density.
   readPixels(): Uint8Array {
     const { gl, resolution } = this
     const data = new Uint8Array(resolution * resolution * 4)

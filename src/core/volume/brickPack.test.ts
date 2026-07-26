@@ -1,16 +1,20 @@
 import { describe, it, expect } from 'vitest'
 import { AtlasBuilder, packFrame, reconstruct, BRICK, bricksPerAxis, maxBricksForBudget, bakePlaybackResolution, macroDims } from './brickPack'
+import { SPARSE_CACHE_BUDGET_BYTES } from '../constants'
 
 // tiny volume: res=32, depth=32 → macrocells 2x2x2 (BRICK=16)
-function makeDense(res: number, depth: number, fill: (x: number, y: number, z: number) => [number, number]) {
-  const out = new Uint8Array(res * res * depth * 2)
+// RGBA8, 4 bytes/voxel: [R=colorR, G=colorG, B=colorB, A=density]
+function makeDense(res: number, depth: number, fill: (x: number, y: number, z: number) => [number, number, number, number]) {
+  const out = new Uint8Array(res * res * depth * 4)
   for (let z = 0; z < depth; z++)
     for (let y = 0; y < res; y++)
       for (let x = 0; x < res; x++) {
-        const i = (z * res * res + y * res + x) * 2
-        const [d, h] = fill(x, y, z)
-        out[i] = d
-        out[i + 1] = h
+        const i = (z * res * res + y * res + x) * 4
+        const [r, g, b, a] = fill(x, y, z)
+        out[i] = r
+        out[i + 1] = g
+        out[i + 2] = b
+        out[i + 3] = a
       }
   return out
 }
@@ -19,19 +23,23 @@ describe('brickPack round-trip', () => {
   it('reconstructs active bricks exactly and zeros empty ones', () => {
     const res = 32,
       depth = 32
-    // one active brick: the (0,0,0) 16^3 corner has density 200
-    const dense = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [200, 50] : [0, 0]))
+    // one active brick: the (0,0,0) 16^3 corner has color [10,20,30] + density 200
+    const dense = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [10, 20, 30, 200] : [0, 0, 0, 0]))
     const builder = new AtlasBuilder(BRICK, 8) // 2x2x2 macro grid -> at most 8 bricks
     const packed = packFrame(dense, res, depth, builder, 0)
     const atlasDims = builder.atlasDimsInBricks
     const recon = reconstruct(builder.data(), atlasDims, packed, res, depth, BRICK)
-    // active corner preserved
-    expect(recon[0]).toBe(200)
-    expect(recon[1]).toBe(50)
+    // active corner preserved (all 4 channels)
+    expect(recon[0]).toBe(10)
+    expect(recon[1]).toBe(20)
+    expect(recon[2]).toBe(30)
+    expect(recon[3]).toBe(200)
     // an empty region is zero
-    const j = (20 * res * res + 20 * res + 20) * 2
+    const j = (20 * res * res + 20 * res + 20) * 4
     expect(recon[j]).toBe(0)
     expect(recon[j + 1]).toBe(0)
+    expect(recon[j + 2]).toBe(0)
+    expect(recon[j + 3]).toBe(0)
     // exactly 1 active brick out of 8 macrocells
     expect(builder.bricksUsed).toBe(1)
   })
@@ -39,10 +47,10 @@ describe('brickPack round-trip', () => {
   it('accumulates two frames with different active bricks in one builder', () => {
     const res = 32,
       depth = 32
-    // frame A: corner (0,0,0) active
-    const denseA = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [111, 11] : [0, 0]))
-    // frame B: the opposite corner (16,16,16) active
-    const denseB = makeDense(res, depth, (x, y, z) => (x >= 16 && y >= 16 && z >= 16 ? [222, 22] : [0, 0]))
+    // frame A: corner (0,0,0) active, color [1,2,3] density 111
+    const denseA = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [1, 2, 3, 111] : [0, 0, 0, 0]))
+    // frame B: the opposite corner (16,16,16) active, color [4,5,6] density 222
+    const denseB = makeDense(res, depth, (x, y, z) => (x >= 16 && y >= 16 && z >= 16 ? [4, 5, 6, 222] : [0, 0, 0, 0]))
 
     const builder = new AtlasBuilder(BRICK, 8)
     const packedA = packFrame(denseA, res, depth, builder, 0)
@@ -57,18 +65,36 @@ describe('brickPack round-trip', () => {
     const reconB = reconstruct(atlas, atlasDims, packedB, res, depth, BRICK)
 
     // frame A: corner active, opposite corner still zero
-    expect(reconA[0]).toBe(111)
-    expect(reconA[1]).toBe(11)
-    const kA = (16 * res * res + 16 * res + 16) * 2
-    expect(reconA[kA]).toBe(0)
-    expect(reconA[kA + 1]).toBe(0)
+    expect([reconA[0], reconA[1], reconA[2], reconA[3]]).toEqual([1, 2, 3, 111])
+    const kA = (16 * res * res + 16 * res + 16) * 4
+    expect([reconA[kA], reconA[kA + 1], reconA[kA + 2], reconA[kA + 3]]).toEqual([0, 0, 0, 0])
 
     // frame B: opposite corner active, origin still zero
-    const kB = (16 * res * res + 16 * res + 16) * 2
-    expect(reconB[kB]).toBe(222)
-    expect(reconB[kB + 1]).toBe(22)
-    expect(reconB[0]).toBe(0)
-    expect(reconB[1]).toBe(0)
+    const kB = (16 * res * res + 16 * res + 16) * 4
+    expect([reconB[kB], reconB[kB + 1], reconB[kB + 2], reconB[kB + 3]]).toEqual([4, 5, 6, 222])
+    expect([reconB[0], reconB[1], reconB[2], reconB[3]]).toEqual([0, 0, 0, 0])
+  })
+})
+
+describe('active-brick threshold', () => {
+  it('tests the density (alpha) byte only — big color but zero density is EMPTY', () => {
+    const res = 16,
+      depth = 16 // single macrocell
+    // full-white color, density 0 everywhere -> must NOT be active
+    const colorOnly = makeDense(res, depth, () => [255, 255, 255, 0])
+    const b1 = new AtlasBuilder(BRICK, 8)
+    packFrame(colorOnly, res, depth, b1, 0)
+    expect(b1.bricksUsed).toBe(0)
+  })
+
+  it('any voxel with density above threshold makes the brick active (color zero)', () => {
+    const res = 16,
+      depth = 16
+    // zero color, one voxel with density 50 -> active at threshold 10
+    const densityOnly = makeDense(res, depth, (x, y, z) => (x === 0 && y === 0 && z === 0 ? [0, 0, 0, 50] : [0, 0, 0, 0]))
+    const b2 = new AtlasBuilder(BRICK, 8)
+    packFrame(densityOnly, res, depth, b2, 10)
+    expect(b2.bricksUsed).toBe(1)
   })
 })
 
@@ -77,10 +103,10 @@ describe('cross-frame brick dedup', () => {
     const res = 32,
       depth = 32
     // frame A and frame B share byte-identical content in their one active brick
-    const denseA = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [123, 45] : [0, 0]))
-    const denseB = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [123, 45] : [0, 0]))
+    const denseA = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [12, 34, 56, 123] : [0, 0, 0, 0]))
+    const denseB = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [12, 34, 56, 123] : [0, 0, 0, 0]))
     // frame C's active brick differs by one byte -> must NOT dedup with A/B
-    const denseC = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [200, 45] : [0, 0]))
+    const denseC = makeDense(res, depth, (x, y, z) => (x < 16 && y < 16 && z < 16 ? [12, 34, 56, 200] : [0, 0, 0, 0]))
 
     const builder = new AtlasBuilder(BRICK, 8)
     const packedA = packFrame(denseA, res, depth, builder, 0)
@@ -115,8 +141,8 @@ describe('cubic atlas layout (past the old 256-brick cliff)', () => {
   })
 
   it('maxBricksForBudget divides the VRAM budget by bytes-per-brick', () => {
-    // BRICK=16 -> 16^3*2 = 8192 bytes/brick; 96MB budget -> 12288 bricks
-    expect(maxBricksForBudget(96 * 1024 * 1024, BRICK)).toBe(12288)
+    // BRICK=16 -> 16^3*4 = 16384 bytes/brick; 96MB budget -> 6144 bricks
+    expect(maxBricksForBudget(96 * 1024 * 1024, BRICK)).toBe(6144)
   })
 
   it('keeps atlas dims small and cubic even with >256 bricks used, and round-trips slots past the old 256 cliff', () => {
@@ -129,7 +155,7 @@ describe('cubic atlas layout (past the old 256-brick cliff)', () => {
     // 256*16=4096-texel-wide atlas axis (past most MAX_3D_TEXTURE_SIZE limits).
     const bricksUsedTarget = 260
     for (let slot = 0; slot < bricksUsedTarget; slot++) {
-      const brickData = new Uint8Array(BRICK * BRICK * BRICK * 2)
+      const brickData = new Uint8Array(BRICK * BRICK * BRICK * 4)
       brickData[0] = slot % 256
       brickData[1] = Math.floor(slot / 256)
       expect(builder.append(brickData)).toBe(slot)
@@ -151,7 +177,7 @@ describe('cubic atlas layout (past the old 256-brick cliff)', () => {
       const sx = slot % bpa
       const sy = Math.floor(slot / bpa) % bpa
       const sz = Math.floor(slot / (bpa * bpa))
-      const i = (sz * BRICK * atlasResX * atlasResY + sy * BRICK * atlasResX + sx * BRICK) * 2
+      const i = (sz * BRICK * atlasResX * atlasResY + sy * BRICK * atlasResX + sx * BRICK) * 4
       expect(atlas[i]).toBe(slot % 256)
       expect(atlas[i + 1]).toBe(Math.floor(slot / 256))
     }
@@ -186,6 +212,22 @@ describe('cubic atlas layout (past the old 256-brick cliff)', () => {
     expect(res).toBe(192)
   })
 
+  it('bakePlaybackResolution: a full 32-frame loop fits the 4-byte brick budget at 512³', () => {
+    // Real budget derived at 4 bytes/brick (RGBA8) — the returned bake res's
+    // whole loop must fit floor(maxBricks/targetFrames) and be a valid,
+    // brick-aligned, ≤-source resolution.
+    const maxBricks = maxBricksForBudget(SPARSE_CACHE_BUDGET_BYTES)
+    const targetFrames = 32
+    const { res, depth } = bakePlaybackResolution(maxBricks, 512, 512, targetFrames)
+
+    expect(res % BRICK).toBe(0)
+    expect(res).toBeLessThanOrEqual(512)
+    expect(res).toBeGreaterThanOrEqual(BRICK)
+
+    const [mx, my, mz] = macroDims(res, depth)
+    expect(mx * my * mz).toBeLessThanOrEqual(Math.floor(maxBricks / targetFrames))
+  })
+
   it('bakePlaybackResolution always returns brick-aligned res in [BRICK, sourceRes], cubic-in→cubic-out', () => {
     for (const sourceRes of [128, 256, 512]) {
       const { res, depth } = bakePlaybackResolution(65536, sourceRes, sourceRes, 32)
@@ -201,13 +243,13 @@ describe('cubic atlas layout (past the old 256-brick cliff)', () => {
     // Distinct content per brick (marker byte = i) so dedup doesn't collapse
     // these into one slot — this test is about the capacity cap, not dedup.
     for (let i = 0; i < 8; i++) {
-      const brickData = new Uint8Array(BRICK * BRICK * BRICK * 2)
+      const brickData = new Uint8Array(BRICK * BRICK * BRICK * 4)
       brickData[0] = i
       expect(builder.append(brickData)).toBe(i)
     }
     // 9th append (also distinct content) is past capacity -> rejected, not
     // silently overflowing into another slot's territory.
-    const overflow = new Uint8Array(BRICK * BRICK * BRICK * 2)
+    const overflow = new Uint8Array(BRICK * BRICK * BRICK * 4)
     overflow[0] = 8
     expect(builder.append(overflow)).toBe(-1)
     expect(builder.bricksUsed).toBe(8)

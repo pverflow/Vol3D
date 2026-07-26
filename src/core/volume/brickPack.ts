@@ -1,8 +1,9 @@
 // Pure sparse brick packer for animation caching (VFX-1).
-// Dense RG volume frames are mostly empty (fire/smoke), so we pack only the
-// active 16^3 bricks into a growing atlas + a per-frame indirection texture
-// that maps each macrocell to its brick's slot in the atlas (or "empty").
-// No GL, no DOM — pure data transform, unit-tested by round-trip.
+// Dense RGBA volume frames [colorR, colorG, colorB, density] are mostly empty
+// (fire/smoke), so we pack only the active 16^3 bricks into a growing atlas +
+// a per-frame indirection texture that maps each macrocell to its brick's slot
+// in the atlas (or "empty"). No GL, no DOM — pure data transform, unit-tested
+// by round-trip.
 
 import { BRICK_SIZE } from '../constants'
 
@@ -62,9 +63,9 @@ export function bakePlaybackResolution(
   return { res: BRICK, depth: alignedDepth(BRICK) }
 }
 
-// Whole RG bricks (2 bytes/voxel) a VRAM budget affords.
+// Whole RGBA bricks (4 bytes/voxel) a VRAM budget affords.
 export function maxBricksForBudget(budgetBytes: number, brick: number = BRICK): number {
-  const bytesPerBrick = brick * brick * brick * 2
+  const bytesPerBrick = brick * brick * brick * 4
   return Math.max(1, Math.floor(budgetBytes / bytesPerBrick))
 }
 
@@ -86,7 +87,7 @@ function slotToXYZ(slot: number, bpa: number): [number, number, number] {
   return [x, y, z]
 }
 
-// 32-bit FNV-1a over a brick's raw RG bytes — a fast, deterministic content
+// 32-bit FNV-1a over a brick's raw RGBA bytes — a fast, deterministic content
 // fingerprint used to dedup byte-identical bricks across frames (see
 // AtlasBuilder.append). Not cryptographic: collisions are handled by a
 // full byte-equality check on every hash hit, so a hash collision only ever
@@ -108,10 +109,10 @@ function bricksEqual(a: Uint8Array, b: Uint8Array): boolean {
   return true
 }
 
-// Accumulates active bricks (RG, BRICK^3 voxels each) across frames into a
+// Accumulates active bricks (RGBA, BRICK^3 voxels each) across frames into a
 // growing flat list, up to a fixed `maxBricks` budget (see bricksPerAxis).
 // `data()` lays the accumulated bricks out into a cubic 3D grid of BRICK^3
-// slots (positioned via slotToXYZ) for upload as a single RG atlas texture.
+// slots (positioned via slotToXYZ) for upload as a single RGBA atlas texture.
 export class AtlasBuilder {
   private readonly brick: number
   private readonly bpa: number
@@ -149,7 +150,7 @@ export class AtlasBuilder {
     return [this.bpa, this.bpa, this.bpa]
   }
 
-  // Appends one BRICK^3 RG brick (length brick*brick*brick*2), returns its
+  // Appends one BRICK^3 RGBA brick (length brick*brick*brick*4), returns its
   // slot index, or -1 if the brick budget (bpa^3 slots) is exhausted.
   // Cross-frame dedup: a brick byte-identical to one already in the atlas
   // reuses that brick's existing slot instead of consuming a fresh one —
@@ -159,10 +160,10 @@ export class AtlasBuilder {
   // Map lookup, not a scan. Upgrade path if VRAM is still tight after dedup:
   // per-brick LRU eviction instead of a hard reject (dropped macrocells just
   // stay empty).
-  append(brickRG: Uint8Array): number {
-    const hash = fnv1aHex(brickRG)
+  append(brickRGBA: Uint8Array): number {
+    const hash = fnv1aHex(brickRGBA)
     const existingSlot = this.hashToSlot.get(hash)
-    if (existingSlot !== undefined && bricksEqual(this.bricks[existingSlot], brickRG)) {
+    if (existingSlot !== undefined && bricksEqual(this.bricks[existingSlot], brickRGBA)) {
       return existingSlot
     }
 
@@ -176,7 +177,7 @@ export class AtlasBuilder {
       return -1
     }
 
-    this.bricks.push(brickRG)
+    this.bricks.push(brickRGBA)
     const slot = this.bricks.length - 1
     // Only claim this hash if it wasn't already claimed by a *different*
     // brick (a collision) — leave the original mapping alone so its own
@@ -188,14 +189,14 @@ export class AtlasBuilder {
     return slot
   }
 
-  // Packs all accumulated bricks into a single RG atlas sized atlasDimsInBricks.
+  // Packs all accumulated bricks into a single RGBA atlas sized atlasDimsInBricks.
   data(): Uint8Array {
     const b = this.brick
     const [ax, ay, az] = this.atlasDimsInBricks
     const atlasResX = ax * b
     const atlasResY = ay * b
     const atlasResZ = az * b
-    const out = new Uint8Array(atlasResX * atlasResY * atlasResZ * 2)
+    const out = new Uint8Array(atlasResX * atlasResY * atlasResZ * 4)
 
     for (let slot = 0; slot < this.bricks.length; slot++) {
       const brickData = this.bricks[slot]
@@ -207,13 +208,15 @@ export class AtlasBuilder {
       for (let bz = 0; bz < b; bz++) {
         for (let by = 0; by < b; by++) {
           for (let bx = 0; bx < b; bx++) {
-            const srcI = (bz * b * b + by * b + bx) * 2
+            const srcI = (bz * b * b + by * b + bx) * 4
             const dstX = originX + bx
             const dstY = originY + by
             const dstZ = originZ + bz
-            const dstI = (dstZ * atlasResX * atlasResY + dstY * atlasResX + dstX) * 2
+            const dstI = (dstZ * atlasResX * atlasResY + dstY * atlasResX + dstX) * 4
             out[dstI] = brickData[srcI]
             out[dstI + 1] = brickData[srcI + 1]
+            out[dstI + 2] = brickData[srcI + 2]
+            out[dstI + 3] = brickData[srcI + 3]
           }
         }
       }
@@ -222,9 +225,10 @@ export class AtlasBuilder {
   }
 }
 
-// Scans `dense` (RG, res*res*depth*2) for active macrocells (any voxel's
-// density `.r` or heat `.g` > threshold), appends each active brick's
-// voxels to `builder`, and returns the per-frame indirection texture.
+// Scans `dense` (RGBA, res*res*depth*4) for active macrocells (any voxel's
+// density — the alpha byte, index +3 — > threshold; color bytes are ignored
+// so a brightly-colored but zero-density brick is EMPTY), appends each active
+// brick's voxels to `builder`, and returns the per-frame indirection texture.
 // Edge macrocells (res/depth not a multiple of BRICK) are clamped to the
 // volume bounds; the remainder of the brick beyond the volume stays 0
 // (Uint8Array is zero-initialized).
@@ -245,7 +249,7 @@ export function packFrame(
         const originY = my_ * BRICK
         const originZ = mz_ * BRICK
 
-        const brickData = new Uint8Array(BRICK * BRICK * BRICK * 2)
+        const brickData = new Uint8Array(BRICK * BRICK * BRICK * 4)
         let active = false
 
         for (let bz = 0; bz < BRICK; bz++) {
@@ -257,13 +261,15 @@ export function packFrame(
             for (let bx = 0; bx < BRICK; bx++) {
               const x = originX + bx
               if (x >= res) continue
-              const srcI = (z * res * res + y * res + x) * 2
-              const r = dense[srcI]
-              const g = dense[srcI + 1]
-              if (r > threshold || g > threshold) active = true
-              const dstI = (bz * BRICK * BRICK + by * BRICK + bx) * 2
-              brickData[dstI] = r
-              brickData[dstI + 1] = g
+              const srcI = (z * res * res + y * res + x) * 4
+              // Density lives in the alpha byte (+3); color (+0..+2) never
+              // makes a brick active on its own.
+              if (dense[srcI + 3] > threshold) active = true
+              const dstI = (bz * BRICK * BRICK + by * BRICK + bx) * 4
+              brickData[dstI] = dense[srcI]
+              brickData[dstI + 1] = dense[srcI + 1]
+              brickData[dstI + 2] = dense[srcI + 2]
+              brickData[dstI + 3] = dense[srcI + 3]
             }
           }
         }
@@ -289,7 +295,7 @@ export function packFrame(
   return { indirection }
 }
 
-// Rebuilds the dense RG frame (res*res*depth*2) from `atlas` + `packed.indirection`.
+// Rebuilds the dense RGBA frame (res*res*depth*4) from `atlas` + `packed.indirection`.
 // Empty macrocells become all-zero. `atlasDimsInBricks` must match the
 // builder's `atlasDimsInBricks` when the atlas was produced by `data()` (it
 // only affects the atlas's own flat-array layout — slot placement itself is
@@ -307,7 +313,7 @@ export function reconstruct(
   const atlasResY = ay * brick
 
   const [mx, my, mz] = macroDims(res, depth)
-  const out = new Uint8Array(res * res * depth * 2)
+  const out = new Uint8Array(res * res * depth * 4)
 
   for (let mz_ = 0; mz_ < mz; mz_++) {
     for (let my_ = 0; my_ < my; my_++) {
@@ -339,10 +345,12 @@ export function reconstruct(
               const atlasX = originAtlasX + bx
               const atlasY = originAtlasY + by
               const atlasZ = originAtlasZ + bz
-              const srcI = (atlasZ * atlasResX * atlasResY + atlasY * atlasResX + atlasX) * 2
-              const dstI = (z * res * res + y * res + x) * 2
+              const srcI = (atlasZ * atlasResX * atlasResY + atlasY * atlasResX + atlasX) * 4
+              const dstI = (z * res * res + y * res + x) * 4
               out[dstI] = atlas[srcI]
               out[dstI + 1] = atlas[srcI + 1]
+              out[dstI + 2] = atlas[srcI + 2]
+              out[dstI + 3] = atlas[srcI + 3]
             }
           }
         }

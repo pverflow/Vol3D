@@ -1,10 +1,10 @@
 // GPU-resident sparse animation cache (VFX-1 Task 2).
-// One shared RG8 3D "atlas" texture holds every active brick used across the
-// whole animation loop (built once from Task 1's AtlasBuilder); one RGBA8 3D
-// "indirection" texture per frame maps each macrocell to its brick's slot in
-// the atlas (or "empty"). Task 4 samples both per raymarch step: look up the
-// indirection texel for the current macrocell, then sample the atlas at the
-// brick's slot offset + local position.
+// One shared RGBA8 3D "atlas" texture [colorRGB, density] holds every active
+// brick used across the whole animation loop (built once from Task 1's
+// AtlasBuilder); one RGBA8 3D "indirection" texture per frame maps each
+// macrocell to its brick's slot in the atlas (or "empty"). Task 4 samples both
+// per raymarch step: look up the indirection texel for the current macrocell,
+// then sample the atlas at the brick's slot offset + local position.
 import { BRICK_SIZE, SPARSE_CACHE_BUDGET_BYTES } from '../constants'
 import { AtlasBuilder, macroDims } from './brickPack'
 
@@ -40,7 +40,7 @@ export class BrickCache {
     budgetBytes: number = SPARSE_CACHE_BUDGET_BYTES,
     brick: number = BRICK_SIZE
   ): number {
-    const bytesPerBrick = brick * brick * brick * 2
+    const bytesPerBrick = brick * brick * brick * 4
     const byBudget = Math.max(1, Math.floor(budgetBytes / bytesPerBrick))
     const maxTexSize = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) as number
     const bpaLimit = Math.max(1, Math.floor(maxTexSize / brick))
@@ -99,9 +99,9 @@ export class BrickCache {
       gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
       gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE)
       gl.texImage3D(
-        gl.TEXTURE_3D, 0, gl.RG8,
+        gl.TEXTURE_3D, 0, gl.RGBA8,
         ax * brick, ay * brick, az * brick,
-        0, gl.RG, gl.UNSIGNED_BYTE, builder.data()
+        0, gl.RGBA, gl.UNSIGNED_BYTE, builder.data()
       )
       gl.bindTexture(gl.TEXTURE_3D, null)
 
