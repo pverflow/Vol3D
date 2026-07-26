@@ -49,11 +49,13 @@ void main() {
   vec3 bg = vec3(0.05, 0.05, 0.1);
   vec3 col;
   if (u_colorRampEnabled) {
-    // Heat-driven emission (VFX-1 Task 3): color comes from the ramp
-    // looked up by heat; coverage stays density-driven (v), with the
-    // ramp's alpha as an emission-strength multiplier.
+    // Smoke + glow (VFX-1 UX fix): dark smoke grey from shaped density,
+    // plus additive fire emission from the ramp looked up by heat.
+    const float EMISSION_GAIN = 3.0;
+    vec3 smoke = mix(vec3(0.02), vec3(0.18), v);
     vec4 ramp = texture(u_colorRamp, vec2(rg.g, 0.5));
-    col = mix(bg, ramp.rgb, v * ramp.a);
+    vec3 emission = ramp.rgb * ramp.a * EMISSION_GAIN;
+    col = smoke + emission;
   } else {
     // Apply a subtle false-color gradient for readability
     col = mix(bg, vec3(1.0, 1.0, 1.0), v);

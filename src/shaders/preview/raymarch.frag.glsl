@@ -26,6 +26,9 @@ uniform bool u_colorRampEnabled;
 
 const vec3 BACKGROUND_COLOR = vec3(0.0);
 const float EXTINCTION_SCALE = 12.0;
+const vec3 SMOKE_SHADOW = vec3(0.015, 0.015, 0.02);
+const vec3 SMOKE_LIT = vec3(0.16, 0.16, 0.18);
+const float EMISSION_GAIN = 3.0;
 
 vec2 intersectAABB(vec3 ro, vec3 rd, vec3 bMin, vec3 bMax) {
   vec3 tMin = (bMin - ro) / rd;
@@ -93,15 +96,28 @@ void main() {
       float heat = rg.g;
 
       if (u_colorRampEnabled) {
-        // Heat-driven emission (VFX-1 Task 3): color comes from the ramp
-        // looked up by heat; opacity stays density-driven (same formula as
-        // the grayscale path below), and the ramp's alpha is an emission-
-        // strength multiplier on top of that opacity.
+        // Smoke + glow (VFX-1 UX fix): cold/low-heat dense voxels render as
+        // visible dark smoke (same cheap 1-tap shadow as the grayscale path,
+        // mixed into dark smoke colors instead of cloud white), and heat
+        // adds fire emission from the ramp ON TOP, additively.
         float density = sampleValue * (u_density * densityMul);
         if (density > 0.001) {
+          // Simple lighting: sample slightly toward light
+          vec3 lightWorldPos = worldPos + u_lightDir * 0.05;
+          float shadow = 1.0;
+          vec3 lightVolumePos;
+          float lightDensityMul;
+          if (sampleScene(lightWorldPos, lightVolumePos, lightDensityMul)) {
+            float lightSample = applyDensityShaping(texture(u_volume, lightVolumePos).r, u_cutoff, u_contrast);
+            shadow = 1.0 - lightSample * lightDensityMul * 0.75;
+          }
+
           float alpha = 1.0 - exp(-density * stepSize * EXTINCTION_SCALE);
+          vec3 smoke = mix(SMOKE_SHADOW, SMOKE_LIT, clamp(shadow, 0.0, 1.0));
           vec4 ramp = texture(u_colorRamp, vec2(heat, 0.5));
-          accumulatedColor += ramp.rgb * ramp.a * alpha * transmittance;
+          vec3 emission = ramp.rgb * ramp.a * EMISSION_GAIN;
+          vec3 voxelColor = smoke + emission;
+          accumulatedColor += voxelColor * alpha * transmittance;
           transmittance *= (1.0 - alpha);
         }
       } else {
