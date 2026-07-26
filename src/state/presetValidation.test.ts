@@ -56,4 +56,11 @@ describe('parsePreset', () => {
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.data.settings!.resolution).toBe(128)
   })
+
+  it('clamps layer temperature to 0..1 and defaults when absent', () => {
+    const hot = parsePreset(JSON.stringify({ layers: [{ noise: { type: 'perlin', temperature: 5 } }] }))
+    if (hot.ok) expect(hot.data.layers![0].noise.temperature).toBeLessThanOrEqual(1)
+    const absent = parsePreset(JSON.stringify({ layers: [{ noise: { type: 'perlin' } }] }))
+    if (absent.ok) expect(absent.data.layers![0].noise.temperature).toBe(0)
+  })
 })

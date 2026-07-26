@@ -22,7 +22,7 @@ import {
   BlendMode, NoiseType, WorleyMode, DistortionType, FeatherShape,
   PreviewMode, SliceAxis, ProjectionMode, DEFAULT_SDF,
 } from '../types/index'
-import { normalizeBezierCurve, normalizeSdf } from './stateMigration'
+import { normalizeBezierCurve, normalizeSdf, clamp01 } from './stateMigration'
 
 const BLEND_MODES = new Set<string>(Object.values(BlendMode))
 const NOISE_TYPES = new Set<string>(Object.values(NoiseType))
@@ -120,6 +120,7 @@ function sanitizeNoise(raw: unknown, fallback: NoiseConfig): NoiseConfig {
     offset: asVec3(rec.offset, fallback.offset),
     rotation: asVec3(rec.rotation, fallback.rotation),
     seed: asFiniteNumber(rec.seed) ?? fallback.seed,
+    temperature: clamp01(asFiniteNumber(rec.temperature) ?? 0),
   }
 }
 

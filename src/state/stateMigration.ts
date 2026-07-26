@@ -6,7 +6,7 @@ import type { Layer, SdfConfig } from '../types/index'
 import { DEFAULT_SDF } from '../types/index'
 import { defaultLayer } from './AppState'
 
-export const CURRENT_PRESET_VERSION = 3
+export const CURRENT_PRESET_VERSION = 4
 
 // Bumped to 2: adds NoiseConfig.sdf (SDF primitive source layers, VFX-0 Task 1).
 // Presets from version 1 lack `sdf` entirely; normalizeLayer below fills it in
@@ -19,6 +19,11 @@ export const CURRENT_PRESET_VERSION = 3
 // presetValidation.sanitizeColorRamp's fallback (untrusted-JSON path) — no
 // per-field normalizer needed here since a missing key just isn't present to
 // spread over the default.
+//
+// Bumped to 4: adds NoiseConfig.temperature (per-layer heat input, VFX-1 Task
+// 1; no render effect yet). Presets from version <4 lack `temperature`
+// entirely; normalizeLayer below defaults it to 0, same as any other
+// missing/legacy field.
 
 export function normalizeLayer(layer: Layer): Layer {
   const base = defaultLayer(layer.name, layer.noise?.type)
@@ -31,6 +36,7 @@ export function normalizeLayer(layer: Layer): Layer {
       ...layer.noise,
       fbm: { ...base.noise.fbm, ...layer.noise?.fbm },
       sdf: normalizeSdf(layer.noise?.sdf, base.noise.sdf ?? DEFAULT_SDF),
+      temperature: layer.noise?.temperature ?? 0,
     },
     distortion: {
       ...base.distortion,

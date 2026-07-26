@@ -31,6 +31,7 @@ export function defaultLayer(name?: string, noiseType: NoiseType = NoiseType.Per
       offset: [0.0, 0.0, 0.0],
       rotation: [0.0, 0.0, 0.0],
       seed: 0.0,
+      temperature: 0,
     },
     distortion: {
       type: DistortionType.None,

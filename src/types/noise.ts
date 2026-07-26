@@ -50,4 +50,5 @@ export interface NoiseConfig {
   offset: [number, number, number]
   rotation: [number, number, number]  // Euler XYZ degrees
   seed: number
+  temperature: number  // 0..1, drives derived heat channel (VFX-1); no render effect yet
 }

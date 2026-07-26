@@ -282,6 +282,13 @@ export class PropertiesPanel {
       onChange: (v) => this.updateNoise(id, () => ({ seed: v })),
     }).el)
 
+    body.appendChild(new Slider({
+      label: 'Temperature', min: 0, max: 1, step: 0.01, value: layer.noise.temperature,
+      defaultValue: 0, decimals: 2,
+      onInput: (v) => this.updateNoise(id, () => ({ temperature: v })),
+      onChange: (v) => this.updateNoise(id, () => ({ temperature: v })),
+    }).el)
+
     return section(
       'Noise',
       body,
