@@ -6,6 +6,8 @@
 // Both the atlas and indirection textures are NEAREST-filtered (BrickCache),
 // and every lookup below samples an exact texel center, so this reproduces
 // reconstruct()'s per-voxel byte values precisely (no cross-brick bleed).
+import { BRICK_SIZE } from './constants'
+
 // Injected into every preview fragment shader (raymarch/slice/projection)
 // alongside SHADING_GLSL — see ShaderCompiler.injectShared.
 export const SPARSE_SAMPLE_GLSL = `
@@ -15,8 +17,9 @@ uniform vec3 u_macroDims;
 uniform vec3 u_atlasDimsBricks;
 uniform bool u_sparseEnabled;
 
-// Mirrors BRICK_SIZE (core/constants.ts) — brick edge length in voxels.
-const float SPARSE_BRICK = 16.0;
+// Interpolated from BRICK_SIZE (core/constants.ts) — brick edge length in
+// voxels — so the two can never drift out of sync.
+const float SPARSE_BRICK = ${BRICK_SIZE.toFixed(1)};
 
 // (density, heat) at \`volumePos\` (same normalized [0,1)^3 volume-local coord
 // the dense \`texture(u_volume, volumePos)\` call takes) via the sparse brick

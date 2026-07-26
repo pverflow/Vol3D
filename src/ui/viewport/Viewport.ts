@@ -39,9 +39,9 @@ export class Viewport {
   // one in-flight loop per instance; see AnimationController's doc comment).
   private sparseCacheGenerator: VolumeGenerator
   // GPU-resident sparse brick atlas + per-frame indirection textures
-  // (VFX-1 Task 3). Built by AnimationController.buildSparseCache(); not yet
-  // sampled by any render path (T4/T5) — owned here so it can be freed on
-  // destroy/context-restore like every other GL resource.
+  // (VFX-1 Task 3). Built by AnimationController.buildSparseCache(); sampled
+  // by bindSparseUniforms during real playback (Task 5) — owned here so it
+  // can be freed on destroy/context-restore like every other GL resource.
   private brickCache: BrickCache
   private volume: VolumeTexture
   // Low-res drag proxy (Task 4): a second, cheap VolumeTexture + its own
@@ -83,13 +83,6 @@ export class Viewport {
   // a preview-only shading tweak (cutoff/contrast) that the render loop
   // already picks up live via u_cutoff/u_contrast — no regen needed.
   private lastSettings: VolumeSettings
-  // TEST HOOK (VFX-1 Task 4 parity smoke) — not read by any real UI path.
-  // When set, every render binds brickCache frame `sparseTestFrame` and
-  // samples it sparsely (u_sparseEnabled=true) instead of the normal dense
-  // volume, so a Playwright parity test can screenshot a baked sparse frame
-  // next to the dense render of the same phase. T5 wires real sparse
-  // playback through AnimationController; this hook can be removed then.
-  private sparseTestFrame: number | null = null
 
   constructor(state: StateManager) {
     this.state = state
@@ -318,8 +311,7 @@ export class Viewport {
   private generateFull() {
     const { state } = this
     this.animation.resetAppliedFrame()
-    state.update('generating', true)
-    state.update('progress', 0)
+    state.beginGenerating()
 
     const indicator = document.getElementById('gen-indicator')
     if (indicator) indicator.style.display = 'flex'
@@ -332,8 +324,7 @@ export class Viewport {
       state.get('animation').evolutions,
       (p) => state.update('progress', p),
       () => {
-        state.update('generating', false)
-        state.update('progress', 1)
+        state.endGenerating()
         if (indicator) indicator.style.display = 'none'
         this.settling = false
         this.animation.buildAnimationCacheIfNeeded()
@@ -491,7 +482,7 @@ export class Viewport {
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
     this.bindColorRamp(prog, p.colorRampEnabled, p.colorRampTexture)
-    this.bindSparseTestUniforms(prog)
+    this.bindSparseUniforms(prog)
   }
 
   // Render hook for FlipbookExporter (Task 5): paints the colored raymarch —
@@ -508,6 +499,16 @@ export class Viewport {
     gl.viewport(0, 0, w, h)
     gl.bindVertexArray(this.vao)
     this.setRaymarchUniforms(prog, w, h, vol, params)
+    // Export ALWAYS renders dense (VFX-1 Task 5 critical fix): setRaymarchUniforms
+    // above just called bindSparseUniforms, which may have bound
+    // u_sparseEnabled=true for whatever frame is currently playing on-screen
+    // (the raymarch program/uniforms are shared between the live preview and
+    // this offscreen bake). Forcing it false here, right before the draw,
+    // guarantees the exported frame always samples `vol` (this bake's own
+    // per-frame dense volume, bound to u_volume above) instead of the sparse
+    // atlas — otherwise the export could silently render whatever the live
+    // playback frame happens to be instead of the intended bake frame.
+    this.compiler.setUniformBool(prog, 'u_sparseEnabled', false)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
     gl.bindVertexArray(null)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
@@ -542,7 +543,7 @@ export class Viewport {
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
     this.bindColorRamp(prog, preview.colorRamp.enabled)
-    this.bindSparseTestUniforms(prog)
+    this.bindSparseUniforms(prog)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
@@ -584,8 +585,7 @@ export class Viewport {
 
     const indicator = document.getElementById('gen-indicator')
     if (indicator) indicator.style.display = 'flex'
-    this.state.update('generating', true)
-    this.state.update('progress', 0)
+    this.state.beginGenerating()
 
     // Snapshot camera + render params ONCE, before the (chunked, awaited)
     // per-frame bake loop starts, so a mid-bake camera drag or Properties
@@ -607,8 +607,7 @@ export class Viewport {
         (p) => this.state.update('progress', p),
       )
     } finally {
-      this.state.update('generating', false)
-      this.state.update('progress', 1)
+      this.state.endGenerating()
       if (indicator) indicator.style.display = 'none'
     }
   }
@@ -629,61 +628,19 @@ export class Viewport {
     this.camera.reset()
   }
 
-  // --- TEST HOOKS (VFX-1 Task 4 parity smoke) ---------------------------
-  // Not used by any real UI path; exist only so a Playwright parity test can
-  // drive the sparse brick cache deterministically. Remove/replace once T5
-  // wires real sparse playback.
-
-  // Kicks off the same sparse bake AnimationController normally only starts
-  // on play-start. Fire-and-forget like the real method; poll `generating`
-  // (state) or sparseCacheFrameCountForTest() to know when it settles.
-  buildSparseCacheForTest(): void {
-    this.animation.buildSparseCache()
-  }
-
-  // Regenerates `this.volume` at an EXPLICIT phase, bypassing the
-  // state.animation.phase subscription (and both animation caches it can
-  // snap to) entirely: driving phase through state.update('animation', ...)
-  // would risk tryApplyCachedAnimationFrame silently serving a nearby frame
-  // from the dense per-frame cache's OWN (different) frame grid — see
-  // computeCacheFrameCount vs ANIM_LOOP_FRAMES_DEFAULT — instead of
-  // regenerating the exact requested phase. This uses the same
-  // generateFrameData path the sparse bake itself uses, so the dense
-  // comparison frame is generated the same way the sparse cache's source
-  // frame was.
-  async regenerateDenseFrameForTest(phase: number): Promise<void> {
-    const { state } = this
-    const data = await this.generator.generateFrameData(
-      state.get('layers'),
-      this.volume.resolution,
-      this.volume.depth,
-      state.get('settings').globalSeed,
-      phase,
-      state.get('animation').evolutions,
-    )
-    this.volume.uploadVolume(data)
-    this.animation.resetAppliedFrame()
-  }
-
-  // Number of frames currently baked into the sparse brick cache (0 until a
-  // build finishes successfully).
-  get sparseCacheFrameCountForTest(): number {
-    return this.brickCache.frameCount
-  }
-
-  // When `frameIndex` is non-null, every subsequent render binds that
-  // brickCache frame and flips u_sparseEnabled on for it instead of sampling
-  // the normal dense volume; null restores the normal dense path.
-  setSparseTestFrame(frameIndex: number | null): void {
-    this.sparseTestFrame = frameIndex
-  }
-
-  // Binds the sparse uniforms for the current sparseTestFrame (if any) onto
-  // `prog`; otherwise leaves u_sparseEnabled false so the dense path is
-  // untouched. Shared by the raymarch and slice/projection render paths.
-  private bindSparseTestUniforms(prog: CompiledProgram): void {
+  // Binds the sparse brick-cache uniforms for whatever frame
+  // AnimationController.advanceAnimation decided this render should show
+  // (VFX-1 Task 5 real playback) onto `prog`; leaves u_sparseEnabled false
+  // (dense path, byte-identical to pre-sparse behavior) whenever it isn't
+  // playing from the cache — not playing, or no bake finished yet. Shared by
+  // the on-screen raymarch and slice/projection render paths. NEVER reaches
+  // the export path's actual draw call: renderRaymarchToTarget forces
+  // u_sparseEnabled back to false right before drawing, since export must
+  // always render the dense per-frame bake volume, not whatever's playing
+  // on-screen.
+  private bindSparseUniforms(prog: CompiledProgram): void {
     const { compiler } = this
-    const frameIndex = this.sparseTestFrame
+    const frameIndex = this.animation.sparseFrameIndex
     if (frameIndex === null || frameIndex >= this.brickCache.frameCount) {
       compiler.setUniformBool(prog, 'u_sparseEnabled', false)
       return
