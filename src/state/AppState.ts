@@ -89,7 +89,6 @@ export function defaultState(): AppState {
       exposure: 1.0,
       showTilePreview: false,
       tilePreviewDensity: 0.45,
-      colorRamp: { enabled: false, stops: RAMP_PRESETS.fire },
     },
     animation: {
       phase: 0,

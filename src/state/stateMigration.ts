@@ -12,13 +12,11 @@ export const CURRENT_PRESET_VERSION = 5
 // Presets from version 1 lack `sdf` entirely; normalizeLayer below fills it in
 // from defaultLayer's default, same as any other missing/legacy field.
 //
-// Bumped to 3: adds PreviewSettings.colorRamp (color-ramp transfer function,
-// VFX-0 Task 3). Presets from version <3 lack `colorRamp` entirely; absent ->
-// default (fire preset, disabled) via StateManager.loadState's shallow
-// `{ ...defaults.preview, ...state.preview }` merge (live-state path) and
-// presetValidation.sanitizeColorRamp's fallback (untrusted-JSON path) — no
-// per-field normalizer needed here since a missing key just isn't present to
-// spread over the default.
+// Bumped to 3: added PreviewSettings.colorRamp (global color-ramp transfer
+// function, VFX-0 Task 3). REMOVED in VFX-2 (superseded by per-layer
+// colorRamp): the field is gone from the type; any `colorRamp` on an old
+// preset's preview block is simply ignored (sanitizePreview no longer reads
+// it, and a missing key just isn't present to spread over the default).
 //
 // Bumped to 4: added NoiseConfig.temperature (per-layer heat input, VFX-1 Task
 // 1). REMOVED again in VFX-2 (superseded by per-layer colorRamp): the field is

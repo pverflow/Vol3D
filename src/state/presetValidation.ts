@@ -245,7 +245,6 @@ function sanitizePreview(rec: Record<string, unknown>): PreviewSettings {
     exposure: asFiniteNumber(rec.exposure) ?? defaults.exposure,
     showTilePreview: asBoolean(rec.showTilePreview) ?? defaults.showTilePreview,
     tilePreviewDensity: asFiniteNumber(rec.tilePreviewDensity) ?? defaults.tilePreviewDensity,
-    colorRamp: sanitizeColorRamp(rec.colorRamp, defaults.colorRamp),
   }
 }
 

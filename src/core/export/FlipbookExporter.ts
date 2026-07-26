@@ -33,9 +33,8 @@ export interface FlipbookDeps {
 // frame. Captured ONCE at bake start (see Viewport.snapshotRaymarchParams)
 // so a mid-bake camera drag or Properties tweak can't change frames already
 // baked or still to come — every frame in one sprite sheet renders with the
-// exact same camera/shading. `colorRampTexture` is a bake-owned GL texture
-// (built from a snapshot of preview.colorRamp, not the shared live LUT
-// texture) that FlipbookExporter.bake deletes when done.
+// exact same camera/shading. Color is the baked per-voxel RGB in the volume
+// now (VFX-2), so there is no ramp texture to snapshot.
 export interface RaymarchParams {
   eye: Float32Array
   forward: Float32Array
@@ -49,8 +48,6 @@ export interface RaymarchParams {
   exposure: number
   showTilePreview: boolean
   tilePreviewDensity: number
-  colorRampEnabled: boolean
-  colorRampTexture: WebGLTexture
 }
 
 export interface FlipbookMetadata {
@@ -186,9 +183,6 @@ export class FlipbookExporter {
         gl.deleteFramebuffer(target.fbo)
         gl.deleteTexture(target.texture)
       }
-      // renderParams.colorRampTexture was built just for this bake (see
-      // Viewport.snapshotRaymarchParams) — ownership passes to us here.
-      gl.deleteTexture(renderParams.colorRampTexture)
     }
   }
 }

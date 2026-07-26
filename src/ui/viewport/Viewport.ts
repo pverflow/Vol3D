@@ -13,13 +13,10 @@ import type { AnimationSettings, ExportRequest, FlipbookConfig, Resolution, Slic
 import { PreviewMode, SliceAxis, ProjectionMode, ExportFormat } from '../../types/index'
 import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
 import { proxyDimension } from './proxyDimension'
-import { buildRampLUT } from '../../core/colorRamp'
-import type { ColorRamp } from '../../core/colorRamp'
 import type { RaymarchParams } from '../../core/export/FlipbookExporter'
 
 const AXIS_MAP: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
 const PREVIEW_MODE_ORDER: PreviewMode[] = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
-const RAMP_LUT_SIZE = 256
 // Sparse brick cache (VFX-1 Task 4): dedicated units so they never collide
 // with u_volume (0). Unit 1 is free (was the removed global color-ramp LUT).
 const SPARSE_ATLAS_TEXTURE_UNIT = 2
@@ -66,11 +63,6 @@ export class Viewport {
   private state: StateManager
   private rafId: number | null = null
   private vao: WebGLVertexArrayObject
-  // Density -> RGBA color-ramp LUT texture (VFX-0 Task 3): a 256x1 RGBA8
-  // texture rebuilt from `preview.colorRamp` only when that slice changes
-  // (see the `preview` subscription below), not every frame.
-  private lutTexture: WebGLTexture
-  private lastColorRamp: ColorRamp
   private dirtyTimer: number | null = null
   private exportInProgress = false
   private readonly listeners = new AbortController()
@@ -148,9 +140,6 @@ export class Viewport {
     })
     this.camera.setVolumeDepth(settings.resolution, settings.depth)
 
-    this.lastColorRamp = state.get('preview').colorRamp
-    this.lutTexture = this.createLutTexture(this.lastColorRamp)
-
     this.vao = gl.createVertexArray()!
 
     // Resize observer
@@ -172,15 +161,6 @@ export class Viewport {
       if (shouldRegenerateOnSettings(prev, s)) {
         this.animation.invalidateAnimationCache()
         this.scheduleGeneration()
-      }
-    }))
-    this.unsubscribes.push(state.subscribe('preview', (p) => {
-      // Rebuild the LUT only when the colorRamp slice itself changed
-      // (reference check — every other preview.* update leaves it
-      // untouched), not on every unrelated preview tweak.
-      if (p.colorRamp !== this.lastColorRamp) {
-        this.lastColorRamp = p.colorRamp
-        this.uploadRampLUT(p.colorRamp)
       }
     }))
     this.unsubscribes.push(state.subscribe('animation', (anim) => this.animation.handleAnimationChange(anim as AnimationSettings)))
@@ -236,43 +216,7 @@ export class Viewport {
     this.animation.invalidateAnimationCache()
     const s = this.state.get('settings')
     this.resizeVolume(s) // rebuilds VolumeTexture + generator slice buffers
-    this.ctx.gl.deleteTexture(this.lutTexture) // GL textures don't survive context loss
-    this.lutTexture = this.createLutTexture(this.lastColorRamp)
     this.scheduleGeneration()
-  }
-
-  // Allocate the 256x1 RGBA8 LUT texture and seed it with `ramp`'s data.
-  // LINEAR filtering gives smooth interpolation between texels (the LUT
-  // builder already interpolates between stops at 256 texels of
-  // resolution, so this just smooths the last mile); CLAMP_TO_EDGE avoids
-  // wrap-around bleeding at t=0/t=1.
-  private createLutTexture(ramp: ColorRamp): WebGLTexture {
-    const { gl } = this.ctx
-    const tex = gl.createTexture()
-    if (!tex) throw new Error('Failed to create color-ramp LUT texture')
-    gl.bindTexture(gl.TEXTURE_2D, tex)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.RGBA8,
-      RAMP_LUT_SIZE, 1, 0,
-      gl.RGBA, gl.UNSIGNED_BYTE, buildRampLUT(ramp, RAMP_LUT_SIZE)
-    )
-    gl.bindTexture(gl.TEXTURE_2D, null)
-    return tex
-  }
-
-  private uploadRampLUT(ramp: ColorRamp) {
-    const { gl } = this.ctx
-    gl.bindTexture(gl.TEXTURE_2D, this.lutTexture)
-    gl.texSubImage2D(
-      gl.TEXTURE_2D, 0, 0, 0,
-      RAMP_LUT_SIZE, 1,
-      gl.RGBA, gl.UNSIGNED_BYTE, buildRampLUT(ramp, RAMP_LUT_SIZE)
-    )
-    gl.bindTexture(gl.TEXTURE_2D, null)
   }
 
   scheduleGeneration() {
@@ -430,19 +374,16 @@ export class Viewport {
       exposure: preview.exposure,
       showTilePreview: preview.showTilePreview,
       tilePreviewDensity: preview.tilePreviewDensity,
-      colorRampEnabled: preview.colorRamp.enabled,
-      colorRampTexture: this.lutTexture,
     }
   }
 
   // Freeze the render-time uniforms once at bake start (VFX-0 Task 5 fix):
   // camera basis (for the square offscreen target, not the live canvas
-  // aspect) + the raymarch preview/shading fields + a dedicated LUT texture
-  // built from the current colorRamp so a later live ramp edit can't mutate
-  // frames already decided. showTilePreview is forced off — a flipbook frame
-  // shouldn't show the 3x3x3 neighbor-tile preview. Ownership of the
-  // returned colorRampTexture passes to FlipbookExporter.bake, which deletes
-  // it when the bake finishes.
+  // aspect) + the raymarch preview/shading fields, so a mid-bake camera drag
+  // or Properties tweak can't change frames already decided. Color is the
+  // baked per-voxel RGB in the volume now (VFX-2), so there's no ramp to
+  // snapshot. showTilePreview is forced off — a flipbook frame shouldn't show
+  // the 3x3x3 neighbor-tile preview.
   snapshotRaymarchParams(): RaymarchParams {
     const preview = this.state.get('preview')
     const settings = this.state.get('settings')
@@ -457,8 +398,6 @@ export class Viewport {
       exposure: preview.exposure,
       showTilePreview: false,
       tilePreviewDensity: preview.tilePreviewDensity,
-      colorRampEnabled: preview.colorRamp.enabled,
-      colorRampTexture: this.createLutTexture(preview.colorRamp),
     }
   }
 
@@ -693,7 +632,6 @@ export class Viewport {
     this.volume.destroy()
     this.proxyGenerator.destroy()
     this.proxyVolume.destroy()
-    this.ctx.gl.deleteTexture(this.lutTexture)
     this.ctx.gl.deleteVertexArray(this.vao)
   }
 }

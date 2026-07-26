@@ -1,5 +1,3 @@
-import type { ColorRamp } from '../core/colorRamp'
-
 export enum PreviewMode {
   Raymarched = 'raymarched',
   Slice = 'slice',
@@ -27,7 +25,6 @@ export interface PreviewSettings {
   exposure: number
   showTilePreview: boolean
   tilePreviewDensity: number
-  colorRamp: ColorRamp   // density -> RGBA transfer function, preview/bake-time only (VFX-0 Task 3)
 }
 
 export interface AnimationSettings {
