@@ -27,10 +27,11 @@ export class VolumeGenerator {
   // layer as a render target. Never holds a permanent attachment.
   private volumeTargetFbo: WebGLFramebuffer
 
-  // One-time capability probe (Task 3): can we render directly into a layer
-  // of an R8 3D texture? True on effectively all WebGL2 implementations (R8
-  // is a core-required color-renderable format), checked defensively so a
-  // broken driver falls back cleanly instead of producing a black volume.
+  // One-time capability probe (Task 3, extended in Task 2 for RG8): can we
+  // render directly into a layer of an RG8 3D texture? True on effectively
+  // all WebGL2 implementations (RG8 is a core-required color-renderable
+  // format), checked defensively so a broken driver falls back cleanly
+  // instead of producing a black volume.
   readonly canRenderToVolume: boolean
 
   constructor(gl: WebGL2RenderingContext, compiler: ShaderCompiler, resolution: number) {
@@ -62,7 +63,7 @@ export class VolumeGenerator {
     if (!tex) return false
 
     gl.bindTexture(gl.TEXTURE_3D, tex)
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, 4, 4, 4, 0, gl.RED, gl.UNSIGNED_BYTE, null)
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RG8, 4, 4, 4, 0, gl.RG, gl.UNSIGNED_BYTE, null)
     gl.bindTexture(gl.TEXTURE_3D, null)
 
     const fb = gl.createFramebuffer()
@@ -78,9 +79,10 @@ export class VolumeGenerator {
     return ok
   }
 
-  // Live path: writes RAW density directly into the volume's 3D texture,
-  // slice by slice, with no CPU readback and no baked cutoff/contrast
-  // (Task 3 — shaping moved to preview-time uniforms / export-time re-apply).
+  // Live path: writes RAW density+heat (RG) directly into the volume's 3D
+  // texture, slice by slice, with no CPU readback and no baked cutoff/contrast
+  // (Task 3 — shaping moved to preview-time uniforms / export-time re-apply;
+  // heat is derived per-layer during compositing — VFX-1 Task 2).
   // Falls back to the v1-shaped readback+upload structure (minus the baked
   // shaping) if the direct-render probe failed.
   generate(
@@ -100,7 +102,7 @@ export class VolumeGenerator {
       : (z) => {
           this.generateSlice(z, resolution, depth, activeLayers, globalSeed, animPhase, animEvolutions)
           const rgba = this.sliceBuffer.readPixels()
-          volume.uploadSlice(z, extractRedSlice(rgba, resolution))
+          volume.uploadSlice(z, extractRGSlice(rgba, resolution))
         }
 
     this.runSliceLoop(resolution, depth, renderSlice, onProgress, onComplete)
@@ -108,7 +110,8 @@ export class VolumeGenerator {
 
   // Cache/animation path: still needs CPU bytes (frames are cached as
   // Uint8Array and re-uploaded via VolumeTexture.uploadVolume), so it always
-  // reads back. Now outputs RAW density too — no baked cutoff/contrast.
+  // reads back. Now outputs RAW density+heat (RG, 2 bytes/voxel) — no baked
+  // cutoff/contrast.
   generateFrameData(
     layers: Layer[],
     resolution: number,
@@ -118,14 +121,14 @@ export class VolumeGenerator {
     animEvolutions: number,
     onProgress?: ProgressCallback
   ): Promise<Uint8Array> {
-    const frame = new Uint8Array(resolution * resolution * depth)
+    const frame = new Uint8Array(resolution * resolution * depth * 2)
     const activeLayers = layers.filter(l => l.visible)
 
     return new Promise((resolve) => {
       const renderSlice = (z: number) => {
         this.generateSlice(z, resolution, depth, activeLayers, globalSeed, animPhase, animEvolutions)
         const rgba = this.sliceBuffer.readPixels()
-        frame.set(extractRedSlice(rgba, resolution), z * resolution * resolution)
+        frame.set(extractRGSlice(rgba, resolution), z * resolution * resolution * 2)
       }
       this.runSliceLoop(resolution, depth, renderSlice, onProgress, () => resolve(frame))
     })
@@ -262,6 +265,7 @@ export class VolumeGenerator {
 
     compiler.setUniform(compProg, 'u_opacity', layer.opacity)
     compiler.setUniformi(compProg, 'u_blendMode', BLEND_MODE_INDEX[layer.blendMode])
+    compiler.setUniform(compProg, 'u_temperature', layer.noise.temperature)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
@@ -379,14 +383,15 @@ export class VolumeGenerator {
   }
 }
 
-// Extract the red channel of an RGBA readback into a single-channel buffer.
-// No shaping applied — the volume (and animation cache) now stores RAW
-// density; cutoff/contrast are applied at preview-time (shaders) and
-// export-time (ExportManager) instead.
-function extractRedSlice(rgba: Uint8Array, resolution: number): Uint8Array {
-  const red = new Uint8Array(resolution * resolution)
-  for (let i = 0; i < red.length; i++) {
-    red[i] = rgba[i * 4]
+// Extract the red (density) + green (heat) channels of an RGBA readback into
+// an RG-interleaved buffer (2 bytes/voxel). No shaping applied — the volume
+// (and animation cache) now stores RAW density+heat; cutoff/contrast are
+// applied at preview-time (shaders) and export-time (ExportManager) instead.
+function extractRGSlice(rgba: Uint8Array, resolution: number): Uint8Array {
+  const rg = new Uint8Array(resolution * resolution * 2)
+  for (let i = 0; i < resolution * resolution; i++) {
+    rg[i * 2] = rgba[i * 4]
+    rg[i * 2 + 1] = rgba[i * 4 + 1]
   }
-  return red
+  return rg
 }

@@ -22,16 +22,16 @@ export class VolumeTexture {
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.REPEAT)
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.REPEAT)
 
-    // Allocate storage
+    // Allocate storage — RG8: R=density, G=derived heat (VFX-1 Task 2)
     gl.texImage3D(
-      gl.TEXTURE_3D, 0, gl.R8,
+      gl.TEXTURE_3D, 0, gl.RG8,
       resolution, resolution, depth,
-      0, gl.RED, gl.UNSIGNED_BYTE, null
+      0, gl.RG, gl.UNSIGNED_BYTE, null
     )
     gl.bindTexture(gl.TEXTURE_3D, null)
   }
 
-  // Upload a single Z-slice from a Uint8Array (resolution x resolution, 1 channel)
+  // Upload a single Z-slice from a Uint8Array (resolution x resolution, RG interleaved: 2 bytes/voxel)
   uploadSlice(z: number, data: Uint8Array) {
     const { gl, resolution } = this
     gl.bindTexture(gl.TEXTURE_3D, this.texture)
@@ -39,11 +39,12 @@ export class VolumeTexture {
       gl.TEXTURE_3D, 0,
       0, 0, z,
       resolution, resolution, 1,
-      gl.RED, gl.UNSIGNED_BYTE, data
+      gl.RG, gl.UNSIGNED_BYTE, data
     )
     gl.bindTexture(gl.TEXTURE_3D, null)
   }
 
+  // data is RG interleaved: 2 bytes/voxel (resolution * resolution * depth * 2)
   uploadVolume(data: Uint8Array) {
     const { gl, resolution, depth } = this
     gl.bindTexture(gl.TEXTURE_3D, this.texture)
@@ -51,7 +52,7 @@ export class VolumeTexture {
       gl.TEXTURE_3D, 0,
       0, 0, 0,
       resolution, resolution, depth,
-      gl.RED, gl.UNSIGNED_BYTE, data
+      gl.RG, gl.UNSIGNED_BYTE, data
     )
     gl.bindTexture(gl.TEXTURE_3D, null)
   }
@@ -62,10 +63,10 @@ export class VolumeTexture {
   }
 
   // Attach Z-layer `z` of this 3D texture as COLOR_ATTACHMENT0 of `fb` so a
-  // fragment shader can render raw density directly into that slice (Task 3
-  // live generation path). Returns the framebuffer completeness status —
-  // caller checks against gl.FRAMEBUFFER_COMPLETE. Mirrors the pattern in
-  // ExportManager.readSlice.
+  // fragment shader can render raw density+heat (RG) directly into that slice
+  // (Task 3 live generation path). Returns the framebuffer completeness
+  // status — caller checks against gl.FRAMEBUFFER_COMPLETE. Mirrors the
+  // pattern in ExportManager.readSlice.
   bindAsRenderTarget(fb: WebGLFramebuffer, z: number): number {
     const { gl } = this
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb)

@@ -30,6 +30,7 @@ import projectionFrag from '../../shaders/preview/projection.frag.glsl?raw'
 
 import { NoiseType, DistortionType, isSdfSource } from '../../types/index'
 import { SHADING_GLSL } from '../volumeShaping'
+import { HEAT_ACCUM_GLSL } from '../heatAccum'
 
 const IDENTITY_DISTORTION = `
 vec3 applyDistortion(vec3 p) { return p; }
@@ -150,7 +151,7 @@ export class ShaderCompiler {
 
   buildCompositeShader(): CompiledProgram {
     const header = `#version 300 es\nprecision highp float;\n`
-    const frag = [header, blendModes, compositeFrag.replace('#version 300 es', '').replace('precision highp float;', '')].join('\n')
+    const frag = [header, blendModes, HEAT_ACCUM_GLSL, compositeFrag.replace('#version 300 es', '').replace('precision highp float;', '')].join('\n')
     return this.buildSimpleProgram('composite', fullscreenVert, frag, 'Composite')
   }
 
