@@ -380,16 +380,21 @@ export class VolumeGenerator {
   }
 
   // Build one 256x1 RGBA8 LUT texture per layer's colorRamp; index-aligned with `layers`.
+  // A layer whose colorRamp is DISABLED gets a fully-transparent LUT (empty
+  // stops) — it still shapes density (via its blend mode) but deposits no
+  // color in the composite's painter's-"over", so the "Enabled" toggle means
+  // "does this layer contribute color".
   private buildLayerRampLUTs(layers: Layer[]): WebGLTexture[] {
     const { gl } = this
     return layers.map((layer) => {
+      const ramp = layer.colorRamp.enabled ? layer.colorRamp : { enabled: true, stops: [] }
       const tex = gl.createTexture()!
       gl.bindTexture(gl.TEXTURE_2D, tex)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, buildRampLUT(layer.colorRamp, 256))
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, buildRampLUT(ramp, 256))
       gl.bindTexture(gl.TEXTURE_2D, null)
       return tex
     })
