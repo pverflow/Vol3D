@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { AtlasBuilder, packFrame, reconstruct, BRICK, bricksPerAxis, maxBricksForBudget } from './brickPack'
+import { AtlasBuilder, packFrame, reconstruct, BRICK, bricksPerAxis, maxBricksForBudget, bakePlaybackResolution, macroDims } from './brickPack'
 
 // tiny volume: res=32, depth=32 → macrocells 2x2x2 (BRICK=16)
 function makeDense(res: number, depth: number, fill: (x: number, y: number, z: number) => [number, number]) {
@@ -154,6 +154,45 @@ describe('cubic atlas layout (past the old 256-brick cliff)', () => {
       const i = (sz * BRICK * atlasResX * atlasResY + sy * BRICK * atlasResX + sx * BRICK) * 2
       expect(atlas[i]).toBe(slot % 256)
       expect(atlas[i + 1]).toBe(Math.floor(slot / 256))
+    }
+  })
+
+  it('bakePlaybackResolution returns native sourceRes when the full loop already fits', () => {
+    // 128³ with a generous budget: the whole 32-frame loop fits at native res.
+    const { res, depth } = bakePlaybackResolution(1_000_000, 128, 128, 32)
+    expect(res).toBe(128)
+    expect(depth).toBe(128)
+  })
+
+  it('bakePlaybackResolution reduces 512³ to the largest brick-aligned res whose loop fits', () => {
+    const maxBricks = 65536
+    const targetFrames = 32
+    const budget = Math.floor(maxBricks / targetFrames) // 2048
+    const { res, depth } = bakePlaybackResolution(maxBricks, 512, 512, targetFrames)
+
+    expect(res % BRICK).toBe(0)
+    expect(res).toBeLessThan(512)
+    expect(res).toBeGreaterThanOrEqual(BRICK)
+
+    // the whole loop fits the budget
+    const [mx, my, mz] = macroDims(res, depth)
+    expect(mx * my * mz).toBeLessThanOrEqual(budget)
+
+    // and it's the LARGEST such res — one brick bigger overflows the budget
+    const [bx, by, bz] = macroDims(res + BRICK, res + BRICK)
+    expect(bx * by * bz).toBeGreaterThan(budget)
+
+    // 12³=1728 ≤ 2048 < 2197=13³
+    expect(res).toBe(192)
+  })
+
+  it('bakePlaybackResolution always returns brick-aligned res in [BRICK, sourceRes], cubic-in→cubic-out', () => {
+    for (const sourceRes of [128, 256, 512]) {
+      const { res, depth } = bakePlaybackResolution(65536, sourceRes, sourceRes, 32)
+      expect(res % BRICK).toBe(0)
+      expect(res).toBeGreaterThanOrEqual(BRICK)
+      expect(res).toBeLessThanOrEqual(sourceRes)
+      expect(depth).toBe(res) // cubic source → cubic bake
     }
   })
 

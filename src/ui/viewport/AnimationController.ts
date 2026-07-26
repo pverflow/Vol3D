@@ -1,7 +1,7 @@
 import { VolumeGenerator } from '../../core/renderer/VolumeGenerator'
 import { VolumeTexture } from '../../core/volume/VolumeTexture'
 import { BrickCache } from '../../core/volume/BrickCache'
-import { AtlasBuilder, packFrame, macroDims } from '../../core/volume/brickPack'
+import { AtlasBuilder, packFrame, macroDims, bakePlaybackResolution } from '../../core/volume/brickPack'
 import type { StateManager } from '../../state/StateManager'
 import type { AnimationSettings, Layer } from '../../types/index'
 import { ANIMATION_MIN_FRAME_MS, BRICK_SIZE, ANIM_LOOP_FRAMES_DEFAULT, SPARSE_ACTIVE_THRESHOLD } from '../../core/constants'
@@ -176,6 +176,12 @@ export class AnimationController {
 
     if (prev.playing && !next.playing) {
       this.lastAnimationTick = 0
+      // Snap to a crisp full-res frame at the current (paused) phase: sparse
+      // playback baked/showed a reduced-res loop and never updated the dense
+      // volume per-frame, so regen full-res here (also fixes pre-existing
+      // pause staleness). Does NOT invalidate the sparse cache (resume stays
+      // instant) — the regen is gated on !playing so it won't rebake.
+      this.onNeedsGeneration()
     }
 
     this.lastAnimationState = { ...next }
@@ -296,7 +302,13 @@ export class AnimationController {
     // dense/large enough to hit it gets a clamp + a loud note, not a silent
     // truncation.
     const maxBricks = BrickCache.computeMaxBricks(this.gl)
-    const [mx, my, mz] = macroDims(resolution, depth)
+    // Reduced-res playback bake: at high source res a full loop can't fit VRAM,
+    // so bake the loop at the largest brick-aligned res whose whole loop fits
+    // (playback is softer; pause snaps back to full native res — see
+    // handleAnimationChange). At low res this returns sourceRes unchanged.
+    const { res: bakeRes, depth: bakeDepth } = bakePlaybackResolution(maxBricks, resolution, depth, ANIM_LOOP_FRAMES_DEFAULT)
+    this.sparseGenerator.resize(bakeRes)
+    const [mx, my, mz] = macroDims(bakeRes, bakeDepth)
     const macrocellsPerFrame = Math.max(1, mx * my * mz)
     const maxFrames = Math.max(1, Math.floor(maxBricks / macrocellsPerFrame))
     let frameCount = ANIM_LOOP_FRAMES_DEFAULT
@@ -315,20 +327,20 @@ export class AnimationController {
     try {
       for (let i = 0; i < frameCount; i++) {
         const phase = i / frameCount
-        const dense = await this.sparseGenerator.generateFrameData(layers, resolution, depth, globalSeed, phase, evolutions)
+        const dense = await this.sparseGenerator.generateFrameData(layers, bakeRes, bakeDepth, globalSeed, phase, evolutions)
 
         // Superseded by a newer bake (edit/invalidate/another play-start) —
         // bail before touching shared state (brickCache).
         if (buildId !== this.sparseCacheBuildId) return
 
-        const packed = packFrame(dense, resolution, depth, builder, SPARSE_ACTIVE_THRESHOLD)
+        const packed = packFrame(dense, bakeRes, bakeDepth, builder, SPARSE_ACTIVE_THRESHOLD)
         indirections.push(packed.indirection)
       }
 
       if (buildId !== this.sparseCacheBuildId) return
 
       try {
-        this.brickCache.build(builder, indirections, resolution, depth)
+        this.brickCache.build(builder, indirections, bakeRes, bakeDepth)
         this.sparseCacheAvailable = true
       } catch (err) {
         // BrickCache.build() throws loud on overflow/GPU OOM (by design) —

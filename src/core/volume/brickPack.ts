@@ -37,6 +37,31 @@ export function bricksPerAxis(maxBricks: number): number {
   return Math.min(256, Math.max(1, Math.ceil(Math.cbrt(Math.max(1, maxBricks)))))
 }
 
+// Largest brick-aligned resolution ≤ sourceRes whose worst-case full
+// `targetFrames` loop fits the sparse brick budget: macroDims(res,depth)
+// product ≤ floor(maxBricks / targetFrames). Steps down from sourceRes by
+// BRICK, preserving source aspect for depth (brick-aligned), floored at BRICK.
+// Returns {res: sourceRes, ...} unchanged when the full loop already fits (low
+// res) → native, today's behavior. Pure — no GL, no DOM (reuses macroDims).
+// Used by AnimationController.bakeSparseCache to pick a playback bake
+// resolution that fits the whole loop in VRAM at high source res (VFX-1).
+export function bakePlaybackResolution(
+  maxBricks: number,
+  sourceRes: number,
+  sourceDepth: number,
+  targetFrames: number
+): { res: number; depth: number } {
+  const budget = Math.floor(maxBricks / Math.max(1, targetFrames))
+  const alignedDepth = (res: number) =>
+    Math.max(BRICK, Math.round((res * sourceDepth) / sourceRes / BRICK) * BRICK)
+  for (let res = sourceRes; res > BRICK; res -= BRICK) {
+    const depth = alignedDepth(res)
+    const [mx, my, mz] = macroDims(res, depth)
+    if (mx * my * mz <= budget) return { res, depth }
+  }
+  return { res: BRICK, depth: alignedDepth(BRICK) }
+}
+
 // Whole RG bricks (2 bytes/voxel) a VRAM budget affords.
 export function maxBricksForBudget(budgetBytes: number, brick: number = BRICK): number {
   const bytesPerBrick = brick * brick * brick * 2
