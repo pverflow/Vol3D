@@ -15,6 +15,13 @@ uniform float u_screenAspect;
 uniform float u_cutoff;
 uniform float u_contrast;
 
+// Dense-vs-sparse switch — returns [colorRGB, density] (VFX-2). See
+// raymarch.frag.glsl's copy for the full rationale.
+vec4 sampleVolume(vec3 p) {
+  if (u_sparseEnabled) return sampleSparse(p);
+  return texture(u_volume, p);
+}
+
 bool fitPlaneUv(vec2 uv, out vec2 planeUv) {
   planeUv = uv;
   if (u_screenAspect > u_planeAspect) {
@@ -34,6 +41,8 @@ void main() {
 
   float acc = 0.0;
   float maxVal = 0.0;
+  vec3 colorAcc = vec3(0.0);
+  vec3 colorAtMax = vec3(0.0);
 
   int steps = max(u_steps, 8);
   float invSteps = 1.0 / float(steps);
@@ -46,13 +55,21 @@ void main() {
     else if (u_sliceAxis == 1) uvw = vec3(planeUv.x, t, planeUv.y);
     else uvw = vec3(planeUv.x, planeUv.y, t);
 
-    float v = applyDensityShaping(texture(u_volume, uvw).r, u_cutoff, u_contrast);
+    vec4 texel = sampleVolume(uvw);   // [colorRGB, density]
+    float v = applyDensityShaping(texel.a, u_cutoff, u_contrast);
     acc += v;
-    maxVal = max(maxVal, v);
+    colorAcc += texel.rgb;
+    if (v > maxVal) {
+      maxVal = v;
+      colorAtMax = texel.rgb;
+    }
   }
 
   float result = (u_projMode == 0) ? acc * invSteps : maxVal;
+  vec3 color = (u_projMode == 0) ? colorAcc * invSteps : colorAtMax;
   result = clamp(result * u_exposure, 0.0, 1.0);
-  vec3 col = mix(vec3(0.05, 0.05, 0.1), vec3(1.0, 1.0, 1.0), result);
+
+  // Flat projection: small density-grey ambient + the stored per-layer color.
+  vec3 col = mix(vec3(0.02), vec3(0.18), result) + color;
   fragColor = vec4(col, 1.0);
 }

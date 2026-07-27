@@ -1,9 +1,10 @@
 import {
   NoiseType, WorleyMode, BlendMode, DistortionType,
-  PreviewMode, SliceAxis, ProjectionMode, FeatherShape,
+  PreviewMode, SliceAxis, ProjectionMode, FeatherShape, DEFAULT_SDF,
 } from '../types/index'
 import type { Layer, VolumeSettings, PreviewSettings, CameraState, AnimationSettings } from '../types/index'
 import { uid } from '../utils/uid'
+import { RAMP_PRESETS } from '../core/colorRamp'
 
 export function defaultLayer(name?: string, noiseType: NoiseType = NoiseType.Perlin): Layer {
   return {
@@ -24,6 +25,7 @@ export function defaultLayer(name?: string, noiseType: NoiseType = NoiseType.Per
         persistence: 0.5,
         lacunarity: 2.0,
       },
+      sdf: { ...DEFAULT_SDF },
       scale: [3.0, 3.0, 3.0],
       amplitude: 1.0,
       offset: [0.0, 0.0, 0.0],
@@ -49,6 +51,7 @@ export function defaultLayer(name?: string, noiseType: NoiseType = NoiseType.Per
       featherShape: FeatherShape.Box,
       featherCurve: [0.25, 0.25, 0.75, 0.75],
     },
+    colorRamp: { enabled: true, stops: [...RAMP_PRESETS.fire] },
   }
 }
 

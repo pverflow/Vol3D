@@ -161,7 +161,15 @@ export class Slider {
     this.valueEl.replaceWith(input)
     input.select()
 
+    // Guard against re-entrancy: committing removes the focused input from the
+    // DOM, which fires a second `blur` -> commit. Without this flag the value
+    // is committed twice (double onChange) and replaceWith runs on an already
+    // detached node (throws in some engines). Escape sets it too so the
+    // follow-up blur discards instead of committing.
+    let closed = false
     const commit = () => {
+      if (closed) return
+      closed = true
       const v = parseFloat(input.value)
       if (!isNaN(v)) this.setValue(v, true)
       input.replaceWith(this.valueEl)
@@ -171,7 +179,7 @@ export class Slider {
     input.addEventListener('blur', commit)
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') commit()
-      if (e.key === 'Escape') { input.replaceWith(this.valueEl); this.update() }
+      if (e.key === 'Escape') { closed = true; input.replaceWith(this.valueEl); this.update() }
     })
   }
 

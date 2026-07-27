@@ -13,15 +13,16 @@
 import type { AppState } from './AppState'
 import { defaultLayer, defaultState } from './AppState'
 import type {
-  Layer, NoiseConfig, FBMConfig, DistortionConfig, RemapConfig, BezierCurve,
+  Layer, NoiseConfig, FBMConfig, SdfConfig, DistortionConfig, RemapConfig, BezierCurve,
   VolumeSettings, Resolution, SliceCount,
   PreviewSettings, AnimationSettings, CameraState,
 } from '../types/index'
+import type { ColorRamp, RampStop } from '../core/colorRamp'
 import {
   BlendMode, NoiseType, WorleyMode, DistortionType, FeatherShape,
-  PreviewMode, SliceAxis, ProjectionMode,
+  PreviewMode, SliceAxis, ProjectionMode, DEFAULT_SDF,
 } from '../types/index'
-import { normalizeBezierCurve } from './stateMigration'
+import { normalizeBezierCurve, normalizeSdf } from './stateMigration'
 
 const BLEND_MODES = new Set<string>(Object.values(BlendMode))
 const NOISE_TYPES = new Set<string>(Object.values(NoiseType))
@@ -102,12 +103,18 @@ function sanitizeFbm(raw: unknown, fallback: FBMConfig): FBMConfig {
   }
 }
 
+function asSdfInput(v: unknown): Partial<SdfConfig> | undefined {
+  if (!isRecord(v)) return undefined
+  return { radius: asFiniteNumber(v.radius), softness: asFiniteNumber(v.softness), height: asFiniteNumber(v.height) }
+}
+
 function sanitizeNoise(raw: unknown, fallback: NoiseConfig): NoiseConfig {
   const rec = isRecord(raw) ? raw : {}
   return {
     type: coerceEnum(rec.type, NOISE_TYPES, fallback.type),
     worleyMode: coerceEnum(rec.worleyMode, WORLEY_MODES, fallback.worleyMode),
     fbm: sanitizeFbm(rec.fbm, fallback.fbm),
+    sdf: normalizeSdf(asSdfInput(rec.sdf), fallback.sdf ?? DEFAULT_SDF),
     scale: asVec3(rec.scale, fallback.scale),
     amplitude: asFiniteNumber(rec.amplitude) ?? fallback.amplitude,
     offset: asVec3(rec.offset, fallback.offset),
@@ -173,6 +180,7 @@ function sanitizeLayer(rec: Record<string, unknown>): Layer {
     noise: sanitizeNoise(rec.noise, base.noise),
     distortion: sanitizeDistortion(rec.distortion, base.distortion),
     remap: sanitizeRemap(rec.remap, base.remap),
+    colorRamp: sanitizeColorRamp(rec.colorRamp, base.colorRamp),  // VFX-2: parse a saved per-layer ramp; Fire only when absent/invalid.
   }
 }
 
@@ -193,6 +201,36 @@ function sanitizeSettings(rec: Record<string, unknown>): VolumeSettings {
     contrast: asFiniteNumber(rec.contrast) ?? defaults.contrast,
     customSliceCount: asBoolean(rec.customSliceCount) ?? defaults.customSliceCount,
   }
+}
+
+// A malformed stop (missing/non-finite field, out-of-range t/color/alpha) is
+// dropped rather than clamped or defaulted, per the color-ramp validation
+// contract (VFX-0 Task 3) — a single bad stop in an otherwise-good ramp just
+// disappears instead of corrupting the gradient with a guessed value.
+function asRampStop(v: unknown): RampStop | undefined {
+  if (!isRecord(v)) return undefined
+  const t = asFiniteNumber(v.t)
+  const alpha = asFiniteNumber(v.alpha)
+  const color = v.color
+  if (t === undefined || alpha === undefined) return undefined
+  if (t < 0 || t > 1 || alpha < 0 || alpha > 255) return undefined
+  if (!Array.isArray(color) || color.length !== 3 || !color.every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 255)) {
+    return undefined
+  }
+  const [r, g, b] = color as [number, number, number]
+  return { t, color: [r, g, b], alpha }
+}
+
+// Whole ramp falls back to `fallback` if `stops` is absent/not-an-array or
+// every stop turns out malformed; otherwise keeps whichever individual
+// stops survive asRampStop.
+function sanitizeColorRamp(raw: unknown, fallback: ColorRamp): ColorRamp {
+  const rec = isRecord(raw) ? raw : {}
+  const enabled = asBoolean(rec.enabled) ?? fallback.enabled
+  const stops = Array.isArray(rec.stops)
+    ? rec.stops.map(asRampStop).filter((s): s is RampStop => s !== undefined)
+    : []
+  return { enabled, stops: stops.length > 0 ? stops : fallback.stops }
 }
 
 function sanitizePreview(rec: Record<string, unknown>): PreviewSettings {

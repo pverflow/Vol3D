@@ -64,6 +64,13 @@ function init() {
   main.appendChild(sideStack)
 
   app.appendChild(main)
+
+  // DEV-only test/debug hook (stripped from production builds). Lets the
+  // real-GPU smoke drive layer state directly (there is no per-layer ramp UI
+  // until VFX-2 Task 3).
+  if (import.meta.env.DEV) {
+    ;(window as unknown as { __vol3d?: { state: StateManager; viewport: Viewport } }).__vol3d = { state, viewport }
+  }
 }
 
 init()

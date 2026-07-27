@@ -116,7 +116,7 @@ export class SliceBuffer {
     const { gl } = this
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.framebuffer)
     gl.viewport(0, 0, this.resolution, this.resolution)
-    gl.clearColor(0, 0, 0, 1)
+    gl.clearColor(0, 0, 0, 0)  // [colorRGB, density] — density (alpha) starts at 0 (VFX-2)
     gl.clear(gl.COLOR_BUFFER_BIT)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   }
@@ -124,6 +124,8 @@ export class SliceBuffer {
   // Read back pixels from the accumulator as Uint8Array (RGBA). If the
   // accumulator is a float target, blit it into the RGBA8 resolve FBO first —
   // readPixels(..., UNSIGNED_BYTE) on a float framebuffer is invalid.
+  // Layout is RGBA8 [colorR, colorG, colorB, density] (VFX-2): the .rgb
+  // channels hold per-voxel color and the .a channel holds density.
   readPixels(): Uint8Array {
     const { gl, resolution } = this
     const data = new Uint8Array(resolution * resolution * 4)

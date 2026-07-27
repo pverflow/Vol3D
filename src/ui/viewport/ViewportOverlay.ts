@@ -133,6 +133,11 @@ export class ViewportOverlay {
 
     overlay.appendChild(previewControls)
 
+    // Color ramp (VFX-0 Task 3 placeholder) now lives entirely in
+    // PropertiesPanel's "Color" section (enable toggle + preset + full
+    // GradientEditor) -- see PropertiesPanel.buildColorSection -- so it isn't
+    // duplicated here.
+
     const syncOverlay = () => {
       const preview = state.get('preview')
       modeButtons.forEach((btn, mode) => btn.classList.toggle('active', preview.mode === mode))

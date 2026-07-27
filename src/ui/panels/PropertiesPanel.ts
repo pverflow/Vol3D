@@ -1,13 +1,15 @@
 import type { StateManager } from '../../state/StateManager'
 import type { Viewport } from '../viewport/Viewport'
 import type { Layer } from '../../types/index'
-import { NoiseType, WorleyMode, DistortionType, FeatherShape } from '../../types/index'
+import { NoiseType, WorleyMode, DistortionType, FeatherShape, isSdfSource, DEFAULT_SDF } from '../../types/index'
 import { defaultLayer } from '../../state/AppState'
 import { Slider } from '../components/Slider'
 import { Select } from '../components/Select'
 import { Toggle } from '../components/Toggle'
 import { BezierCurveEditor } from '../components/BezierCurveEditor'
+import { GradientEditor } from '../components/GradientEditor'
 import { NOISE_LABELS, NOISE_COLORS } from '../../utils/colorMap'
+import { RAMP_PRESETS, type RampStop } from '../../core/colorRamp'
 
 // Single source of truth for slider/curve right-click reset defaults.
 const D = defaultLayer()
@@ -109,6 +111,10 @@ export class PropertiesPanel {
       if (e.button !== 0) return  // left-drag only; right-click is the slider reset gesture
       const target = e.target as Element | null
       if (!target?.closest('.slider-track, .curve-handle')) return
+      // GradientEditor (VFX-2) reuses "curve-handle"/"slider-track" for its
+      // stop markers and alpha slider. Per-layer ramp edits write via
+      // updateLayer -- a REGEN_TRIGGERS field -- so a ramp drag SHOULD engage
+      // the volume drag-proxy just like every other slider/curve here.
       this.viewport.setInteracting(true)
     }, { capture: true })
     // mouseup is listened on window (not contentEl) because Slider and
@@ -150,6 +156,7 @@ export class PropertiesPanel {
     this.contentEl.appendChild(this.buildTransformSection(layer))
     this.contentEl.appendChild(this.buildDistortionSection(layer))
     this.contentEl.appendChild(this.buildRemapSection(layer))
+    this.contentEl.appendChild(this.buildColorSection(layer))
   }
 
   private handleLayersChange() {
@@ -215,6 +222,33 @@ export class PropertiesPanel {
       body.appendChild(wRow)
     }
 
+    // Radius/softness (only for SDF sources)
+    if (isSdfSource(layer.noise.type)) {
+      const sdf = layer.noise.sdf ?? DEFAULT_SDF
+      body.appendChild(new Slider({
+        label: 'Radius', min: 0.05, max: 1, step: 0.01, value: sdf.radius,
+        defaultValue: DEFAULT_SDF.radius, decimals: 2,
+        onInput: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), radius: v } })),
+        onChange: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), radius: v } })),
+      }).el)
+      body.appendChild(new Slider({
+        label: 'Softness', min: 0.001, max: 1, step: 0.001, value: sdf.softness,
+        defaultValue: DEFAULT_SDF.softness, decimals: 3,
+        onInput: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), softness: v } })),
+        onChange: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), softness: v } })),
+      }).el)
+      // Shown for all SDF shapes, not just the elongated three -- harmless
+      // no-op for sphere/box/cone since their GLSL never reads u_sdfHeight,
+      // and this keeps the block a single shared list instead of branching
+      // on which SDF shape is selected.
+      body.appendChild(new Slider({
+        label: 'Height', min: 0.1, max: 2, step: 0.01, value: sdf.height,
+        defaultValue: DEFAULT_SDF.height, decimals: 2,
+        onInput: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), height: v } })),
+        onChange: (v) => this.updateNoise(id, (current) => ({ sdf: { ...(current.noise.sdf ?? DEFAULT_SDF), height: v } })),
+      }).el)
+    }
+
     // Scale XYZ
     body.appendChild(new Slider({
       label: 'Scale X', min: 0.1, max: 20, step: 0.1, value: layer.noise.scale[0],
@@ -265,7 +299,9 @@ export class PropertiesPanel {
 
     if (layer.noise.type === NoiseType.FBM) {
       const baseOptions = Object.values(NoiseType)
-        .filter(t => t !== NoiseType.FBM)
+        // FBM base must be a procedural noise field, not FBM itself and not
+        // an SDF shape (a shape isn't a fractal base and has no controls here).
+        .filter(t => t !== NoiseType.FBM && !isSdfSource(t))
         .map(t => ({ value: t, label: NOISE_LABELS[t] }))
       const baseRow = document.createElement('div')
       baseRow.className = 'prop-row'
@@ -529,6 +565,83 @@ export class PropertiesPanel {
     )
   }
 
+  // Per-layer color ramp (VFX-2): enable toggle + preset dropdown + the full
+  // GradientEditor, bound to the selected layer's own `colorRamp`. Writes back
+  // via updateLayer (a REGEN_TRIGGERS field -- the color is baked into the
+  // RGBA8 volume at generation time), so an edit regenerates the volume like
+  // any other layer field (debounced). Built fresh per render() like the other
+  // per-layer sections; ramp edits don't change the render signature, so the
+  // GradientEditor isn't torn down mid-drag.
+  private buildColorSection(layer: Layer): HTMLElement {
+    const id = layer.id
+    const body = document.createElement('div')
+    body.className = 'prop-body'
+
+    const enableToggle = new Toggle('Enabled', layer.colorRamp.enabled, (v) => {
+      const l = this.getLayerById(id)
+      if (!l) return
+      const next = { ...l.colorRamp, enabled: v }
+      this.state.updateLayer(id, { colorRamp: next })
+      editor.setRamp(next)  // re-sync the editor's own copy (enabled flag) to what was stored
+    })
+    body.appendChild(enableToggle.el)
+
+    const presetRow = document.createElement('div')
+    presetRow.className = 'prop-row'
+    const presetLabel = document.createElement('span')
+    presetLabel.className = 'prop-label'
+    presetLabel.textContent = 'Preset'
+    const presetOptions = [
+      ...Object.keys(RAMP_PRESETS).map((k) => ({ value: k, label: k[0].toUpperCase() + k.slice(1) })),
+      { value: 'custom', label: 'Custom' },
+    ]
+    const presetSelect = new Select(presetOptions, matchPreset(layer.colorRamp.stops), (v) => {
+      if (v === 'custom') return // "Custom" isn't a loadable preset -- it only ever appears as a readout
+      const l = this.getLayerById(id)
+      if (!l) return
+      const next = { ...l.colorRamp, stops: [...RAMP_PRESETS[v as keyof typeof RAMP_PRESETS]] }
+      this.state.updateLayer(id, { colorRamp: next })
+      editor.setRamp(next)  // re-sync the bar to the picked preset's stops so the next bar edit doesn't revert it
+    })
+    presetRow.appendChild(presetLabel)
+    presetRow.appendChild(presetSelect.el)
+    body.appendChild(presetRow)
+
+    const editor = new GradientEditor(layer.colorRamp, (ramp) => {
+      const l = this.getLayerById(id)
+      if (!l) return
+      presetSelect.setValue(matchPreset(ramp.stops))
+      this.state.updateLayer(id, { colorRamp: { ...l.colorRamp, stops: ramp.stops } })
+    })
+    body.appendChild(editor.el)
+
+    return section(
+      'Color',
+      body,
+      this.getSectionOpen(id, 'Color', true),
+      (open) => this.setSectionOpen(id, 'Color', open)
+    )
+  }
+
+}
+
+// Resolves the preset <select>'s displayed value from actual state (VFX-0
+// Task 4 fix for the Task-3 minor: a stale-looking dropdown after a preset
+// load or undo). Falls back to "custom" whenever the stops don't exactly
+// match a known preset -- e.g. after any manual edit in the GradientEditor.
+function matchPreset(stops: RampStop[]): string {
+  for (const [key, preset] of Object.entries(RAMP_PRESETS)) {
+    if (stopsEqual(stops, preset)) return key
+  }
+  return 'custom'
+}
+
+function stopsEqual(a: RampStop[], b: RampStop[]): boolean {
+  if (a.length !== b.length) return false
+  return a.every((s, i) =>
+    s.t === b[i].t && s.alpha === b[i].alpha &&
+    s.color[0] === b[i].color[0] && s.color[1] === b[i].color[1] && s.color[2] === b[i].color[2]
+  )
 }
 
 function getLayerEditorSignature(layer: Layer | null): string | null {

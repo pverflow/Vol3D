@@ -3,18 +3,24 @@ import { ShaderCompiler } from '../../core/renderer/ShaderCompiler'
 import type { CompiledProgram } from '../../core/renderer/ShaderCompiler'
 import { VolumeGenerator } from '../../core/renderer/VolumeGenerator'
 import { VolumeTexture } from '../../core/volume/VolumeTexture'
+import { BrickCache } from '../../core/volume/BrickCache'
 import { CameraController } from './CameraController'
 import { AnimationController } from './AnimationController'
 import { ViewportOverlay } from './ViewportOverlay'
 import type { StateManager } from '../../state/StateManager'
 import { shouldRegenerateOnSettings } from '../../state/StateManager'
-import type { AnimationSettings, ExportConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
-import { PreviewMode, SliceAxis, ProjectionMode } from '../../types/index'
+import type { AnimationSettings, ExportRequest, FlipbookConfig, Resolution, SliceCount, VolumeSettings } from '../../types/index'
+import { PreviewMode, SliceAxis, ProjectionMode, ExportFormat } from '../../types/index'
 import { REGEN_DEBOUNCE_MS, RAYMARCH_TAN_HALF_FOV, LIGHT_DIR } from '../../core/constants'
 import { proxyDimension } from './proxyDimension'
+import type { RaymarchParams } from '../../core/export/FlipbookExporter'
 
 const AXIS_MAP: Record<SliceAxis, number> = { x: 0, y: 1, z: 2 }
 const PREVIEW_MODE_ORDER: PreviewMode[] = [PreviewMode.Raymarched, PreviewMode.Slice, PreviewMode.Projection]
+// Sparse brick cache (VFX-1 Task 4): dedicated units so they never collide
+// with u_volume (0). Unit 1 is free (was the removed global color-ramp LUT).
+const SPARSE_ATLAS_TEXTURE_UNIT = 2
+const SPARSE_INDIRECTION_TEXTURE_UNIT = 3
 
 export class Viewport {
   readonly el: HTMLElement
@@ -23,6 +29,16 @@ export class Viewport {
   private compiler: ShaderCompiler
   private generator: VolumeGenerator
   private cacheGenerator: VolumeGenerator
+  // Dedicated generator for the sparse-cache bake (VFX-1 Task 3) — separate
+  // from cacheGenerator so the bake's chunked-rAF loop never contends with
+  // the dense per-frame cache build's own loop (VolumeGenerator only tracks
+  // one in-flight loop per instance; see AnimationController's doc comment).
+  private sparseCacheGenerator: VolumeGenerator
+  // GPU-resident sparse brick atlas + per-frame indirection textures
+  // (VFX-1 Task 3). Built by AnimationController.buildSparseCache(); sampled
+  // by bindSparseUniforms during real playback (Task 5) — owned here so it
+  // can be freed on destroy/context-restore like every other GL resource.
+  private brickCache: BrickCache
   private volume: VolumeTexture
   // Low-res drag proxy (Task 4): a second, cheap VolumeTexture + its own
   // VolumeGenerator (own SliceBuffer sized at proxy resolution) so dragging
@@ -58,6 +74,24 @@ export class Viewport {
   // a preview-only shading tweak (cutoff/contrast) that the render loop
   // already picks up live via u_cutoff/u_contrast — no regen needed.
   private lastSettings: VolumeSettings
+  // Sole owner of state.generating/progress (VFX-1 Task 5 regression fix).
+  // Bumped at the start of every generateFull()/runFlipbookExport() call;
+  // each call's completion only writes generating=false/progress=1 if its
+  // own id still matches. This matters because generateFull() shares
+  // `this.generator` with any earlier still-running generateFull() call —
+  // VolumeGenerator.runSliceLoop cancels an in-flight chunked-rAF loop the
+  // moment generate() is called again on the same instance, and the
+  // cancelled call's onComplete is simply never invoked. Under the old
+  // ref-counted beginGenerating/endGenerating scheme that meant the
+  // superseded call's endGenerating() never ran, leaking the count and
+  // leaving `generating` stuck true forever. With this id guard, only the
+  // LATEST generateFull()/export call's completion can ever actually fire
+  // (earlier ones are the ones getting cancelled), so it's always the one
+  // whose id still matches — no leak possible, and no explicit "cancel the
+  // old one" bookkeeping needed. The sparse-cache bake (AnimationController)
+  // deliberately does NOT participate in this id or write generating/progress
+  // at all — see buildSparseCache's doc comment for why.
+  private generationId = 0
 
   constructor(state: StateManager) {
     this.state = state
@@ -85,6 +119,8 @@ export class Viewport {
     this.volume = new VolumeTexture(gl, settings.resolution as Resolution, settings.depth as SliceCount)
     this.generator = new VolumeGenerator(gl, this.compiler, settings.resolution)
     this.cacheGenerator = new VolumeGenerator(gl, this.compiler, settings.resolution)
+    this.sparseCacheGenerator = new VolumeGenerator(gl, this.compiler, settings.resolution)
+    this.brickCache = new BrickCache(gl)
 
     const proxyRes = proxyDimension(settings.resolution)
     this.proxyVolume = new VolumeTexture(gl, proxyRes as Resolution, proxyDimension(settings.depth) as SliceCount)
@@ -92,6 +128,9 @@ export class Viewport {
     this.animation = new AnimationController({
       state,
       cacheGenerator: this.cacheGenerator,
+      sparseGenerator: this.sparseCacheGenerator,
+      brickCache: this.brickCache,
+      gl,
       getVolume: () => this.volume,
       onNeedsGeneration: () => this.scheduleGeneration(),
     })
@@ -124,7 +163,6 @@ export class Viewport {
         this.scheduleGeneration()
       }
     }))
-    this.unsubscribes.push(state.subscribe('preview', () => { /* just re-render */ }))
     this.unsubscribes.push(state.subscribe('animation', (anim) => this.animation.handleAnimationChange(anim as AnimationSettings)))
     this.unsubscribes.push(state.subscribe('camera', (cam) => {
       this.camera.updateCamera(cam as typeof cam)
@@ -132,7 +170,7 @@ export class Viewport {
 
     // Export handler
     window.addEventListener('vol3d-export', (e: Event) => {
-      const detail = (e as CustomEvent<ExportConfig>).detail
+      const detail = (e as CustomEvent<ExportRequest>).detail
       this.handleExport(detail)
     }, { signal: this.listeners.signal })
 
@@ -163,6 +201,7 @@ export class Viewport {
     this.volume = new VolumeTexture(this.ctx.gl, settings.resolution as Resolution, settings.depth as SliceCount)
     this.generator.resize(settings.resolution)
     this.cacheGenerator.resize(settings.resolution)
+    this.sparseCacheGenerator.resize(settings.resolution)
     this.animation.invalidateAnimationCache()
 
     const proxyRes = proxyDimension(settings.resolution)
@@ -219,6 +258,7 @@ export class Viewport {
   private generateFull() {
     const { state } = this
     this.animation.resetAppliedFrame()
+    const id = ++this.generationId
     state.update('generating', true)
     state.update('progress', 0)
 
@@ -231,13 +271,23 @@ export class Viewport {
       state.get('settings').globalSeed,
       state.get('animation').phase,
       state.get('animation').evolutions,
-      (p) => state.update('progress', p),
+      (p) => { if (id === this.generationId) state.update('progress', p) },
       () => {
+        // Superseded by a newer generateFull()/export — that newer call
+        // owns generating/progress now (and will clear them itself when it
+        // finishes), so this stale completion must not touch shared state.
+        if (id !== this.generationId) return
         state.update('generating', false)
         state.update('progress', 1)
         if (indicator) indicator.style.display = 'none'
         this.settling = false
         this.animation.buildAnimationCacheIfNeeded()
+        // Sparse cache (VFX-1 Task 3): rebuild once settled, but only while
+        // actually playing — an edit made while paused shouldn't pay for a
+        // bake nobody's about to watch; it'll build on the next play-start.
+        if (this.state.get('animation').playing) {
+          this.animation.buildSparseCache()
+        }
       }
     )
   }
@@ -300,38 +350,118 @@ export class Viewport {
   }
 
   private renderRaymarched(w: number, h: number) {
-    const { compiler } = this
-    const prog = compiler.buildRaymarchShader()
+    const prog = this.compiler.buildRaymarchShader()
     const gl = this.beginPass(prog)
+    this.setRaymarchUniforms(prog, w, h, this.previewSource())
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+  }
 
+  // Build a RaymarchParams snapshot from the LIVE camera/state — what
+  // setRaymarchUniforms used to read directly every call. Used as the
+  // default when no snapshot is supplied, so the on-screen path's behavior
+  // is unchanged byte-for-byte.
+  private liveRaymarchParams(w: number, h: number): RaymarchParams {
     const preview = this.state.get('preview')
     const settings = this.state.get('settings')
-    const vol = this.previewSource()
-    const depthScale = vol.depth / vol.resolution
     const { eye, forward, right, up } = this.camera.getMatrices()
-    const aspect = w / h
-    const tanHalfFov = RAYMARCH_TAN_HALF_FOV
+    return {
+      eye, forward, right, up,
+      aspect: w / h,
+      cutoff: settings.cutoff,
+      contrast: settings.contrast,
+      density: preview.density,
+      stepCount: preview.stepCount,
+      exposure: preview.exposure,
+      showTilePreview: preview.showTilePreview,
+      tilePreviewDensity: preview.tilePreviewDensity,
+    }
+  }
 
-    compiler.setUniform(prog, 'u_cutoff', settings.cutoff)
-    compiler.setUniform(prog, 'u_contrast', settings.contrast)
-    compiler.setUniform(prog, 'u_cameraPos', eye[0], eye[1], eye[2])
-    compiler.setUniform(prog, 'u_cameraForward', forward[0], forward[1], forward[2])
-    compiler.setUniform(prog, 'u_cameraRight', right[0], right[1], right[2])
-    compiler.setUniform(prog, 'u_cameraUp', up[0], up[1], up[2])
+  // Freeze the render-time uniforms once at bake start (VFX-0 Task 5 fix):
+  // camera basis (for the square offscreen target, not the live canvas
+  // aspect) + the raymarch preview/shading fields, so a mid-bake camera drag
+  // or Properties tweak can't change frames already decided. Color is the
+  // baked per-voxel RGB in the volume now (VFX-2), so there's no ramp to
+  // snapshot. showTilePreview is forced off — a flipbook frame shouldn't show
+  // the 3x3x3 neighbor-tile preview.
+  snapshotRaymarchParams(): RaymarchParams {
+    const preview = this.state.get('preview')
+    const settings = this.state.get('settings')
+    const { eye, forward, right, up } = this.camera.getMatrices()
+    return {
+      eye, forward, right, up,
+      aspect: 1, // flipbook tiles are always square (tileRes x tileRes)
+      cutoff: settings.cutoff,
+      contrast: settings.contrast,
+      density: preview.density,
+      stepCount: preview.stepCount,
+      exposure: preview.exposure,
+      showTilePreview: false,
+      tilePreviewDensity: preview.tilePreviewDensity,
+    }
+  }
+
+  // Shared by the on-screen raymarch pass and renderRaymarchToTarget (Task 5
+  // flipbook bake) — the exact camera/ramp/cutoff/contrast uniform setup,
+  // parameterized on which volume to sample so the bake can pass its own
+  // per-frame volume instead of previewSource(). `params`, when supplied,
+  // overrides every live read (bake path); when omitted, behaves exactly as
+  // before via liveRaymarchParams (on-screen path, unchanged).
+  private setRaymarchUniforms(prog: CompiledProgram, w: number, h: number, vol: VolumeTexture, params?: RaymarchParams) {
+    const { compiler } = this
+    const p = params ?? this.liveRaymarchParams(w, h)
+    const depthScale = vol.depth / vol.resolution
+
+    compiler.setUniform(prog, 'u_cutoff', p.cutoff)
+    compiler.setUniform(prog, 'u_contrast', p.contrast)
+    compiler.setUniform(prog, 'u_cameraPos', p.eye[0], p.eye[1], p.eye[2])
+    compiler.setUniform(prog, 'u_cameraForward', p.forward[0], p.forward[1], p.forward[2])
+    compiler.setUniform(prog, 'u_cameraRight', p.right[0], p.right[1], p.right[2])
+    compiler.setUniform(prog, 'u_cameraUp', p.up[0], p.up[1], p.up[2])
     compiler.setUniform(prog, 'u_volumeSize', 1, 1, depthScale)
-    compiler.setUniform(prog, 'u_aspect', aspect)
-    compiler.setUniform(prog, 'u_tanHalfFov', tanHalfFov)
-    compiler.setUniform(prog, 'u_density', preview.density)
-    compiler.setUniformBool(prog, 'u_showTilePreview', preview.showTilePreview)
-    compiler.setUniform(prog, 'u_tilePreviewDensity', preview.tilePreviewDensity)
-    compiler.setUniformi(prog, 'u_stepCount', preview.stepCount)
-    compiler.setUniform(prog, 'u_exposure', preview.exposure)
+    compiler.setUniform(prog, 'u_aspect', p.aspect)
+    compiler.setUniform(prog, 'u_tanHalfFov', RAYMARCH_TAN_HALF_FOV)
+    compiler.setUniform(prog, 'u_density', p.density)
+    compiler.setUniformBool(prog, 'u_showTilePreview', p.showTilePreview)
+    compiler.setUniform(prog, 'u_tilePreviewDensity', p.tilePreviewDensity)
+    compiler.setUniformi(prog, 'u_stepCount', p.stepCount)
+    compiler.setUniform(prog, 'u_exposure', p.exposure)
     compiler.setUniform(prog, 'u_lightDir', ...LIGHT_DIR)
 
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
+    // VFX-2: color is the stored per-voxel RGB now; the preview shaders no
+    // longer take a global color ramp (u_colorRamp* removed).
+    this.bindSparseUniforms(prog)
+  }
 
+  // Render hook for FlipbookExporter (Task 5): paints the colored raymarch —
+  // camera, ramp LUT, cutoff/contrast, same as the on-screen path — for an
+  // arbitrary volume into an arbitrary offscreen framebuffer at w×h. `params`
+  // (supplied by the bake) overrides the live camera/state reads with the
+  // frozen snapshot; never called from the render loop, so on-screen
+  // rendering (which never passes params) is untouched.
+  renderRaymarchToTarget(fbo: WebGLFramebuffer, w: number, h: number, vol: VolumeTexture, params?: RaymarchParams): void {
+    const { gl } = this.ctx
+    const prog = this.compiler.buildRaymarchShader()
+    gl.useProgram(prog.program)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
+    gl.viewport(0, 0, w, h)
+    gl.bindVertexArray(this.vao)
+    this.setRaymarchUniforms(prog, w, h, vol, params)
+    // Export ALWAYS renders dense (VFX-1 Task 5 critical fix): setRaymarchUniforms
+    // above just called bindSparseUniforms, which may have bound
+    // u_sparseEnabled=true for whatever frame is currently playing on-screen
+    // (the raymarch program/uniforms are shared between the live preview and
+    // this offscreen bake). Forcing it false here, right before the draw,
+    // guarantees the exported frame always samples `vol` (this bake's own
+    // per-frame dense volume, bound to u_volume above) instead of the sparse
+    // atlas — otherwise the export could silently render whatever the live
+    // playback frame happens to be instead of the intended bake frame.
+    this.compiler.setUniformBool(prog, 'u_sparseEnabled', false)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
+    gl.bindVertexArray(null)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   }
 
   private renderSlicePlane(isProjection: boolean) {
@@ -362,25 +492,84 @@ export class Viewport {
 
     vol.bind(0)
     compiler.setUniformi(prog, 'u_volume', 0)
+    this.bindSparseUniforms(prog)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
-  private async handleExport(opts: ExportConfig) {
+  private async handleExport(opts: ExportRequest) {
     if (this.exportInProgress) return
 
     this.exportInProgress = true
     try {
-      const { ExportManager } = await import('../../core/export/ExportManager')
-      const settings = this.state.get('settings')
-      const mgr = new ExportManager(this.ctx.gl, this.volume, settings.cutoff, settings.contrast)
-      await mgr.export(opts.format, opts.filenameBase, opts.flipY)
+      if (opts.format === ExportFormat.Flipbook) {
+        await this.runFlipbookExport(opts)
+      } else {
+        const { ExportManager } = await import('../../core/export/ExportManager')
+        const settings = this.state.get('settings')
+        const mgr = new ExportManager(this.ctx.gl, this.volume, settings.cutoff, settings.contrast)
+        await mgr.export(opts.format, opts.filenameBase, opts.flipY)
+      }
     } catch (error) {
       console.error('Export failed:', error)
       const message = describeViewportError(error)
       window.alert(`Export failed: ${message}`)
     } finally {
       this.exportInProgress = false
+    }
+  }
+
+  // Rendered-flipbook export (Task 5): bakes the colored raymarch over the
+  // animation loop using the FULL-res generator/volume path (never the drag
+  // proxy) via a dedicated FlipbookExporter instance. Shares the same
+  // generationId scheme generateFull() uses so the top-bar progress
+  // indicator reflects bake progress too, and a concurrent generateFull()
+  // can't have this export's completion hide its still-in-progress bar (or
+  // vice versa) — see the generationId field's doc comment. Export never
+  // supersedes ITSELF (handleExport's exportInProgress guard) and always
+  // completes for real (its own dedicated generator, sequentially awaited —
+  // nothing cancels it), so unlike generateFull it never needs the id guard
+  // to protect against a dropped completion; it only needs one so it
+  // doesn't stomp an overlapping generateFull's still-running indicator.
+  private async runFlipbookExport(config: FlipbookConfig): Promise<void> {
+    const { FlipbookExporter } = await import('../../core/export/FlipbookExporter')
+    const exporter = new FlipbookExporter({
+      gl: this.ctx.gl,
+      compiler: this.compiler,
+      renderToTarget: (fbo, w, h, vol, params) => this.renderRaymarchToTarget(fbo, w, h, vol, params),
+    })
+
+    const indicator = document.getElementById('gen-indicator')
+    if (indicator) indicator.style.display = 'flex'
+    const id = ++this.generationId
+    this.state.update('generating', true)
+    this.state.update('progress', 0)
+
+    // Snapshot camera + render params ONCE, before the (chunked, awaited)
+    // per-frame bake loop starts, so a mid-bake camera drag or Properties
+    // tweak can't make frames within one sprite sheet inconsistent (VFX-0
+    // Task 5 fix). `camera` (for the JSON sidecar) and the matrices baked
+    // into renderParams both come from the same live state read here, with
+    // no await between them, so they can't drift apart.
+    const camera = this.state.get('camera')
+    const renderParams = this.snapshotRaymarchParams()
+
+    try {
+      await exporter.bake(
+        config,
+        this.state.get('layers'),
+        this.state.get('settings'),
+        this.state.get('animation'),
+        camera,
+        renderParams,
+        (p) => { if (id === this.generationId) this.state.update('progress', p) },
+      )
+    } finally {
+      if (id === this.generationId) {
+        this.state.update('generating', false)
+        this.state.update('progress', 1)
+        if (indicator) indicator.style.display = 'none'
+      }
     }
   }
 
@@ -400,6 +589,31 @@ export class Viewport {
     this.camera.reset()
   }
 
+  // Binds the sparse brick-cache uniforms for whatever frame
+  // AnimationController.advanceAnimation decided this render should show
+  // (VFX-1 Task 5 real playback) onto `prog`; leaves u_sparseEnabled false
+  // (dense path, byte-identical to pre-sparse behavior) whenever it isn't
+  // playing from the cache — not playing, or no bake finished yet. Shared by
+  // the on-screen raymarch and slice/projection render paths. NEVER reaches
+  // the export path's actual draw call: renderRaymarchToTarget forces
+  // u_sparseEnabled back to false right before drawing, since export must
+  // always render the dense per-frame bake volume, not whatever's playing
+  // on-screen.
+  private bindSparseUniforms(prog: CompiledProgram): void {
+    const { compiler } = this
+    const frameIndex = this.animation.sparseFrameIndex
+    if (frameIndex === null || frameIndex >= this.brickCache.frameCount) {
+      compiler.setUniformBool(prog, 'u_sparseEnabled', false)
+      return
+    }
+    this.brickCache.bindForFrame(frameIndex, SPARSE_ATLAS_TEXTURE_UNIT, SPARSE_INDIRECTION_TEXTURE_UNIT)
+    compiler.setUniformi(prog, 'u_atlas', SPARSE_ATLAS_TEXTURE_UNIT)
+    compiler.setUniformi(prog, 'u_indirection', SPARSE_INDIRECTION_TEXTURE_UNIT)
+    compiler.setUniform(prog, 'u_macroDims', ...this.brickCache.macroDims)
+    compiler.setUniform(prog, 'u_atlasDimsBricks', ...this.brickCache.atlasDimsInBricks)
+    compiler.setUniformBool(prog, 'u_sparseEnabled', true)
+  }
+
   destroy() {
     if (this.rafId !== null) cancelAnimationFrame(this.rafId)
     if (this.dirtyTimer !== null) {
@@ -413,6 +627,8 @@ export class Viewport {
     this.camera.destroy()
     this.generator.destroy()
     this.cacheGenerator.destroy()
+    this.sparseCacheGenerator.destroy()
+    this.brickCache.destroy()
     this.volume.destroy()
     this.proxyGenerator.destroy()
     this.proxyVolume.destroy()

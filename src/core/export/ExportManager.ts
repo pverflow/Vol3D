@@ -1,7 +1,6 @@
 import { VolumeTexture } from '../volume/VolumeTexture'
 import { ExportFormat } from '../../types/index'
 import { saveBytes } from '../../platform/fileAccess'
-import { redToGray } from '../../utils/imageChannels'
 import { applyDensityShaping } from '../volumeShaping'
 
 export class ExportManager {
@@ -56,12 +55,13 @@ export class ExportManager {
       const data = new Uint8Array(res * res * 4)
       gl.readPixels(0, 0, res, res, gl.RGBA, gl.UNSIGNED_BYTE, data)
 
-      // Re-apply shaping to the raw density red channel (g/b/a stay 0/0/255,
-      // exactly as they were pre-Task-3, since the R8 volume never carried
-      // anything but red) — this is what makes exported bytes match v1.
+      // Volume is RGBA8 [colorR, colorG, colorB, density] (VFX-2). RGB is the
+      // baked per-voxel color; density lives in ALPHA and is stored raw, so
+      // re-apply the same cutoff/contrast shaping the preview does — on alpha,
+      // leaving RGB untouched — so exported bytes match what's on screen.
       for (let i = 0; i < data.length; i += 4) {
-        const shaped = applyDensityShaping(data[i] / 255, this.cutoff, this.contrast)
-        data[i] = Math.round(shaped * 255)
+        const shaped = applyDensityShaping(data[i + 3] / 255, this.cutoff, this.contrast)
+        data[i + 3] = Math.round(shaped * 255)
       }
 
       if (flipY) {
@@ -92,7 +92,7 @@ export class ExportManager {
     const files: Record<string, Uint8Array> = {}
 
     for (let z = 0; z < depth; z++) {
-      const rgba = redToGray(this.readSlice(z, flipY))
+      const rgba = this.readSlice(z, flipY)  // [colorRGB, shaped density] (VFX-2)
       const canvas = document.createElement('canvas')
       canvas.width = res
       canvas.height = res
@@ -134,7 +134,7 @@ export class ExportManager {
     const ctx = this.getCanvas2DContext(canvas)
 
     for (let z = 0; z < depth; z++) {
-      const rgba = redToGray(this.readSlice(z, flipY))
+      const rgba = this.readSlice(z, flipY)  // [colorRGB, shaped density] (VFX-2)
       const sliceCanvas = document.createElement('canvas')
       sliceCanvas.width = res
       sliceCanvas.height = res
@@ -170,14 +170,14 @@ export class ExportManager {
       const offset = z * res * res * channels
       if (mode === 'r8') {
         for (let i = 0; i < res * res; i++) {
-          (out as Uint8Array)[offset + i] = rgba[i * 4]  // red channel
+          (out as Uint8Array)[offset + i] = rgba[i * 4 + 3]  // density (alpha)
         }
       } else if (mode === 'rgba8') {
-        (out as Uint8Array).set(rgba, offset)
+        (out as Uint8Array).set(rgba, offset)  // [colorRGB, shaped density]
       } else {
-        // r32f: normalize [0,255] -> [0,1]
+        // r32f: single-channel density (alpha), normalize [0,255] -> [0,1]
         for (let i = 0; i < res * res; i++) {
-          (out as Float32Array)[offset + i] = rgba[i * 4] / 255.0
+          (out as Float32Array)[offset + i] = rgba[i * 4 + 3] / 255.0
         }
       }
     }

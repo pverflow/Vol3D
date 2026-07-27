@@ -5,6 +5,7 @@ import { uid } from '../utils/uid'
 import { formatStateDebugTransition, getStateDebugConfig, isStateDebugEnabled } from '../utils/stateDebug'
 import { REGEN_DEBOUNCE_MS } from '../core/constants'
 import { normalizeLayer, CURRENT_PRESET_VERSION } from './stateMigration'
+import { migrateLayer } from './layerMigration'
 
 type Subscriber<T> = (value: T) => void
 type StateKey = keyof AppState
@@ -176,7 +177,7 @@ export class StateManager {
     this.state = {
       ...defaults,
       ...state,
-      layers: (state.layers ?? defaults.layers).map(layer => normalizeLayer(layer)),
+      layers: (state.layers ?? defaults.layers).map(layer => migrateLayer(normalizeLayer(layer))),
       settings: normalizedSettings,
       preview: { ...defaults.preview, ...state.preview },
       animation: { ...defaults.animation, ...state.animation },

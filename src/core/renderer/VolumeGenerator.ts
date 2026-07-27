@@ -1,9 +1,10 @@
 import { ShaderCompiler } from './ShaderCompiler'
 import { VolumeTexture } from '../volume/VolumeTexture'
 import { SliceBuffer } from '../volume/SliceBuffer'
-import { NoiseType, BlendMode, FeatherShape } from '../../types/index'
+import { NoiseType, BlendMode, FeatherShape, isSdfSource, DEFAULT_SDF } from '../../types/index'
 import type { Layer } from '../../types/index'
 import { deg2rad, mat3FromEuler } from '../../utils/mathUtils'
+import { buildRampLUT } from '../colorRamp'
 
 const BLEND_MODE_INDEX: Record<BlendMode, number> = {
   [BlendMode.Normal]: 0,
@@ -12,6 +13,7 @@ const BLEND_MODE_INDEX: Record<BlendMode, number> = {
   [BlendMode.Screen]: 3,
   [BlendMode.Overlay]: 4,
   [BlendMode.Subtract]: 5,
+  [BlendMode.SmoothMin]: 6,
 }
 
 export type ProgressCallback = (progress: number) => void
@@ -25,11 +27,18 @@ export class VolumeGenerator {
   // Scratch FBO reused every slice/every generate() call to attach a volume
   // layer as a render target. Never holds a permanent attachment.
   private volumeTargetFbo: WebGLFramebuffer
+  // Per-layer color-ramp LUT textures (VFX-2), index-aligned with the active
+  // layers of the CURRENT generation. Built once per generate()/generateFrameData()
+  // (not per slice), bound in runCompositePass, freed on completion. Also freed
+  // at the start of the next generation so a superseded (cancelled) generation's
+  // LUTs can't leak, and in destroy().
+  private layerRampLUTs: WebGLTexture[] = []
 
-  // One-time capability probe (Task 3): can we render directly into a layer
-  // of an R8 3D texture? True on effectively all WebGL2 implementations (R8
-  // is a core-required color-renderable format), checked defensively so a
-  // broken driver falls back cleanly instead of producing a black volume.
+  // One-time capability probe (Task 3, RGBA8 since VFX-2): can we
+  // render directly into a layer of an RGBA8 3D texture? True on effectively
+  // all WebGL2 implementations (RGBA8 is a core-required color-renderable
+  // format), checked defensively so a broken driver falls back cleanly
+  // instead of producing a black volume.
   readonly canRenderToVolume: boolean
 
   constructor(gl: WebGL2RenderingContext, compiler: ShaderCompiler, resolution: number) {
@@ -61,7 +70,7 @@ export class VolumeGenerator {
     if (!tex) return false
 
     gl.bindTexture(gl.TEXTURE_3D, tex)
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, 4, 4, 4, 0, gl.RED, gl.UNSIGNED_BYTE, null)
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, 4, 4, 4, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
     gl.bindTexture(gl.TEXTURE_3D, null)
 
     const fb = gl.createFramebuffer()
@@ -77,9 +86,10 @@ export class VolumeGenerator {
     return ok
   }
 
-  // Live path: writes RAW density directly into the volume's 3D texture,
-  // slice by slice, with no CPU readback and no baked cutoff/contrast
-  // (Task 3 — shaping moved to preview-time uniforms / export-time re-apply).
+  // Live path: writes RAW color+density (RGBA) directly into the volume's 3D
+  // texture, slice by slice, with no CPU readback and no baked cutoff/contrast
+  // (Task 3 — shaping moved to preview-time uniforms / export-time re-apply;
+  // color is each layer's own ramp composited during compositing — VFX-2).
   // Falls back to the v1-shaped readback+upload structure (minus the baked
   // shaping) if the direct-render probe failed.
   generate(
@@ -94,20 +104,28 @@ export class VolumeGenerator {
     const { resolution, depth } = volume
     const activeLayers = layers.filter(l => l.visible)
 
+    // Free any superseded generation's LUTs, then build this generation's set once.
+    this.freeLayerRampLUTs()
+    this.layerRampLUTs = this.buildLayerRampLUTs(activeLayers)
+
     const renderSlice: (z: number) => void = this.canRenderToVolume
-      ? (z) => this.generateSliceLive(z, depth, activeLayers, globalSeed, animPhase, animEvolutions, volume)
+      ? (z) => this.generateSliceLive(z, depth, activeLayers, this.layerRampLUTs, globalSeed, animPhase, animEvolutions, volume)
       : (z) => {
-          this.generateSlice(z, resolution, depth, activeLayers, globalSeed, animPhase, animEvolutions)
-          const rgba = this.sliceBuffer.readPixels()
-          volume.uploadSlice(z, extractRedSlice(rgba, resolution))
+          this.generateSlice(z, resolution, depth, activeLayers, this.layerRampLUTs, globalSeed, animPhase, animEvolutions)
+          const rgba = this.sliceBuffer.readPixels()  // RGBA, 4 bytes/voxel — upload as-is
+          volume.uploadSlice(z, rgba)
         }
 
-    this.runSliceLoop(resolution, depth, renderSlice, onProgress, onComplete)
+    this.runSliceLoop(resolution, depth, renderSlice, onProgress, () => {
+      this.freeLayerRampLUTs()
+      onComplete?.()
+    })
   }
 
   // Cache/animation path: still needs CPU bytes (frames are cached as
   // Uint8Array and re-uploaded via VolumeTexture.uploadVolume), so it always
-  // reads back. Now outputs RAW density too — no baked cutoff/contrast.
+  // reads back. Now outputs RAW color+density (RGBA, 4 bytes/voxel) — no baked
+  // cutoff/contrast.
   generateFrameData(
     layers: Layer[],
     resolution: number,
@@ -117,16 +135,22 @@ export class VolumeGenerator {
     animEvolutions: number,
     onProgress?: ProgressCallback
   ): Promise<Uint8Array> {
-    const frame = new Uint8Array(resolution * resolution * depth)
+    const frame = new Uint8Array(resolution * resolution * depth * 4)
     const activeLayers = layers.filter(l => l.visible)
+
+    this.freeLayerRampLUTs()
+    this.layerRampLUTs = this.buildLayerRampLUTs(activeLayers)
 
     return new Promise((resolve) => {
       const renderSlice = (z: number) => {
-        this.generateSlice(z, resolution, depth, activeLayers, globalSeed, animPhase, animEvolutions)
-        const rgba = this.sliceBuffer.readPixels()
-        frame.set(extractRedSlice(rgba, resolution), z * resolution * resolution)
+        this.generateSlice(z, resolution, depth, activeLayers, this.layerRampLUTs, globalSeed, animPhase, animEvolutions)
+        const rgba = this.sliceBuffer.readPixels()  // RGBA, 4 bytes/voxel
+        frame.set(rgba, z * resolution * resolution * 4)
       }
-      this.runSliceLoop(resolution, depth, renderSlice, onProgress, () => resolve(frame))
+      this.runSliceLoop(resolution, depth, renderSlice, onProgress, () => {
+        this.freeLayerRampLUTs()
+        resolve(frame)
+      })
     })
   }
 
@@ -227,6 +251,12 @@ export class VolumeGenerator {
       const wMode = layer.noise.worleyMode === 'f1' ? 0 : layer.noise.worleyMode === 'f2' ? 1 : 2
       compiler.setUniformi(genProg, 'u_worleyMode', wMode)
     }
+    if (isSdfSource(noiseType) || (noiseType === NoiseType.FBM && isSdfSource(fbmBase))) {
+      const sdf = layer.noise.sdf ?? DEFAULT_SDF
+      compiler.setUniform(genProg, 'u_sdfRadius', sdf.radius)
+      compiler.setUniform(genProg, 'u_sdfSoftness', sdf.softness)
+      compiler.setUniform(genProg, 'u_sdfHeight', sdf.height)
+    }
 
     // Distortion uniforms
     compiler.setUniform(genProg, 'u_warpStrength', layer.distortion.strength)
@@ -240,7 +270,7 @@ export class VolumeGenerator {
   // and draws into whatever framebuffer `bindTarget` binds (the ping-pong
   // accumulator for intermediate layers, or a volume layer for the final
   // layer of the live path). Output is RAW density — no shaping here.
-  private runCompositePass(layer: Layer, bindTarget: () => void) {
+  private runCompositePass(layer: Layer, layerRampLUT: WebGLTexture, bindTarget: () => void) {
     const { gl, compiler, sliceBuffer } = this
     const compProg = compiler.buildCompositeShader()
     gl.useProgram(compProg.program)
@@ -253,6 +283,10 @@ export class VolumeGenerator {
 
     gl.activeTexture(gl.TEXTURE1)
     gl.bindTexture(gl.TEXTURE_2D, sliceBuffer.accumulatorRead.texture)
+
+    gl.activeTexture(gl.TEXTURE2)
+    gl.bindTexture(gl.TEXTURE_2D, layerRampLUT)
+    compiler.setUniformi(compProg, 'u_layerRamp', 2)
 
     compiler.setUniform(compProg, 'u_opacity', layer.opacity)
     compiler.setUniformi(compProg, 'u_blendMode', BLEND_MODE_INDEX[layer.blendMode])
@@ -269,6 +303,7 @@ export class VolumeGenerator {
     resolution: number,
     depth: number,
     layers: Layer[],
+    lutTextures: WebGLTexture[],
     globalSeed: number,
     animPhase: number,
     animEvolutions: number
@@ -280,11 +315,11 @@ export class VolumeGenerator {
     gl.viewport(0, 0, resolution, resolution)
     sliceBuffer.beginSlice()
 
-    for (const layer of layers) {
+    layers.forEach((layer, i) => {
       this.runLayerGenPass(layer, sliceZ, globalSeed, animPhase, animEvolutions)
-      this.runCompositePass(layer, () => gl.bindFramebuffer(gl.FRAMEBUFFER, sliceBuffer.accumulatorWrite.framebuffer))
+      this.runCompositePass(layer, lutTextures[i], () => gl.bindFramebuffer(gl.FRAMEBUFFER, sliceBuffer.accumulatorWrite.framebuffer))
       sliceBuffer.swapAccumulators()
-    }
+    })
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     gl.bindVertexArray(null)
@@ -299,6 +334,7 @@ export class VolumeGenerator {
     z: number,
     depth: number,
     layers: Layer[],
+    lutTextures: WebGLTexture[],
     globalSeed: number,
     animPhase: number,
     animEvolutions: number,
@@ -314,13 +350,13 @@ export class VolumeGenerator {
 
     if (layers.length === 0) {
       this.bindVolumeTarget(volume, z)
-      gl.clearColor(0, 0, 0, 1)
+      gl.clearColor(0, 0, 0, 0)  // density (alpha) starts at 0 (VFX-2)
       gl.clear(gl.COLOR_BUFFER_BIT)
     } else {
       layers.forEach((layer, i) => {
         const isLast = i === layers.length - 1
         this.runLayerGenPass(layer, sliceZ, globalSeed, animPhase, animEvolutions)
-        this.runCompositePass(layer, () =>
+        this.runCompositePass(layer, lutTextures[i], () =>
           isLast
             ? this.bindVolumeTarget(volume, z)
             : gl.bindFramebuffer(gl.FRAMEBUFFER, sliceBuffer.accumulatorWrite.framebuffer)
@@ -341,6 +377,32 @@ export class VolumeGenerator {
     if (status !== this.gl.FRAMEBUFFER_COMPLETE) {
       console.warn(`VolumeGenerator: live render target incomplete (status ${status}) at slice ${z}`)
     }
+  }
+
+  // Build one 256x1 RGBA8 LUT texture per layer's colorRamp; index-aligned with `layers`.
+  // A layer whose colorRamp is DISABLED gets a fully-transparent LUT (empty
+  // stops) — it still shapes density (via its blend mode) but deposits no
+  // color in the composite's painter's-"over", so the "Enabled" toggle means
+  // "does this layer contribute color".
+  private buildLayerRampLUTs(layers: Layer[]): WebGLTexture[] {
+    const { gl } = this
+    return layers.map((layer) => {
+      const ramp = layer.colorRamp.enabled ? layer.colorRamp : { enabled: true, stops: [] }
+      const tex = gl.createTexture()!
+      gl.bindTexture(gl.TEXTURE_2D, tex)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, buildRampLUT(ramp, 256))
+      gl.bindTexture(gl.TEXTURE_2D, null)
+      return tex
+    })
+  }
+
+  private freeLayerRampLUTs() {
+    for (const tex of this.layerRampLUTs) this.gl.deleteTexture(tex)
+    this.layerRampLUTs = []
   }
 
   cancel() {
@@ -367,20 +429,9 @@ export class VolumeGenerator {
 
   destroy() {
     this.cancel()
+    this.freeLayerRampLUTs()
     this.sliceBuffer.destroy()
     this.gl.deleteVertexArray(this.vao)
     this.gl.deleteFramebuffer(this.volumeTargetFbo)
   }
-}
-
-// Extract the red channel of an RGBA readback into a single-channel buffer.
-// No shaping applied — the volume (and animation cache) now stores RAW
-// density; cutoff/contrast are applied at preview-time (shaders) and
-// export-time (ExportManager) instead.
-function extractRedSlice(rgba: Uint8Array, resolution: number): Uint8Array {
-  const red = new Uint8Array(resolution * resolution)
-  for (let i = 0; i < red.length; i++) {
-    red[i] = rgba[i * 4]
-  }
-  return red
 }

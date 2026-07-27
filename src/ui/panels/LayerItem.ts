@@ -12,6 +12,7 @@ const BLEND_OPTIONS: Array<{ value: BlendMode, label: string }> = [
   { value: BlendMode.Screen, label: 'Screen' },
   { value: BlendMode.Overlay, label: 'Overlay' },
   { value: BlendMode.Subtract, label: 'Subtract' },
+  { value: BlendMode.SmoothMin, label: 'Smooth Min' },
 ]
 
 export class LayerItem {

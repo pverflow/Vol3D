@@ -14,6 +14,13 @@ uniform float u_screenAspect;
 uniform float u_cutoff;
 uniform float u_contrast;
 
+// Dense-vs-sparse switch — returns [colorRGB, density] (VFX-2). See
+// raymarch.frag.glsl's copy for the full rationale.
+vec4 sampleVolume(vec3 p) {
+  if (u_sparseEnabled) return sampleSparse(p);
+  return texture(u_volume, p);
+}
+
 bool fitPlaneUv(vec2 uv, out vec2 planeUv) {
   planeUv = uv;
   if (u_screenAspect > u_planeAspect) {
@@ -40,10 +47,11 @@ void main() {
     uvw = vec3(planeUv.x, planeUv.y, u_slicePos);
   }
 
-  float v = applyDensityShaping(texture(u_volume, uvw).r, u_cutoff, u_contrast);
+  vec4 texel = sampleVolume(uvw);   // [colorRGB, density]
+  float v = applyDensityShaping(texel.a, u_cutoff, u_contrast);
   v = clamp(v * u_exposure, 0.0, 1.0);
 
-  // Apply a subtle false-color gradient for readability
-  vec3 col = mix(vec3(0.05, 0.05, 0.1), vec3(1.0, 1.0, 1.0), v);
+  // Flat plane view: small density-grey ambient + the stored per-layer color.
+  vec3 col = mix(vec3(0.02), vec3(0.18), v) + texel.rgb;
   fragColor = vec4(col, 1.0);
 }

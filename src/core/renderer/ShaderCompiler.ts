@@ -10,6 +10,12 @@ import voronoi3d from '../../shaders/noise/voronoi3d.glsl?raw'
 import value3d from '../../shaders/noise/value3d.glsl?raw'
 import white3d from '../../shaders/noise/white3d.glsl?raw'
 import fbmGlsl from '../../shaders/noise/fbm.glsl?raw'
+import sdfSphere from '../../shaders/noise/sdf_sphere.glsl?raw'
+import sdfBox from '../../shaders/noise/sdf_box.glsl?raw'
+import sdfCone from '../../shaders/noise/sdf_cone.glsl?raw'
+import sdfPlume from '../../shaders/noise/sdf_plume.glsl?raw'
+import sdfCapsule from '../../shaders/noise/sdf_capsule.glsl?raw'
+import sdfCylinder from '../../shaders/noise/sdf_cylinder.glsl?raw'
 
 import domainWarp from '../../shaders/distortion/domain_warp.glsl?raw'
 import curlGlsl from '../../shaders/distortion/curl.glsl?raw'
@@ -25,8 +31,9 @@ import raymarchFrag from '../../shaders/preview/raymarch.frag.glsl?raw'
 import sliceFrag from '../../shaders/preview/slice.frag.glsl?raw'
 import projectionFrag from '../../shaders/preview/projection.frag.glsl?raw'
 
-import { NoiseType, DistortionType } from '../../types/index'
+import { NoiseType, DistortionType, isSdfSource } from '../../types/index'
 import { SHADING_GLSL } from '../volumeShaping'
+import { SPARSE_SAMPLE_GLSL } from '../sparseSample'
 
 const IDENTITY_DISTORTION = `
 vec3 applyDistortion(vec3 p) { return p; }
@@ -40,6 +47,12 @@ const NOISE_SNIPPETS: Record<NoiseType, string> = {
   [NoiseType.Value]: value3d,
   [NoiseType.White]: white3d,
   [NoiseType.FBM]: '',  // handled specially
+  [NoiseType.SdfSphere]: sdfSphere,
+  [NoiseType.SdfBox]: sdfBox,
+  [NoiseType.SdfCone]: sdfCone,
+  [NoiseType.SdfPlume]: sdfPlume,
+  [NoiseType.SdfCapsule]: sdfCapsule,
+  [NoiseType.SdfCylinder]: sdfCylinder,
 }
 
 const DISTORTION_SNIPPETS: Record<DistortionType, string> = {
@@ -80,6 +93,12 @@ export class ShaderCompiler {
     if (this.cache.has(key)) return this.cache.get(key)!
 
     const commonHeader = `#version 300 es\nprecision highp float;\n`
+    // Compile-time only: SDF sources (a single localized shape) need the
+    // main()/sampleNoiseAtVolumePos #ifdef SDF_SOURCE branch in layer_gen so
+    // they render centered and without the periodic-noise tiling/domain-
+    // animation that would otherwise smear/cancel them. Zero runtime cost,
+    // and the #else branch that non-SDF noise types take is untouched.
+    const sdfDefine = isSdfSource(noiseType) ? '#define SDF_SOURCE\n' : ''
     const earlyUniforms = `uniform float u_seed;\n`
 
     // Build noise section
@@ -103,6 +122,7 @@ export class ShaderCompiler {
 
     const fragSource = [
       commonHeader,
+      sdfDefine,
       earlyUniforms,
       mathUtils,
       hashGlsl,
@@ -142,24 +162,28 @@ export class ShaderCompiler {
   }
 
   buildRaymarchShader(): CompiledProgram {
-    return this.buildSimpleProgram('raymarch', raymarchVert, this.injectShading(raymarchFrag), 'Raymarch')
+    return this.buildSimpleProgram('raymarch', raymarchVert, this.injectShared(raymarchFrag), 'Raymarch')
   }
 
   buildSliceShader(): CompiledProgram {
-    return this.buildSimpleProgram('slice', fullscreenVert, this.injectShading(sliceFrag), 'Slice')
+    return this.buildSimpleProgram('slice', fullscreenVert, this.injectShared(sliceFrag), 'Slice')
   }
 
   buildProjectionShader(): CompiledProgram {
-    return this.buildSimpleProgram('projection', fullscreenVert, this.injectShading(projectionFrag), 'Projection')
+    return this.buildSimpleProgram('projection', fullscreenVert, this.injectShared(projectionFrag), 'Projection')
   }
 
-  // Concatenate SHADING_GLSL (applyDensityShaping) right after the version/
-  // precision preamble shared by all three preview fragment shaders, so they
-  // can apply cutoff/contrast to sampled density at preview time (Task 3).
-  private injectShading(source: string): string {
+  // Concatenate SHADING_GLSL (applyDensityShaping, Task 3) and SPARSE_SAMPLE_GLSL
+  // (sampleSparse, Task 4) right after the version/precision preamble shared by
+  // all three preview fragment shaders. SPARSE_SAMPLE_GLSL declares its own
+  // uniforms (u_atlas/u_indirection/u_macroDims/u_atlasDimsBricks/u_sparseEnabled)
+  // and only reads them + sampleSparse's own locals — it never references
+  // u_volume, so injecting before each shader's own uniform block (which does
+  // declare u_volume) is safe (GLSL requires declaration-before-use).
+  private injectShared(source: string): string {
     return source.replace(
       /(#version 300 es\s*\nprecision highp float;\s*\nprecision highp sampler3D;\s*\n)/,
-      `$1\n${SHADING_GLSL}\n`
+      `$1\n${SHADING_GLSL}\n${SPARSE_SAMPLE_GLSL}\n`
     )
   }
 

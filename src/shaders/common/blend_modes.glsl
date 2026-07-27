@@ -11,8 +11,13 @@ float blendOverlay(float base, float layer) {
     : 1.0 - 2.0 * (1.0 - base) * (1.0 - layer);
 }
 float blendSubtract(float base, float layer) { return clamp(base - layer, 0.0, 1.0); }
+float blendSmoothMin(float base, float layer) {
+  float k = 0.1;
+  float h = clamp(0.5 + 0.5 * (layer - base) / k, 0.0, 1.0);
+  return mix(base, layer, h) + k * h * (1.0 - h);
+}
 
-// Apply blend mode by index: 0=normal,1=add,2=multiply,3=screen,4=overlay,5=subtract
+// Apply blend mode by index: 0=normal,1=add,2=multiply,3=screen,4=overlay,5=subtract,6=smooth_min
 float applyBlend(int mode, float base, float layer) {
   if (mode == 0) return blendNormal(base, layer);
   if (mode == 1) return blendAdd(base, layer);
@@ -20,5 +25,6 @@ float applyBlend(int mode, float base, float layer) {
   if (mode == 3) return blendScreen(base, layer);
   if (mode == 4) return blendOverlay(base, layer);
   if (mode == 5) return blendSubtract(base, layer);
+  if (mode == 6) return blendSmoothMin(base, layer);
   return layer;
 }
