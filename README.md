@@ -2,7 +2,7 @@
 
 Vol3D is a browser-first and Windows-desktop-ready **3D volume texture generator** for seamless procedural noise, shader lookdev, VFX prototyping, and game content workflows.
 
-It lets you stack procedural layers, preview them as a raymarched volume, inspect slices and projections, shape density with remapping and feathering, and export the generated volume data in several formats.
+It lets you stack procedural layers, give each its own color, preview them as a colored raymarched volume, inspect slices and projections, shape density with remapping and feathering, animate loopable evolutions with smooth high-resolution playback, and export the generated volume (and animation) in several formats.
 
 ## Screenshots
 
@@ -40,12 +40,19 @@ Raymarched preview of a generated volume in the main authoring view.
   - Value
   - White
   - FBM with selectable base noise
+  - SDF shapes: sphere, box, cone, plume, capsule, cylinder
 - **Layer-based workflow**
   - multiple layers
   - blend modes
   - opacity
   - inversion
+  - per-layer color ramp
   - reorder / duplicate / delete
+- **Per-layer color**
+  - each layer has its own editable color ramp (color + opacity gradient)
+  - color composites independently of density/shape — add / subtract still carve shape
+  - per-layer color-enable toggle for shape-only layers
+  - colored raymarched preview with a smoke + glow model
 - **Noise transforms**
   - scale
   - rotation
@@ -73,12 +80,15 @@ Raymarched preview of a generated volume in the main authoring view.
   - loop duration
   - evolution count
   - preview playback
+  - sparse brick-cache for smooth high-resolution playback (bake once, then scrub / play — no per-frame regeneration)
+  - reduced-resolution playback bake that snaps back to full resolution on pause
 - **Export formats**
   - PNG sequence (ZIP)
   - Sprite sheet (PNG)
   - Raw R8
-  - Raw RGBA8
+  - Raw RGBA8 (per-voxel color + density)
   - Raw R32F
+  - Flipbook (rendered colored animation sprite sheet)
 - **Desktop packaging**
   - Windows executable
   - NSIS installer
@@ -247,9 +257,10 @@ The **Tile Preview** button is a visualization tool. It helps inspect seam conti
 Current export options:
 - **PNG Sequence (ZIP)** — one image per slice, zipped
 - **Sprite Sheet (PNG)** — all slices packed into a single sheet
-- **Raw R8** — single-channel grayscale bytes
-- **Raw RGBA8** — 4-channel byte data
-- **Raw R32F** — 32-bit float single-channel data
+- **Raw R8** — single-channel density bytes
+- **Raw RGBA8** — per-voxel color (RGB) + density (alpha)
+- **Raw R32F** — 32-bit float single-channel density data
+- **Flipbook** — rendered colored raymarch baked across the animation loop into a sprite sheet
 
 Desktop builds use **native save dialogs**.
 Web builds fall back to normal browser downloads.
@@ -341,19 +352,21 @@ That is expected with a **self-signed** certificate. Self-signed signing is usef
 ## Current status / roadmap notes
 
 Recent focus areas include:
-- non-cubic volume support
-- cubic-by-default slice locking
-- better non-cubic preview proportions
-- edge feather and curve shaping
-- tiling preview
+- per-layer color ramps (independent color + shape compositing)
+- colored volume storage (RGBA8) and colored / flipbook export
+- SDF and flame shape primitives (sphere, box, cone, plume, capsule, cylinder)
+- sparse brick-cache animation playback for smooth high-resolution loops
+- reduced-resolution playback bake with full-resolution snap on pause
+- non-cubic volume support and cubic-by-default slice locking
+- edge feather and curve shaping, tiling preview
 - global cutoff / contrast shaping
-- loopable animation controls and preview playback
 
 Still planned / deferred:
-- animated export pipeline
+- temporal interpolation for even smoother playback from fewer baked frames
 - stronger 4D / cyclic-noise options later
 - OpenVDB via a helper/converter workflow
 - ultra-high offline-only resolutions
+- WebGPU / native (wgpu) renderer for larger volumes
 
 See [`FutureFeatures.md`](FutureFeatures.md) for the full carry-forward list.
 
