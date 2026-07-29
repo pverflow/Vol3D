@@ -1,8 +1,11 @@
+pub mod raymarch;
 pub mod volume;
+use raymarch::Raymarch;
 use volume::VolumeGen;
 
 pub struct Renderer {
     pub volume: VolumeGen,
+    pub raymarch: Raymarch,
 }
 
 impl Renderer {
@@ -14,13 +17,28 @@ impl Renderer {
             a.backend,
             rs.device.limits().max_texture_dimension_3d
         );
-        Self {
-            volume: VolumeGen::new(&rs.device, 128),
-        }
+        let volume = VolumeGen::new(&rs.device, 128);
+        let raymarch = Raymarch::new(&rs.device, rs.target_format, &volume.view);
+        Self { volume, raymarch }
     }
 
-    #[allow(dead_code)] // read by Task 3's raymarch bind group
-    pub fn volume_view(&self) -> &wgpu::TextureView {
-        &self.volume.view
+    /// Called from `RaymarchCallback::prepare` each frame. Regenerates the volume (and rebuilds
+    /// the raymarch bind group against its new texture view) only when `dirty`.
+    pub fn ensure_generated(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        res: u32,
+        iso: f32,
+        noise_scale: f32,
+        dirty: bool,
+    ) {
+        if dirty {
+            self.volume.generate(device, queue, res, iso, noise_scale);
+            // Direct field access (not `self.volume_view()`): that helper borrows all of
+            // `self` via its `&self` receiver, which would conflict with the `&mut
+            // self.raymarch` borrow below even though the two fields are disjoint.
+            self.raymarch.rebuild_bind_group(device, &self.volume.view);
+        }
     }
 }

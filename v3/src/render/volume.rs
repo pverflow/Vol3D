@@ -126,7 +126,6 @@ impl VolumeGen {
         (texture, view, bind_group)
     }
 
-    #[allow(dead_code)] // wired up by Task 3's egui_wgpu CallbackTrait::prepare
     pub fn generate(
         &mut self,
         device: &wgpu::Device,
@@ -162,7 +161,7 @@ impl VolumeGen {
             });
             cpass.set_pipeline(&self.pipeline);
             cpass.set_bind_group(0, &self.bind_group, &[]);
-            let g = (res + 3) / 4;
+            let g = res.div_ceil(4);
             cpass.dispatch_workgroups(g, g, g);
         }
         queue.submit(Some(enc.finish()));
