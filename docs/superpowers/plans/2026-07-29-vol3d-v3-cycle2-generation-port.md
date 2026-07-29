@@ -135,6 +135,14 @@ Each v2 `noiseEval(vec3 p)` uses uniforms (u_scale, u_octaves, …); in WGSL tak
 
 From `src/shaders/generation/layer_gen.frag.glsl`: `cubicBezierPoint`, `evaluateBezierCurve(curve, x)`, `applyRemapCurve`, `remap(v,inMin,inMax,outMin,outMax)`, `featherMaskBox`, `featherMaskSphere`, `applyFeather(volumePos, density)`. From `src/shaders/common/blend_modes.glsl`: all 7 `blend*` + `applyBlend(mode, base, layer)`. Translate to WGSL (the feather fns take the current layer's feather params + `feather_shape`; the bezier curves come from `remap_curve`/`feather_curve` vec4s).
 
+> **CORRECTION (fidelity to v2 `layer_gen.frag.glsl` — the skeleton below oversimplified; match v2 exactly):**
+> - **Per-source-type transform** (NOT a uniform `rot*(uvw*scale)+offset`):
+>   - non-SDF: `p = uvw*scale + offset; p = rotation * p;` (v2 also adds `animatedDomainOffset()` — **deferred to cycle ④/animation**, don't port it now; note it).
+>   - SDF: `p = (uvw - 0.5)*scale + offset; p = rotation * p;` (centers the shape at the volume center; no anim offset).
+> - **Single remap** = v2 `applyRemapCurve`: `t = saturate((v - in_min)/max(in_max-in_min, 1e-4)); t = evaluateBezierCurve(remap_curve, t); v = mix(out_min, out_max, t)`. Do NOT also call a separate linear `remap()` — there is only this one.
+> - **Operation order (v2 `main`)**: sample → `applyRemapCurve` → `*= amplitude` → `if invert { v = 1-v }` → `applyFeather(uvw, v)` → `clamp(0,1)`. THEN blend into density + composite color.
+> - **Tileability (port `sampleNoiseTileable`)**: for non-SDF, sample the layer's noise at the 8 corners (`uvw`, `uvw - unit offsets`) and trilinear-blend by `clamp(uvw,0,1)` — makes noise seamless (core to Vol3D). SDF samples once (bypass). Wrap the transform+noiseEval in `sample_noise_at(L, uvw)`; add `sample_noise_tileable(L, uvw)` = the 8-corner blend; the loop calls tileable for non-SDF, single for SDF.
+
 - [ ] **Step 3: The `GpuLayer` WGSL struct + per-voxel layer loop**
 
 Declare `struct GpuLayer { … }` mirroring Task 1's field order EXACTLY (rot0/1/2: vec4, scale/offset/feather: vec4 with .xyz used, remap_curve/feather_curve: vec4, then the 20 scalars as f32/u32 in the same order — std430 will match the Rust `#[repr(C)]` because the field order + types match). Then:
