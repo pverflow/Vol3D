@@ -6,7 +6,9 @@
 
 **Architecture:** A Rust project under `v3/`. `eframe` hosts native (winit) and web (wasm). A compute pass writes an `rgba8unorm` 3D storage texture (sphere SDF + value noise + gradient color). A raymarch render pass samples it and is painted into the central egui panel via `egui_wgpu::CallbackTrait`. GPU resources live in egui-wgpu's `callback_resources`. Nothing is read back to the CPU.
 
-**Tech Stack:** Rust 1.97, `wgpu 30.0.0`, `egui`/`eframe`/`egui-wgpu 0.35.0`, `bytemuck 1.25`, `pollster 1` (native), `wasm-bindgen`/`web-sys`/`console_error_panic_hook` (web), `trunk` (web bundler), `naga` (WGSL validation).
+**Tech Stack:** Rust 1.97, **`wgpu 29.0.4`** (the version `egui-wgpu 0.35` uses — see the wgpu-version note below), `egui`/`eframe`/`egui-wgpu 0.35.0`, `bytemuck 1.25`, `pollster 1` (native), `wasm-bindgen`/`web-sys`/`console_error_panic_hook` (web), `trunk` (web bundler), `naga` (WGSL validation).
+
+> **wgpu version (load-bearing):** the direct `wgpu` dependency MUST resolve to the SAME version `egui-wgpu 0.35` depends on (`wgpu 29.0.4`), so the `wgpu::Device`/`Queue`/`Texture`/`TextureView` shared between egui-wgpu's render surface and our own compute/raymarch passes are the SAME types. Pinning `wgpu = "=30.0.0"` (as the resolved-latest) splits the graph into two incompatible major versions (29 + 30) and Task 2/3 cannot share GPU resources. **Pin `wgpu = "=29.0.4"`.** Do NOT bump to wgpu 30 until egui-wgpu ships a release built on it. (wgpu 29 fully supports compute + 3D storage textures + WGSL — nothing the PoC needs is missing.) The illustrative wgpu code below is written against a recent wgpu API; reconcile any 29-vs-30 signature drift against `cargo check`.
 
 **Specs:** `docs/superpowers/specs/2026-07-27-vol3d-v3-poc-engine-skeleton-design.md` (+ parent direction spec).
 
@@ -63,7 +65,7 @@ edition = "2021"
 egui = "=0.35.0"
 eframe = { version = "=0.35.0", default-features = false, features = ["wgpu", "default_fonts"] }
 egui-wgpu = "=0.35.0"
-wgpu = "=30.0.0"
+wgpu = "=29.0.4"   # MUST match egui-wgpu 0.35's wgpu (see the wgpu-version note above) — NOT 30
 bytemuck = { version = "1.25", features = ["derive"] }
 log = "0.4"
 
