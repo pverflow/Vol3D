@@ -81,12 +81,19 @@ pub struct Vol3dApp {
     /// (from any of the Layers panel's Add/Duplicate/Delete/Up/Down/select actions) and clear
     /// `selected_stop` without every one of those call sites needing to do it itself.
     last_props_layer: usize,
+    /// `layers.len()` as of the last `properties_panel` call. Needed alongside
+    /// `last_props_layer`: `delete_layer` can remove a non-last layer and return the *same*
+    /// index (now pointing at the layer that shifted down into it), which the index-only check
+    /// would miss — comparing the length too catches that case.
+    last_layers_len: usize,
 }
 
 impl Default for Vol3dApp {
     fn default() -> Self {
+        let layers = layer::demo_scene();
+        let last_layers_len = layers.len();
         Self {
-            layers: layer::demo_scene(),
+            layers,
             selected: 0,
             resolution: 128,
             global_seed: 0.0,
@@ -96,6 +103,7 @@ impl Default for Vol3dApp {
             cam: OrbitCamera::default(),
             selected_stop: None,
             last_props_layer: 0,
+            last_layers_len,
         }
     }
 }
@@ -247,9 +255,10 @@ impl Vol3dApp {
             return;
         }
         let i = self.selected.min(self.layers.len() - 1);
-        if i != self.last_props_layer {
+        if i != self.last_props_layer || self.layers.len() != self.last_layers_len {
             self.selected_stop = None;
             self.last_props_layer = i;
+            self.last_layers_len = self.layers.len();
         }
 
         ui.separator();
