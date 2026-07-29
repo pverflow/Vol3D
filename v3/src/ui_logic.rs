@@ -86,9 +86,12 @@ pub fn add_stop(stops: &mut Vec<RampStop>, t: f32) -> usize {
 }
 
 /// Move stop `i` to a new `t` (clamped to `[0, 1]`), re-sorting `stops` by
-/// `t`. Returns the moved stop's new index.
+/// `t`. Returns the moved stop's new index. `i` is clamped into range (a UI
+/// may hold a stale "selected stop" index after `remove_stop` shrinks the
+/// list).
 pub fn move_stop(stops: &mut Vec<RampStop>, i: usize, t: f32) -> usize {
     let t = t.clamp(0.0, 1.0);
+    let i = i.min(stops.len().saturating_sub(1));
     let mut stop = stops.remove(i);
     stop.t = t;
     let idx = stops.partition_point(|s| s.t < t);
@@ -189,6 +192,27 @@ mod tests {
         remove_stop(&mut st, 0);
         remove_stop(&mut st, 0);
         assert!(!st.is_empty());
+    }
+
+    #[test]
+    fn move_stop_clamps_out_of_range_index() {
+        let mut st = vec![
+            RampStop {
+                t: 0.0,
+                color: [0, 0, 0],
+                alpha: 0,
+            },
+            RampStop {
+                t: 1.0,
+                color: [255, 255, 255],
+                alpha: 255,
+            },
+        ];
+        // Stale "selected stop" index (e.g. after a remove_stop elsewhere)
+        // must not panic — it clamps to the last valid stop.
+        let i = move_stop(&mut st, 99, 0.5);
+        assert_eq!(st.len(), 2);
+        assert!((st[i].t - 0.5).abs() < 1e-6);
     }
 
     #[test]
