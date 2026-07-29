@@ -15,7 +15,13 @@ impl Default for Vol3dApp {
 }
 
 impl Vol3dApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let rs = cc
+            .wgpu_render_state
+            .as_ref()
+            .expect("wgpu render state (renderer=Wgpu)");
+        let renderer = crate::render::Renderer::new(rs);
+        rs.renderer.write().callback_resources.insert(renderer);
         Self::default()
     }
 }

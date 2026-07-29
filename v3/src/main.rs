@@ -1,4 +1,5 @@
 mod app;
+mod render;
 use app::Vol3dApp;
 
 #[cfg(not(target_arch = "wasm32"))]
