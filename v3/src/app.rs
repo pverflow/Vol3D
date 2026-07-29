@@ -1,22 +1,44 @@
 use crate::camera::OrbitCamera;
+use crate::layer::{self, GenParams, LayerDesc};
+use crate::ramp::{self, ColorRamp};
 use crate::render::raymarch::RaymarchCallback;
+
+/// Fixed LUT width `ramp::build_ramp_lut_atlas` bakes rows at (one texel per 8-bit density
+/// value) — matches `render::volume::VolumeGen`'s LUT texture width.
+const LUT_WIDTH: usize = 256;
+
+/// Index of the demo scene's SdfSphere layer (see `layer::demo_scene`) — the "SDF radius"
+/// slider writes directly into this layer's `sdf_radius`.
+const SDF_LAYER: usize = 2;
 
 pub struct Vol3dApp {
     pub res: u32, // 64 / 128 / 256
-    pub iso: f32, // 0..1
-    pub noise_scale: f32,
+    /// Global scale multiplier applied to every layer's noise-space `scale` at pack time —
+    /// repurposes the PoC's "Iso" slider slot to prove per-frame reactivity end to end.
+    pub scale_mult: f32,
+    /// SdfSphere layer's mask radius (repurposes the PoC's "Noise scale" slider slot).
+    pub sdf_radius: f32,
+    /// Folded into every layer's `seed` at pack time (matches v2's `u_seed = layer.seed +
+    /// globalSeed`); also carried in `GenParams.global_seed` for parity with the WGSL struct.
+    pub global_seed: f32,
+    /// The hardcoded demo layer stack (`layer::demo_scene()`), before slider overrides.
+    pub layers: Vec<LayerDesc>,
     pub cam: OrbitCamera,
-    /// Set whenever res/iso/noise_scale change; tells `RaymarchCallback::prepare` to
-    /// regenerate the volume next frame. Starts `true` so the first frame generates.
+    /// Set whenever res/scale_mult/sdf_radius/global_seed change; tells `RaymarchCallback::prepare`
+    /// to regenerate the volume next frame. Starts `true` so the first frame generates.
     pub dirty: bool,
 }
 
 impl Default for Vol3dApp {
     fn default() -> Self {
+        let layers = layer::demo_scene();
+        let sdf_radius = layers[SDF_LAYER].sdf_radius;
         Self {
             res: 128,
-            iso: 0.15,
-            noise_scale: 6.0,
+            scale_mult: 1.0,
+            sdf_radius,
+            global_seed: 0.0,
+            layers,
             cam: OrbitCamera::default(),
             dirty: true,
         }
@@ -33,6 +55,40 @@ impl Vol3dApp {
         rs.renderer.write().callback_resources.insert(renderer);
         Self::default()
     }
+
+    /// Apply the slider overrides to a clone of the base demo scene, then pack it into GPU
+    /// form: `Vec<GpuLayer>` + the `256xN` ramp LUT atlas + `GenParams`. Only called when
+    /// `dirty` (see `ui()`) — cheap either way (3 layers), but skipping it when nothing changed
+    /// keeps the no-op-frame path allocation-free.
+    fn pack_for_gpu(&self) -> (Vec<layer::GpuLayer>, Vec<u8>, u32, GenParams) {
+        let mut layers = self.layers.clone();
+        for l in layers.iter_mut() {
+            l.scale = [
+                l.scale[0] * self.scale_mult,
+                l.scale[1] * self.scale_mult,
+                l.scale[2] * self.scale_mult,
+            ];
+        }
+        layers[SDF_LAYER].sdf_radius = self.sdf_radius;
+
+        let mut packed = layer::pack_layers(&layers);
+        for g in packed.iter_mut() {
+            g.seed += self.global_seed; // v2: u_seed = layer.seed + globalSeed
+        }
+
+        let ramps: Vec<ColorRamp> = layers.iter().map(|l| l.ramp.clone()).collect();
+        let lut_atlas = ramp::build_ramp_lut_atlas(&ramps, LUT_WIDTH);
+        let lut_rows = layers.len() as u32;
+
+        let gen_params = GenParams {
+            res: self.res,
+            layer_count: packed.len() as u32,
+            global_seed: self.global_seed,
+            anim_phase: 0.0,
+        };
+
+        (packed, lut_atlas, lut_rows, gen_params)
+    }
 }
 
 impl eframe::App for Vol3dApp {
@@ -44,7 +100,8 @@ impl eframe::App for Vol3dApp {
         // (simpler and more robust than relying on each widget's own `Response::changed()`,
         // since `ComboBox::show_ui`'s outer response doesn't mark itself changed when a
         // `selectable_value` inside its closure is clicked).
-        let (prev_res, prev_iso, prev_noise) = (self.res, self.iso, self.noise_scale);
+        let (prev_res, prev_scale, prev_sdf, prev_seed) =
+            (self.res, self.scale_mult, self.sdf_radius, self.global_seed);
 
         // `egui::SidePanel` was unified into `egui::Panel` (+ `PanelSide`) in 0.35.0.
         egui::Panel::left("controls").show(ui, |ui| {
@@ -56,11 +113,16 @@ impl eframe::App for Vol3dApp {
                         ui.selectable_value(&mut self.res, r, format!("{}³", r));
                     }
                 });
-            ui.add(egui::Slider::new(&mut self.iso, 0.0..=1.0).text("Iso"));
-            ui.add(egui::Slider::new(&mut self.noise_scale, 1.0..=16.0).text("Noise scale"));
+            ui.add(egui::Slider::new(&mut self.scale_mult, 0.1..=4.0).text("Scale mult"));
+            ui.add(egui::Slider::new(&mut self.sdf_radius, 0.05..=0.6).text("SDF radius"));
+            ui.add(egui::Slider::new(&mut self.global_seed, 0.0..=100.0).text("Global seed"));
         });
 
-        if self.res != prev_res || self.iso != prev_iso || self.noise_scale != prev_noise {
+        if self.res != prev_res
+            || self.scale_mult != prev_scale
+            || self.sdf_radius != prev_sdf
+            || self.global_seed != prev_seed
+        {
             self.dirty = true;
         }
 
@@ -89,11 +151,30 @@ impl eframe::App for Vol3dApp {
 
             let aspect = rect.width() / rect.height().max(1.0);
             let cam = self.cam.basis(aspect, 128.0);
+
+            let (layers, lut_atlas, lut_rows, gen_params) = if self.dirty {
+                self.pack_for_gpu()
+            } else {
+                (
+                    Vec::new(),
+                    Vec::new(),
+                    0,
+                    GenParams {
+                        res: self.res,
+                        layer_count: 0,
+                        global_seed: self.global_seed,
+                        anim_phase: 0.0,
+                    },
+                )
+            };
+
             let cb = RaymarchCallback {
                 cam,
                 res: self.res,
-                iso: self.iso,
-                noise_scale: self.noise_scale,
+                layers,
+                gen_params,
+                lut_atlas,
+                lut_rows,
                 dirty: self.dirty,
             };
             self.dirty = false;

@@ -1,7 +1,3 @@
-// ponytail: not wired into the app yet (Task 2 consumes this atlas builder)
-// — only unit tests call these today. Drop this once Task 2 lands.
-#![allow(dead_code)]
-
 // Per-layer color ramp (density -> RGBA) and the 256xN LUT atlas the GPU
 // composite pass samples. Ported from v2's `src/core/colorRamp.ts`
 // (`buildRampLUT` / `sampleStops`): sorted stops, clamp outside range, linear

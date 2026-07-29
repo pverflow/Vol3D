@@ -1,6 +1,9 @@
-// ponytail: nothing here is wired into the app yet (Task 2 wires the GPU
-// pipeline through it) — only unit tests construct/call these today, so the
-// non-test binary build sees them as dead. Drop this once Task 2 lands.
+// ponytail: `demo_scene()`/`pack_layers()` are wired into `app.rs` (Task 3),
+// but `demo_scene()` doesn't construct every `BlendMode` variant (only
+// Normal/Multiply) — the rest (Add/Screen/Overlay/Subtract/SmoothMin) exist
+// for parity with v2's full `BLEND_MODE_INDEX` and stay reachable via
+// `blend_mode as u32` once a real UI can pick them. Without this, the
+// non-test binary build sees those variants as dead.
 #![allow(dead_code)]
 
 // CPU-side layer data model for the v3 generation pipeline (cycle 2).

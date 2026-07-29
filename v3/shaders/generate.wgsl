@@ -100,15 +100,11 @@ fn rot_z(a: f32) -> mat3x3<f32> {
   return mat3x3<f32>(vec3<f32>(c, -s, 0.0), vec3<f32>(s, c, 0.0), vec3<f32>(0.0, 0.0, 1.0));
 }
 
-// math_utils.glsl L24-26. NOTE: not called by the layer loop — v2 itself
-// never calls this generic remap() from layer_gen.frag.glsl either (that
-// file has its own inline in/out-range math inside applyRemapCurve, see
-// apply_remap_curve below); grepping v2's shader sources confirms this
-// function has no callers there today. Ported for parity with
-// math_utils.glsl only, same as smin/rot_z/hash33/hash23 above.
-fn remap(v: f32, in_min: f32, in_max: f32, out_min: f32, out_max: f32) -> f32 {
-  return out_min + (out_max - out_min) * clamp((v - in_min) / (in_max - in_min + 0.0001), 0.0, 1.0);
-}
+// math_utils.glsl L24-26: v2's generic remap() had no callers in
+// layer_gen.frag.glsl (that file inlines its own in/out-range math inside
+// applyRemapCurve, see apply_remap_curve below) and wasn't called from this
+// file either — dropped entirely rather than ported dead (fix round 1
+// review).
 
 // math_utils.glsl L29-32 (ported for parity; the blend-mode smooth-min below
 // is blend_modes.glsl's own blendSmoothMin, which uses a different sign on

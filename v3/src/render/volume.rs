@@ -1,19 +1,23 @@
-use wgpu::util::DeviceExt;
+use crate::layer::{GenParams, GpuLayer};
 
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GenParams {
-    pub res: u32,
-    pub iso: f32,
-    pub noise_scale: f32,
-    pub _pad: f32,
-}
+/// Ramp LUT atlas width — fixed at 256 texels/row (one texel per 8-bit density value),
+/// matching `ramp::build_ramp_lut_atlas`'s contract.
+const LUT_WIDTH: u32 = 256;
 
+/// Generates the RGBA volume texture on-GPU: a compute pass evaluates `GenParams.layer_count`
+/// `GpuLayer`s (storage buffer) per voxel, sampling each layer's row of the `256xN` ramp LUT
+/// atlas for color. No CPU readback — the raymarch pass samples `view` directly.
 pub struct VolumeGen {
     res: u32,
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     params_buf: wgpu::Buffer,
+    layers_buf: wgpu::Buffer,
+    layer_capacity: u32,
+    lut_texture: wgpu::Texture,
+    lut_view: wgpu::TextureView,
+    lut_sampler: wgpu::Sampler,
+    lut_rows: u32,
     bind_group: wgpu::BindGroup,
     bgl: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
@@ -48,6 +52,32 @@ impl VolumeGen {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -66,34 +96,61 @@ impl VolumeGen {
             compilation_options: Default::default(),
             cache: None,
         });
-        let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+
+        let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("gen-params"),
-            contents: bytemuck::bytes_of(&GenParams {
-                res,
-                iso: 0.0,
-                noise_scale: 1.0,
-                _pad: 0.0,
-            }),
+            size: std::mem::size_of::<GenParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-        let (texture, view, bind_group) = Self::make_texture(device, &bgl, &params_buf, res);
+
+        // Placeholder capacity: `generate()`'s first call (always run with fresh data before
+        // the first paint, per `Vol3dApp`'s `dirty = true` initial state) resizes these to fit
+        // the real demo scene before anything ever samples them.
+        let layer_capacity = 1;
+        let layers_buf = Self::make_layers_buffer(device, layer_capacity);
+
+        let lut_rows = 1;
+        let (lut_texture, lut_view) = Self::make_lut_texture(device, lut_rows);
+        let lut_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ramp-lut-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let (texture, view) = Self::make_volume_texture(device, res);
+        let bind_group = Self::make_bind_group(
+            device,
+            &bgl,
+            &view,
+            &params_buf,
+            &layers_buf,
+            &lut_view,
+            &lut_sampler,
+        );
+
         Self {
             res,
             texture,
             view,
             params_buf,
+            layers_buf,
+            layer_capacity,
+            lut_texture,
+            lut_view,
+            lut_sampler,
+            lut_rows,
             bind_group,
             bgl,
             pipeline,
         }
     }
 
-    fn make_texture(
-        device: &wgpu::Device,
-        bgl: &wgpu::BindGroupLayout,
-        params_buf: &wgpu::Buffer,
-        res: u32,
-    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup) {
+    fn make_volume_texture(device: &wgpu::Device, res: u32) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("volume"),
             size: wgpu::Extent3d {
@@ -109,48 +166,150 @@ impl VolumeGen {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        (texture, view)
+    }
+
+    fn make_layers_buffer(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gen-layers"),
+            size: (capacity as u64) * std::mem::size_of::<GpuLayer>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn make_lut_texture(device: &wgpu::Device, rows: u32) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ramp-lut"),
+            size: wgpu::Extent3d {
+                width: LUT_WIDTH,
+                height: rows,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn make_bind_group(
+        device: &wgpu::Device,
+        bgl: &wgpu::BindGroupLayout,
+        volume_view: &wgpu::TextureView,
+        params_buf: &wgpu::Buffer,
+        layers_buf: &wgpu::Buffer,
+        lut_view: &wgpu::TextureView,
+        lut_sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gen-bg"),
             layout: bgl,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
+                    resource: wgpu::BindingResource::TextureView(volume_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: params_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: layers_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(lut_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(lut_sampler),
+                },
             ],
-        });
-        (texture, view, bind_group)
+        })
     }
 
+    /// Regenerate the volume: uploads `layers`/`params`/`lut_atlas` (a `256 x lut_rows` RGBA8
+    /// atlas, one row per layer's color ramp — see `ramp::build_ramp_lut_atlas`), resizing the
+    /// volume texture / layers storage buffer / LUT texture only when `res` / `layers.len()` /
+    /// `lut_rows` actually changed, then dispatches the compute pass. No CPU readback.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         res: u32,
-        iso: f32,
-        noise_scale: f32,
+        layers: &[GpuLayer],
+        params: &GenParams,
+        lut_atlas: &[u8],
+        lut_rows: u32,
     ) {
         if res != self.res {
-            let (t, v, bg) = Self::make_texture(device, &self.bgl, &self.params_buf, res);
+            let (t, v) = Self::make_volume_texture(device, res);
             self.texture = t;
             self.view = v;
-            self.bind_group = bg;
             self.res = res;
         }
-        queue.write_buffer(
+
+        let needed_layers = (layers.len() as u32).max(1);
+        if needed_layers != self.layer_capacity {
+            self.layers_buf = Self::make_layers_buffer(device, needed_layers);
+            self.layer_capacity = needed_layers;
+        }
+
+        let needed_rows = lut_rows.max(1);
+        if needed_rows != self.lut_rows {
+            let (t, v) = Self::make_lut_texture(device, needed_rows);
+            self.lut_texture = t;
+            self.lut_view = v;
+            self.lut_rows = needed_rows;
+        }
+
+        if !layers.is_empty() {
+            queue.write_buffer(&self.layers_buf, 0, bytemuck::cast_slice(layers));
+        }
+        queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(params));
+        if !lut_atlas.is_empty() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.lut_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                lut_atlas,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(LUT_WIDTH * 4),
+                    rows_per_image: Some(needed_rows),
+                },
+                wgpu::Extent3d {
+                    width: LUT_WIDTH,
+                    height: needed_rows,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+
+        // Rebuilt every call (not just on resize) since `layers_buf`/`lut_texture` are only
+        // *conditionally* replaced above — cheap relative to the compute dispatch itself, and
+        // this is only ever reached when the caller is already regenerating (`dirty`).
+        self.bind_group = Self::make_bind_group(
+            device,
+            &self.bgl,
+            &self.view,
             &self.params_buf,
-            0,
-            bytemuck::bytes_of(&GenParams {
-                res,
-                iso,
-                noise_scale,
-                _pad: 0.0,
-            }),
+            &self.layers_buf,
+            &self.lut_view,
+            &self.lut_sampler,
         );
+
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gen-enc"),
         });

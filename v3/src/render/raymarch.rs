@@ -1,4 +1,5 @@
 use crate::camera::CamUniform;
+use crate::layer::{GenParams, GpuLayer};
 use crate::render::Renderer;
 
 /// Fullscreen-triangle render pipeline that raymarches `Renderer.volume`'s 3D texture.
@@ -144,11 +145,18 @@ impl Raymarch {
 
 /// Camera + generation parameters for one frame's raymarch draw, carried through
 /// `egui_wgpu::CallbackTrait` into `Renderer`'s stored pipeline/volume state.
+///
+/// `layers`/`gen_params`/`lut_atlas`/`lut_rows` are only meaningful when `dirty` — `Vol3dApp`
+/// packs them (demo scene + slider overrides -> `GpuLayer`s + ramp LUT atlas) on the CPU side in
+/// `ui()` and leaves them empty otherwise, since `ensure_generated` skips the GPU work entirely
+/// when `!dirty`.
 pub struct RaymarchCallback {
     pub cam: CamUniform,
     pub res: u32,
-    pub iso: f32,
-    pub noise_scale: f32,
+    pub layers: Vec<GpuLayer>,
+    pub gen_params: GenParams,
+    pub lut_atlas: Vec<u8>,
+    pub lut_rows: u32,
     pub dirty: bool,
 }
 
@@ -166,8 +174,10 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
             device,
             queue,
             self.res,
-            self.iso,
-            self.noise_scale,
+            &self.layers,
+            &self.gen_params,
+            &self.lut_atlas,
+            self.lut_rows,
             self.dirty,
         );
         queue.write_buffer(&r.raymarch.cam_buf, 0, bytemuck::bytes_of(&self.cam));
