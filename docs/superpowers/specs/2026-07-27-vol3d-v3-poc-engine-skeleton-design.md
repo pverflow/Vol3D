@@ -43,7 +43,8 @@ v3/
 
 - **Native:** `cargo run` in `v3/` (Vulkan / Metal / DX12 auto-selected by wgpu). Verified on macOS, Windows, Linux.
 - **Web:** `trunk serve` / `trunk build` → wasm + WebGPU; verified in a WebGPU browser (Chrome/Edge/Safari 26). Async adapter/device init; single-threaded (no wasm threads).
-- **Versions pinned:** `wgpu 30.x`, `egui`/`eframe`/`egui-wgpu 0.35.x` (pin exact patch in `Cargo.toml`).
+- **Force the wgpu backend + WebGPU on web:** `eframe` defaults to pulling `glow` (WebGL) on wasm. Configure `eframe` with the `wgpu` renderer (disable the `glow` default feature) and build the `wgpu::Instance` on web with the **WebGPU** backend — **not** WebGL2 (WebGL2 has no compute; the whole PoC needs compute). Select `Backends::PRIMARY` / `BROWSER_WEBGPU`, not `GL`.
+- **Versions (resolved, confirmed compiling here):** `wgpu 30.0.0`, `egui`/`eframe`/`egui-wgpu 0.35.0`, `bytemuck 1.25.x`, `pollster 1.x` (native). Pin exact patches in `Cargo.toml`.
 
 ## Non-goals (explicitly out — later cycles)
 
@@ -64,9 +65,19 @@ v2 noise/SDF variety, layers, per-layer color UI, remap/feather curves, animatio
 - Per-backend / web 3D-storage-texture reality is documented (the input to cycle ②).
 - v2 remains untouched on `master`; all v3 work is under `v3/` on the `v3` branch.
 
+## Verification model (confirmed)
+
+The agent sandbox now has Rust `1.97.1` (installed to `~/.cargo`; `source ~/.cargo/env` per shell) + the `wasm32-unknown-unknown` target, and **both `cargo check` (native) and `cargo check --target wasm32-unknown-unknown` compile the full `eframe`+`wgpu` tree here**. So implementation gates that CAN run in-sandbox:
+- `cargo check` native **and** wasm32 (both must stay green),
+- `cargo clippy`, `cargo fmt --check`,
+- `naga` WGSL validation (pure CPU — parse + validate each `.wgsl`),
+- Rust unit tests for pure logic (camera math, capability calc).
+
+What CANNOT run here (no GPU / no display / no WebGPU browser) → **deferred to the user's machine**: the actual GPU visual render, orbit interaction, and the WebGPU-browser smoke. The plan must be honest about this split — never claim a visual pass that only the user can observe.
+
 ## Risks
 
-- **Toolchain:** Rust + `wasm32-unknown-unknown` + `trunk` must be set up; the web smoke needs a WebGPU browser. (Confirm the build environment can compile Rust/wasm during implementation; if not, note which gates ran and which are deferred to the user's machine — honestly.)
+- **GPU verification is the user's machine.** Compile/shader-validation is covered in-sandbox; the visual render (native + WebGPU browser) is confirmed only by the user. Structure the PoC so a failed GPU run gives a clear diagnostic (log adapter/limits, validate pipelines at creation).
 - **Web specifics:** async device init and no threads on wasm change app startup vs native — handle both from one entry.
 - **Per-backend storage-texture gating** — the exact risk this PoC exists to measure; write-only `rgba8` 3D storage should be broadly supported, but verify (Metal/DX12/Vulkan + WebGPU).
 - **egui-wgpu callback** viewport sizing / DPI / lifetime of GPU resources across frames.
