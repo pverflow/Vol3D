@@ -1,5 +1,6 @@
 mod app;
 mod camera;
+mod gradient;
 mod layer;
 mod ramp;
 mod render;

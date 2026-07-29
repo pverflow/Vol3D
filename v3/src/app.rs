@@ -1,4 +1,5 @@
 use crate::camera::OrbitCamera;
+use crate::gradient::gradient_editor;
 use crate::layer::{self, BlendMode, GenParams, LayerDesc, NoiseType};
 use crate::ramp::{self, ColorRamp};
 use crate::render::raymarch::RaymarchCallback;
@@ -72,6 +73,14 @@ pub struct Vol3dApp {
     /// actually regenerate the volume this frame (see `ui()`'s tail and `pack_for_gpu`).
     pub pending_regen: bool,
     pub cam: OrbitCamera,
+    /// Which stop of `layers[selected].ramp` the gradient editor has selected, if any. Reset to
+    /// `None` in `properties_panel` whenever `selected` (the layer) changes — a stop index from
+    /// one layer's ramp is meaningless against another's.
+    pub selected_stop: Option<usize>,
+    /// `selected` as of the last `properties_panel` call; lets that fn detect a layer switch
+    /// (from any of the Layers panel's Add/Duplicate/Delete/Up/Down/select actions) and clear
+    /// `selected_stop` without every one of those call sites needing to do it itself.
+    last_props_layer: usize,
 }
 
 impl Default for Vol3dApp {
@@ -85,6 +94,8 @@ impl Default for Vol3dApp {
             last_edit_time: 0.0,
             pending_regen: false,
             cam: OrbitCamera::default(),
+            selected_stop: None,
+            last_props_layer: 0,
         }
     }
 }
@@ -171,30 +182,37 @@ impl Vol3dApp {
         ui.separator();
         ui.label("Layers");
 
-        for i in 0..self.layers.len() {
-            ui.horizontal(|ui| {
-                if ui.checkbox(&mut self.layers[i].visible, "").changed() {
-                    self.mark_dirty(ui.ctx());
-                }
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for i in 0..self.layers.len() {
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut self.layers[i].visible, "").changed() {
+                        self.mark_dirty(ui.ctx());
+                    }
 
-                let label = format!("{}: {}", i + 1, noise_type_label(self.layers[i].noise_type));
-                if ui.selectable_label(self.selected == i, label).clicked() {
-                    self.selected = i;
-                }
+                    let label =
+                        format!("{}: {}", i + 1, noise_type_label(self.layers[i].noise_type));
+                    if ui.selectable_label(self.selected == i, label).clicked() {
+                        self.selected = i;
+                    }
 
-                let prev_blend = self.layers[i].blend_mode;
-                egui::ComboBox::from_id_salt(("layer-blend", i))
-                    .selected_text(blend_label(self.layers[i].blend_mode))
-                    .show_ui(ui, |ui| {
-                        for b in BLEND_MODES {
-                            ui.selectable_value(&mut self.layers[i].blend_mode, b, blend_label(b));
-                        }
-                    });
-                if self.layers[i].blend_mode != prev_blend {
-                    self.mark_dirty(ui.ctx());
-                }
-            });
-        }
+                    let prev_blend = self.layers[i].blend_mode;
+                    egui::ComboBox::from_id_salt(("layer-blend", i))
+                        .selected_text(blend_label(self.layers[i].blend_mode))
+                        .show_ui(ui, |ui| {
+                            for b in BLEND_MODES {
+                                ui.selectable_value(
+                                    &mut self.layers[i].blend_mode,
+                                    b,
+                                    blend_label(b),
+                                );
+                            }
+                        });
+                    if self.layers[i].blend_mode != prev_blend {
+                        self.mark_dirty(ui.ctx());
+                    }
+                });
+            }
+        });
 
         ui.horizontal(|ui| {
             if ui.button("Add").clicked() {
@@ -229,6 +247,10 @@ impl Vol3dApp {
             return;
         }
         let i = self.selected.min(self.layers.len() - 1);
+        if i != self.last_props_layer {
+            self.selected_stop = None;
+            self.last_props_layer = i;
+        }
 
         ui.separator();
         let prev_nt = self.layers[i].noise_type;
@@ -438,7 +460,10 @@ impl Vol3dApp {
         }
 
         ui.separator();
-        ui.label("Color ramp — Task 3");
+        ui.label("Color ramp");
+        if gradient_editor(ui, &mut self.layers[i].ramp, &mut self.selected_stop).changed() {
+            self.mark_dirty(ui.ctx());
+        }
     }
 }
 
