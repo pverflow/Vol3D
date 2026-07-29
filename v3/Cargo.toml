@@ -7,7 +7,7 @@ edition = "2021"
 egui = "=0.35.0"
 eframe = { version = "=0.35.0", default-features = false, features = ["wgpu", "default_fonts"] }
 egui-wgpu = "=0.35.0"
-wgpu = "=30.0.0"
+wgpu = "=29.0.4"
 bytemuck = { version = "1.25", features = ["derive"] }
 log = "0.4"
 
