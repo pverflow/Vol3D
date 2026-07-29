@@ -100,7 +100,12 @@ fn rot_z(a: f32) -> mat3x3<f32> {
   return mat3x3<f32>(vec3<f32>(c, -s, 0.0), vec3<f32>(s, c, 0.0), vec3<f32>(0.0, 0.0, 1.0));
 }
 
-// math_utils.glsl L24-26
+// math_utils.glsl L24-26. NOTE: not called by the layer loop — v2 itself
+// never calls this generic remap() from layer_gen.frag.glsl either (that
+// file has its own inline in/out-range math inside applyRemapCurve, see
+// apply_remap_curve below); grepping v2's shader sources confirms this
+// function has no callers there today. Ported for parity with
+// math_utils.glsl only, same as smin/rot_z/hash33/hash23 above.
 fn remap(v: f32, in_min: f32, in_max: f32, out_min: f32, out_max: f32) -> f32 {
   return out_min + (out_max - out_min) * clamp((v - in_min) / (in_max - in_min + 0.0001), 0.0, 1.0);
 }
@@ -396,19 +401,16 @@ fn evaluate_bezier_curve(curve: vec4<f32>, x: f32) -> f32 {
   return cubic_bezier_point(p1, p2, 0.5 * (lo + hi)).y;
 }
 
-// layer_gen.frag.glsl L118-122 (applyRemapCurve). v2's applyRemapCurve does
-// three things at once: normalize v into [0,1] using remapInput, warp it
-// through the bezier curve, then rescale into remapOutput. In the v3 layer
-// loop (Task 2 brief Step 3) the in/out range mapping is already handled by
-// the separate `remap()` call (math_utils.glsl) using L.in_min/in_max/
-// out_min/out_max *before* this function runs, so apply_remap_curve here
-// only does the bezier-warp portion, applied to the already-ranged value
-// saturated into the curve's [0,1] domain. FIDELITY NOTE (flagged for
-// reviewer): this is a structural split mandated by the brief's given loop
-// skeleton, not a literal 1:1 port of applyRemapCurve as a single function.
-fn apply_remap_curve(v: f32, curve: vec4<f32>) -> f32 {
-  let t = saturate01(v);
-  return evaluate_bezier_curve(curve, t);
+// layer_gen.frag.glsl L118-122 (applyRemapCurve) — fix round 1: this is now
+// the ONE remap function the loop calls, matching v2 exactly: normalize v
+// into [0,1] via in_min/in_max (v2's u_remapInput), bezier-warp it, then
+// rescale into out_min/out_max (v2's u_remapOutput). (Fix round 1 removed
+// the separate `remap()` pre-pass a prior draft inserted before this —
+// v2 has only this one function, no linear pre-remap.)
+fn apply_remap_curve(v: f32, L: GpuLayer) -> f32 {
+  let t0 = saturate01((v - L.in_min) / max(L.in_max - L.in_min, 0.0001));
+  let t1 = evaluate_bezier_curve(L.remap_curve, t0);
+  return mix(L.out_min, L.out_max, t1);
 }
 
 // layer_gen.frag.glsl L124-136
@@ -607,22 +609,70 @@ fn eval_noise(L: GpuLayer, p: vec3<f32>) -> f32 {
   }
 }
 
+// layer_gen.frag.glsl L44-67 (sampleNoiseAtVolumePos) — fix round 1. Per-
+// source-type position transform: SDF sources (noise_type 4u = SdfSphere,
+// the only SDF type today, L44-46/L48-54) center the volume first so
+// offset=[0,0,0] puts the shape at uvw=0.5, and skip domain animation
+// entirely (an SDF shape has no tiling seams to hide); noise sources
+// (L55-59) scale+offset directly in [0,1] volume space, then rotate.
+// v2's `p += animatedDomainOffset();` (L59) is intentionally NOT ported —
+// it's coupled to per-frame animation state (u_animPhase/u_animEvolutions),
+// deferred to cycle 4. v2's `applyDistortion(p)` (L63, both branches) is
+// likewise not ported — distortion_type isn't wired to any distortion
+// function this cycle (same "out of scope" carve-out as Worley, see
+// GpuLayer.worley_mode/distortion_type).
+fn sample_noise_at(L: GpuLayer, uvw: vec3<f32>) -> f32 {
+  let rot = mat3x3<f32>(L.rot0.xyz, L.rot1.xyz, L.rot2.xyz);
+  var p: vec3<f32>;
+  if (L.noise_type == 4u) {
+    // SDF_SOURCE branch (layer_gen.frag.glsl L48-54).
+    p = (uvw - vec3<f32>(0.5)) * L.scale.xyz + L.offset.xyz;
+    p = rot * p;
+  } else {
+    // non-SDF branch (layer_gen.frag.glsl L56-59).
+    p = uvw * L.scale.xyz + L.offset.xyz;
+    p = rot * p;
+    // TODO(cycle-4): animatedDomainOffset() — animation-coupled domain
+    // shift (layer_gen.frag.glsl L59), deferred.
+  }
+  // TODO(distortion, out of scope this cycle): applyDistortion(p) (L63).
+  return eval_noise(L, p);
+}
+
+// layer_gen.frag.glsl L69-91 (sampleNoiseTileable) — fix round 1. 8-corner
+// trilinear blend of sample_noise_at so periodic noise tiles seamlessly
+// across the volume boundary (tileSize = 1.0, matching v2 exactly).
+fn sample_noise_tileable(L: GpuLayer, uvw: vec3<f32>) -> f32 {
+  let blend = clamp(uvw, vec3<f32>(0.0), vec3<f32>(1.0));
+
+  let n000 = sample_noise_at(L, uvw);
+  let n100 = sample_noise_at(L, uvw - vec3<f32>(1.0, 0.0, 0.0));
+  let n010 = sample_noise_at(L, uvw - vec3<f32>(0.0, 1.0, 0.0));
+  let n110 = sample_noise_at(L, uvw - vec3<f32>(1.0, 1.0, 0.0));
+  let n001 = sample_noise_at(L, uvw - vec3<f32>(0.0, 0.0, 1.0));
+  let n101 = sample_noise_at(L, uvw - vec3<f32>(1.0, 0.0, 1.0));
+  let n011 = sample_noise_at(L, uvw - vec3<f32>(0.0, 1.0, 1.0));
+  let n111 = sample_noise_at(L, uvw - vec3<f32>(1.0, 1.0, 1.0));
+
+  let nx00 = mix(n000, n100, blend.x);
+  let nx10 = mix(n010, n110, blend.x);
+  let nx01 = mix(n001, n101, blend.x);
+  let nx11 = mix(n011, n111, blend.x);
+
+  let nxy0 = mix(nx00, nx10, blend.y);
+  let nxy1 = mix(nx01, nx11, blend.y);
+
+  return mix(nxy0, nxy1, blend.z);
+}
+
 // ---------------------------------------------------------------------
-// Per-voxel layer stack (Task 2 brief, Step 3 — skeleton reproduced as
-// given). FIDELITY NOTE (flagged for reviewer): the transform order here
-// is `rot * (uvw * scale) + offset` (rotate, then translate), as specified
-// by the brief's skeleton. v2's layer_gen.frag.glsl instead scales+offsets
-// THEN rotates (`p = p*scale+offset; p = rotation*p;`), and further
-// special-cases SDF sources to center the volume first
-// (`p = (p-0.5)*scale+offset; p = rotation*p;`, layer_gen.frag.glsl L53-54)
-// with no domain animation. Neither the reordering nor the SDF recentering
-// is reproduced here — this loop applies one uniform transform to every
-// noise type. Practical effect: an SdfSphere layer with the default
-// offset=[0,0,0] (e.g. demo_scene()'s third layer) is evaluated against
-// p=uvw directly, i.e. the sphere sits at the volume's corner (uvw=0)
-// rather than centered at uvw=0.5, unless the layer's offset is set to
-// compensate. Left as specified by the brief; flagged for the reviewer to
-// confirm this is the intended cycle-2 scope (vs. a follow-up fix).
+// Per-voxel layer stack — fix round 1: op order now matches v2's `main`
+// (layer_gen.frag.glsl L168-192) exactly: sample (tileable, or single-shot
+// for SDF sources bypassing the tiling blend per L170-177) -> applyRemapCurve
+// -> amplitude -> invert -> feather -> clamp. Then (v3-only, v2 has no
+// multi-layer loop — this is the per-layer compositing this cycle adds):
+// blend into density with opacity mix, and painter's-over ramp color
+// composite.
 // ---------------------------------------------------------------------
 
 @compute @workgroup_size(4, 4, 4)
@@ -636,17 +686,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let n = params.layer_count;
   for (var i: u32 = 0u; i < n; i = i + 1u) {
     let L = layers[i];
-    let rot = mat3x3<f32>(L.rot0.xyz, L.rot1.xyz, L.rot2.xyz);
-    let p = rot * (uvw * L.scale.xyz) + L.offset.xyz;
-    var v = eval_noise(L, p);
-    v = v * L.amplitude;
-    v = remap(v, L.in_min, L.in_max, L.out_min, L.out_max);
-    v = apply_remap_curve(v, L.remap_curve);
-    if (L.invert != 0u) {
+
+    // layer_gen.frag.glsl L169-177: SDF sources sample once (no tiling
+    // blend); everything else goes through the 8-corner tileable blend.
+    var v: f32;
+    if (L.noise_type == 4u) {
+      v = sample_noise_at(L, uvw);
+    } else {
+      v = sample_noise_tileable(L, uvw);
+    }
+
+    v = apply_remap_curve(v, L);       // L180: n = applyRemapCurve(n);
+    v = v * L.amplitude;               // L183: n *= u_amplitude;
+    if (L.invert != 0u) {              // L186: if (u_invert) n = 1.0 - n;
       v = 1.0 - v;
     }
-    v = apply_feather(uvw, v, L);
-    v = clamp(v, 0.0, 1.0);
+    v = apply_feather(uvw, v, L);      // L189: n = applyFeather(volumePos, n);
+    v = clamp(v, 0.0, 1.0);            // L191: n = clamp(n, 0.0, 1.0);
+
     let blended = apply_blend(i32(L.blend_mode), density, v);
     density = mix(density, blended, L.opacity);
     let c = textureSampleLevel(ramp_lut, ramp_samp, vec2<f32>(v, (f32(i) + 0.5) / f32(n)), 0.0);
