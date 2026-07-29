@@ -1,5 +1,7 @@
 mod app;
 mod camera;
+mod layer;
+mod ramp;
 mod render;
 use app::Vol3dApp;
 
