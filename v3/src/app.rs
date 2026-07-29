@@ -86,6 +86,10 @@ pub struct Vol3dApp {
     /// index (now pointing at the layer that shifted down into it), which the index-only check
     /// would miss — comparing the length too catches that case.
     last_layers_len: usize,
+    /// Smoothed frame time in ms, shown as the fps/ms readout at the top of the Layers panel.
+    /// ponytail: simple EMA (0.9 old / 0.1 new) — cheap, no history buffer, good enough for a
+    /// glance-at readout. `0.0` means "no sample yet"; `ui()` seeds it from the first frame.
+    frame_ms_ema: f32,
 }
 
 impl Default for Vol3dApp {
@@ -104,6 +108,7 @@ impl Default for Vol3dApp {
             selected_stop: None,
             last_props_layer: 0,
             last_layers_len,
+            frame_ms_ema: 0.0,
         }
     }
 }
@@ -162,6 +167,11 @@ impl Vol3dApp {
     }
 
     fn layers_panel(&mut self, ui: &mut egui::Ui) {
+        ui.label(format!(
+            "{:.1} ms  ({:.0} fps)",
+            self.frame_ms_ema,
+            1000.0 / self.frame_ms_ema
+        ));
         ui.heading("Vol3D v3");
 
         let prev_res = self.resolution;
@@ -481,6 +491,18 @@ impl eframe::App for Vol3dApp {
     // shape and hands us the root `&mut Ui` directly; panels are shown via
     // `.show(ui, ...)` rather than `.show(ctx, ...)`.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Smoothed frame time for the fps/ms readout (`layers_panel`'s top line). Requesting a
+        // repaint every frame (unconditionally, independent of the debounced regen below) keeps
+        // the raymarch/present loop running continuously so the reading reflects steady-state
+        // render cost — it does NOT trigger generation, which still only fires on `pending_regen`.
+        let dt = ui.ctx().input(|i| i.stable_dt).max(1e-4);
+        self.frame_ms_ema = if self.frame_ms_ema <= 0.0 {
+            dt * 1000.0
+        } else {
+            self.frame_ms_ema * 0.9 + dt * 1000.0 * 0.1
+        };
+        ui.ctx().request_repaint();
+
         // `egui::SidePanel` was unified into `egui::Panel` (+ `PanelSide`) in 0.35.0.
         egui::Panel::left("layers").show(ui, |ui| self.layers_panel(ui));
         egui::Panel::right("properties").show(ui, |ui| self.properties_panel(ui));
