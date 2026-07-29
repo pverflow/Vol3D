@@ -29,8 +29,9 @@ fn lerp_byte(a: u8, b: u8, f: f32) -> u8 {
 
 /// Sample a *sorted* stop list at `t`, clamping outside the stop range and
 /// linearly interpolating color+alpha between the bracketing pair otherwise.
-/// Mirrors v2's `sampleStops`.
-fn sample_stops(stops: &[RampStop], t: f32) -> [u8; 4] {
+/// Mirrors v2's `sampleStops`. `pub(crate)` so `ui_logic::add_stop` (cycle 3)
+/// can reuse it to color a freshly-inserted stop.
+pub(crate) fn sample_stops(stops: &[RampStop], t: f32) -> [u8; 4] {
     let first = stops[0];
     if t <= first.t {
         return [first.color[0], first.color[1], first.color[2], first.alpha];

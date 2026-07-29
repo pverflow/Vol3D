@@ -3,6 +3,7 @@ mod camera;
 mod layer;
 mod ramp;
 mod render;
+mod ui_logic;
 use app::Vol3dApp;
 
 #[cfg(not(target_arch = "wasm32"))]
