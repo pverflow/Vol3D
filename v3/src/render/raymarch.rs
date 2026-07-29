@@ -146,10 +146,10 @@ impl Raymarch {
 /// Camera + generation parameters for one frame's raymarch draw, carried through
 /// `egui_wgpu::CallbackTrait` into `Renderer`'s stored pipeline/volume state.
 ///
-/// `layers`/`gen_params`/`lut_atlas`/`lut_rows` are only meaningful when `dirty` — `Vol3dApp`
-/// packs them (demo scene + slider overrides -> `GpuLayer`s + ramp LUT atlas) on the CPU side in
-/// `ui()` and leaves them empty otherwise, since `ensure_generated` skips the GPU work entirely
-/// when `!dirty`.
+/// `layers`/`gen_params`/`lut_atlas`/`lut_rows` are only meaningful when `pending_regen` —
+/// `Vol3dApp` packs them (layer stack -> `GpuLayer`s + ramp LUT atlas) on the CPU side in `ui()`
+/// once the debounce (`ui_logic::should_regen`) fires, and leaves them empty otherwise, since
+/// `ensure_generated` skips the GPU work entirely when `!pending_regen`.
 pub struct RaymarchCallback {
     pub cam: CamUniform,
     pub res: u32,
@@ -157,7 +157,7 @@ pub struct RaymarchCallback {
     pub gen_params: GenParams,
     pub lut_atlas: Vec<u8>,
     pub lut_rows: u32,
-    pub dirty: bool,
+    pub pending_regen: bool,
 }
 
 impl egui_wgpu::CallbackTrait for RaymarchCallback {
@@ -178,7 +178,7 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
             &self.gen_params,
             &self.lut_atlas,
             self.lut_rows,
-            self.dirty,
+            self.pending_regen,
         );
         queue.write_buffer(&r.raymarch.cam_buf, 0, bytemuck::bytes_of(&self.cam));
         // No readback: generation runs entirely on-GPU (VolumeGen::generate submits its own

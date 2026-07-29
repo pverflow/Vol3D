@@ -138,6 +138,10 @@ pub struct LayerDesc {
     pub worley_mode: u32,
     pub distortion_type: u32,
     pub ramp: ColorRamp,
+    /// UI-only visibility toggle (cycle 3): invisible layers are skipped at
+    /// pack time (`app.rs`), contributing neither shape nor color. Not part
+    /// of `GpuLayer` — filtering happens before packing, not on the GPU.
+    pub visible: bool,
 }
 
 impl Default for LayerDesc {
@@ -170,6 +174,7 @@ impl Default for LayerDesc {
             worley_mode: 0,
             distortion_type: 0,
             ramp: ColorRamp::default(), // disabled, no stops
+            visible: true,
         }
     }
 }
