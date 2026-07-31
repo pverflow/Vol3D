@@ -1,19 +1,27 @@
-# Running the v3 PoC — Cycle ③ (Restyled UI)
+# Running the v3 PoC — Cycle ④ (Animation + Dense GPU Frame Cache)
 
-## Interactive Authoring UI
+## Interactive Authoring & Animation
 
-Build a colored volumetric scene with a live-updating UI. Start with a blank canvas or a preset scene, add/modify layers to author custom color clouds, and see edits regenerate with ~120ms debounce. The UI now features a dark pro-tool theme (matching v2) with a light/dark toggle, organized panels, and polished layer interaction.
+Build a colored volumetric scene with a live-updating UI, now with real-time animation playback. Start with a blank canvas or a preset scene, add/modify layers to author custom color clouds, and animate them by pressing Play. Edits still regenerate with ~120ms debounce; playing bakes frames to a GPU-resident 3D texture cache for smooth playback (no per-frame CPU regeneration). The UI retains the dark pro-tool theme from cycle ③ with light/dark toggle.
 
-### Theme & Top Bar
+### Animation Controls & Top Bar
 
-The UI adopts a **dark pro-tool theme** matching v2's visual language. A **light/dark toggle** in the top bar lets you switch themes.
+The UI retains the **dark pro-tool theme** matching v2's visual language. A **light/dark toggle** in the top bar lets you switch themes.
 
 **Top bar** (always visible):
 - **Title:** "Vol3D"
-- **FPS / MS counter:** Live frame rate and frame time display
+- **FPS / MS counter:** Live frame rate and frame time display (watch this during playback)
 - **Resolution combo:** Quick access to voxel grid size (64³, 128³, 256³)
 - **Global seed field:** Random noise variation across all layers
 - **Theme toggle:** Switch between dark and light modes
+
+**Animation panel** (controls below layers):
+- **Play / Pause button:** Start/stop the loop animation
+- **Loop duration (seconds):** How long one full loop takes
+- **Evolutions slider:** Number of animated noise evolutions (raising this makes noise animate faster)
+- **Frame count:** Total number of frames N in the baked cache
+- **Phase scrub slider:** Jump to any point in the loop (0 to 1)
+- **Cache readout:** Shows cache status — e.g., "baked 60 @128³" or "stale" (invalidated by edits)
 
 ### Layout
 
@@ -52,66 +60,77 @@ Organized into collapsible groups with tidy aligned rows:
     - Stops map [0,1] noise to [color] for this layer only
     - **Changes apply live** to the viewport (debounced ~120ms)
 
+**Bottom panel (Animation controls):**
+- Play/Pause button
+- Loop duration slider (in seconds)
+- Evolutions slider (affects noise animation speed)
+- Frame count display (set by bake)
+- Phase scrub slider (jump to any point in the loop)
+- Cache status readout (e.g., "baked 60 @128³" or "stale")
+
 **Center (Viewport):**
-- 3D view of the current volume
+- 3D view of the current volume, animated if playing
 - **Orbit:** click + drag to rotate
 - **Zoom:** scroll wheel to zoom in/out
-- Any property change triggers a recompile of that layer's shader and regenerates the volume after ~120ms debounce
+- Any property change during playback invalidates the cache (readout shows "stale"), and re-baking happens on the next Play press
+- During playback, the noise animates smoothly via `animatedDomainOffset` — the domain rotates over the loop duration
 
-### Native
-    cd v3 && cargo run
-
-Expect a window with the UI on left/right and viewport in the center. The terminal shows the "v3 adapter:" line (GPU backend, capabilities).
-
-### Web (WebGPU)
-    cd v3 && trunk serve        # (cargo install trunk, once)
-
-Open the shown localhost URL in a WebGPU browser (Chrome/Edge/Safari 26).
-Same UI and viewport, same interactivity. If the canvas is blank, open devtools console for WebGPU/adapter errors.
 
 ## What to report back
 
-**UI theme & visual polish:**
-- Does the UI **read like v2's dark pro-tool theme**? (Dark panels/widgets, accent highlight on selected items.)
-- Does the **light/dark toggle** in the top bar switch themes correctly?
-- Is the **top bar** present and aligned? (Title, FPS/MS counter, Resolution combo, Global seed, theme toggle.)
-- Are **layer rows polished**? (Eye toggle works; selected row highlighted in accent; Delete button red-tinted.)
-- Are **Properties groups** (Noise, Transform, Remap, Color) **collapsible and tidy**? (Aligned rows, no clutter.)
-- Is the **gradient editor's selected stop** highlighted in the accent color?
+**Animation controls:**
+- Does the **Play/Pause button** start and stop the animation loop?
+- Do the **loop duration, evolutions, and frame count controls** update correctly?
+- Can you **scrub the phase slider** to jump to any point in the loop while paused?
+- Does the **cache readout** show "baked N @res" (e.g., "baked 60 @128³") when cache is ready, and "stale" after an edit?
 
-**Layer editing:**
-- Can you **add, duplicate, delete, and reorder layers** with the buttons? Does visibility (eye toggle) work?
-- Do **property changes** (scale, rotation, offset, amplitude, opacity, invert, blend mode) **regenerate the volume** with ~120ms debounce? (No lag; no stutter from immediate recompile.)
+**Noise evolution (the core animation feature):**
+- Does the **noise visibly EVOLVE** as the loop plays? (The noise pattern should smoothly change over time, driven by the rotating `animatedDomainOffset` in the domain. This is the essence of cycle ④.)
+- Does the animation look **smooth and continuous**, or does it loop with a visible discontinuity at the frame boundary?
 
-**Gradient editor (per-layer color):**
-- Can you **add stops** by clicking the empty gradient bar? (Click → stop appears.)
-- Can you **drag stops** left/right to change their position? (Smooth dragging, no stutter.)
-- Can you **pick color and alpha** for each stop? (Click stop → color picker.)
-- Can you **remove stops**? (Right-click or remove button.)
-- Does the **multi-layer color** now reflect your choice? (Layer 1's color stops map to its noise; Layer 2's gradient is independent. Not a single flat color.)
+**Dense GPU frame cache & playback:**
+- Does **Play bake then play SMOOTHLY**? (Watch the FPS/MS counter in the top bar during playback.)
+  - First play (or first play after editing): Expect a brief one-time bake pause (~1–2 sec for 128³), then smooth playback.
+  - After that: Playback should be smooth with **steady high FPS** (≥60 fps target), **NOT per-frame regen stutter**. If you see stuttering or fps dips, the cache is not working.
+- **Playback FPS at 128³:** Report the frame rate during a full loop on your GPU. (This is the key metric: cache hit should hold steady fps, while live-edit regen would stutter.)
+- **Playback FPS at 256³ (if your GPU allows):** Note this is memory-heavy for the dense cache (256³ × 4 frames × 4 bytes = ~1 GB+). If you hit memory limits or bad perf, that's expected—cycle ⑤ adds a sparse cache to handle 256³+.
 
-**Scene authoring:**
-- Build a **fire or smoke-ish scene:** Start with a base FBM layer (orange/red gradient), add a detail Perlin layer (lighter orange/yellow), blend with Add or Screen. Does the result look like fire/smoke with layered colors?
-- **Noise type:** Switch a layer's noise type from Perlin to FBM or Simplex—does the structure change visibly?
+**Layer editing during playback:**
+- While playing, **edit a layer** (change amplitude, scale, noise type, etc.).
+- Does the **cache readout flip to "stale"**?
+- Does **playback continue smoothly** with the old cached frames?
+- Press **Play again** (or let it loop): Does it **re-bake with the new edits** before resuming playback? (Expect a brief bake pause.)
 
-**Rendering & functionality:**
-- At **128³**, drag the viewport around—is rotation smooth? (60 fps target.)
-- At **256³**, same test—does the frame rate drop noticeably? (Note the threshold for your GPU.)
-- Any lag or stutter when adding/deleting layers or updating the gradient?
-- **Did anything regress?** (Rendering quality, layer authoring, gradient editing. This was visual-only; cycles ①–③ logic unchanged.)
+**Memory & stability:**
+- At **128³** playback, is memory usage stable and reasonable? (The dense cache holds N frames; ~60 frames at 128³ is ~480 MB.)
+- Any **OOM or crash** at higher resolutions or frame counts? (Note: 256³ dense cache is heavy; deferred sparse cache will fix this.)
+
+**Rendering & UI regression:**
+- Does the **viewport rotate smoothly**? (No regression from cycle ③.)
+- Do **layer editing and gradient controls** still work as before?
+- Any **UI crashes or shader compilation errors**?
 
 **Errors:**
-- Paste any **egui or wgpu error** from the native terminal or web console, especially:
-  - UI widget crashes (egui-0.35 signature mismatches)
-  - Compute shader compilation errors (FBM, Simplex, SdfSphere)
-  - Binding or buffer updates
+- Paste any **egui, wgpu, or WGSL compilation error** from the native terminal or web console, especially:
+  - Animation phase clock or cache invalidation crashes
+  - Compute shader bind errors (FrameCache texture creation)
   - WebGPU adapter fallback (web only)
 
-**Heads up:**
-- Animation (cycle ④) lands next in this restyled UI. No animation in this cycle—visual restyle only.
+**Deferred (not in this cycle):**
+- GPU sparse brick cache for 256³+
+- Reduced-resolution baking (half-res cache, interpolate at playback)
+- Temporal interpolation between frames (smoother animation with fewer baked frames)
 
-### Deferred (not in this cycle)
-- Bezier curve editor for remap (planned for cycle ④)
-- Feather / soft mask blending
-- Layer presets and animation
-- Undo/redo
+### Run paths
+
+**Native:**
+```bash
+cd v3 && cargo run
+```
+Expect a window with the UI on left/right and viewport in the center. The terminal shows the "v3 adapter:" line (GPU backend, capabilities). Animation plays in the native window with the dense cache.
+
+**Web (WebGPU):**
+```bash
+cd v3 && trunk serve        # (cargo install trunk, once)
+```
+Open the shown localhost URL in a WebGPU browser (Chrome/Edge/Safari 26). Same UI, same animation, same cache. If the canvas is blank, open devtools console for WebGPU/adapter errors.
