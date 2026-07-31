@@ -576,8 +576,8 @@ struct GpuLayer {
 struct GenParams {
   res: u32,
   layer_count: u32,
-  global_seed: f32,
   anim_phase: f32,
+  anim_evolutions: f32,
 };
 
 // ---------------------------------------------------------------------
@@ -605,18 +605,37 @@ fn eval_noise(L: GpuLayer, p: vec3<f32>) -> f32 {
   }
 }
 
+// layer_gen.frag.glsl L27-42 (animatedDomainOffset). Domain-shift applied
+// only to non-SDF (periodic noise) sources so the tiling blend's seams stay
+// hidden while the noise field slowly evolves over time; `seed` here is
+// `L.seed` (already folded with global_seed at pack time, per app.rs
+// pack_for_gpu), matching v2's `u_seed`.
+const TAU: f32 = 6.28318530718;
+const ANIM_RADIUS: f32 = 4.0;
+
+fn animated_domain_offset(seed: f32, anim_phase: f32, anim_evolutions: f32) -> vec3<f32> {
+  let angle = anim_phase * anim_evolutions * TAU;
+  let axis_a = normalize(vec3<f32>(
+    hash11(seed * 0.031 + 21.0) * 2.0 - 1.0,
+    hash11(seed * 0.037 + 22.0) * 2.0 - 1.0,
+    hash11(seed * 0.041 + 23.0) * 2.0 - 1.0));
+  let axis_b = normalize(vec3<f32>(
+    hash11(seed * 0.043 + 24.0) * 2.0 - 1.0,
+    hash11(seed * 0.047 + 25.0) * 2.0 - 1.0,
+    hash11(seed * 0.053 + 26.0) * 2.0 - 1.0));
+  return (axis_a * cos(angle) + axis_b * sin(angle)) * ANIM_RADIUS;
+}
+
 // layer_gen.frag.glsl L44-67 (sampleNoiseAtVolumePos) — fix round 1. Per-
 // source-type position transform: SDF sources (noise_type 4u = SdfSphere,
 // the only SDF type today, L44-46/L48-54) center the volume first so
 // offset=[0,0,0] puts the shape at uvw=0.5, and skip domain animation
 // entirely (an SDF shape has no tiling seams to hide); noise sources
-// (L55-59) scale+offset directly in [0,1] volume space, then rotate.
-// v2's `p += animatedDomainOffset();` (L59) is intentionally NOT ported —
-// it's coupled to per-frame animation state (u_animPhase/u_animEvolutions),
-// deferred to cycle 4. v2's `applyDistortion(p)` (L63, both branches) is
-// likewise not ported — distortion_type isn't wired to any distortion
-// function this cycle (same "out of scope" carve-out as Worley, see
-// GpuLayer.worley_mode/distortion_type).
+// (L55-59) scale+offset directly in [0,1] volume space, then rotate, then
+// apply animatedDomainOffset() (L59, cycle-4 task 2 — now wired below).
+// v2's `applyDistortion(p)` (L63, both branches) is NOT ported — distortion_type
+// isn't wired to any distortion function this cycle (same "out of scope"
+// carve-out as Worley, see GpuLayer.worley_mode/distortion_type).
 fn sample_noise_at(L: GpuLayer, uvw: vec3<f32>) -> f32 {
   let rot = mat3x3<f32>(L.rot0.xyz, L.rot1.xyz, L.rot2.xyz);
   var p: vec3<f32>;
@@ -628,8 +647,7 @@ fn sample_noise_at(L: GpuLayer, uvw: vec3<f32>) -> f32 {
     // non-SDF branch (layer_gen.frag.glsl L56-59).
     p = uvw * L.scale.xyz + L.offset.xyz;
     p = rot * p;
-    // TODO(cycle-4): animatedDomainOffset() — animation-coupled domain
-    // shift (layer_gen.frag.glsl L59), deferred.
+    p = p + animated_domain_offset(L.seed, params.anim_phase, params.anim_evolutions);
   }
   // TODO(distortion, out of scope this cycle): applyDistortion(p) (L63).
   return eval_noise(L, p);
