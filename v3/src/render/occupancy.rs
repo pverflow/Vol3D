@@ -1,7 +1,7 @@
 // Occupancy overlay builder (v3 cycle 5, Task 1).
 //
 // Runs `shaders/occupancy.wgsl`: one compute invocation per macrocell scans its 8³ voxels of a
-// generated volume and stores the max density (alpha) into a coarse r8unorm 3D texture. The
+// generated volume and stores the max density (alpha) into a coarse r32float 3D texture. The
 // raymarch (Task 2) samples this to skip empty space. Fully GPU-resident — no CPU readback.
 
 use crate::anim::{macro_dims, MACRO};
@@ -35,13 +35,15 @@ impl OccupancyBuilder {
                     },
                     count: None,
                 },
-                // 1: occupancy, write-only r8unorm storage (D3).
+                // 1: occupancy, write-only r32float storage (D3). R32Float, not R8Unorm:
+                // R8Unorm is not a WebGPU storage-texture format. Non-filterable — Task 2
+                // samples it with a NEAREST sampler + Texture{ Float{ filterable: false } }.
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::R8Unorm,
+                        format: wgpu::TextureFormat::R32Float,
                         view_dimension: wgpu::TextureViewDimension::D3,
                     },
                     count: None,
@@ -143,8 +145,9 @@ impl OccupancyBuilder {
     }
 }
 
-/// A `macro_dims(res, MACRO)³` r8unorm D3 occupancy texture (`STORAGE_BINDING | TEXTURE_BINDING`):
-/// written by `OccupancyBuilder::build`, sampled by the raymarch.
+/// A `macro_dims(res, MACRO)³` r32float D3 occupancy texture (`STORAGE_BINDING | TEXTURE_BINDING`):
+/// written by `OccupancyBuilder::build`, sampled by the raymarch. R32Float (not R8Unorm) because
+/// R8Unorm is not a WebGPU storage-texture format; it is non-filterable (Task 2 samples NEAREST).
 pub fn make_occupancy_texture(
     device: &wgpu::Device,
     res: u32,
@@ -160,7 +163,7 @@ pub fn make_occupancy_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D3,
-        format: wgpu::TextureFormat::R8Unorm,
+        format: wgpu::TextureFormat::R32Float,
         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });

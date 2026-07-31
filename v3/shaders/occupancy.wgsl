@@ -1,14 +1,17 @@
 // Occupancy overlay (v3 cycle 5, Task 1).
 //
 // One invocation per macrocell: scans the cell's 8³ voxels of the generated
-// volume and stores the max alpha (density) into a coarse r8unorm 3D texture.
+// volume and stores the max alpha (density) into a coarse r32float 3D texture.
 // The raymarch (Task 2) samples this to skip empty macrocells. No CPU readback.
 //
 // The inner loop's `8u` extent is hardcoded to match `anim::MACRO = 8` — keep
 // the two in sync.
 
 @group(0) @binding(0) var vol: texture_3d<f32>;
-@group(0) @binding(1) var occ: texture_storage_3d<r8unorm, write>;
+// r32float, not r8unorm: R8Unorm is NOT a WebGPU storage-texture format (web build fails).
+// R32Float is storage-write-capable in core WebGPU. Non-filterable; Task 2 samples with a
+// NEAREST sampler + Texture{ sample_type: Float{ filterable: false } }.
+@group(0) @binding(1) var occ: texture_storage_3d<r32float, write>;
 struct OccParams { res: u32, macro_dim: u32, _p0: u32, _p1: u32 };
 @group(0) @binding(2) var<uniform> P: OccParams;
 
