@@ -1,4 +1,5 @@
 pub mod frame_cache;
+pub mod occupancy;
 pub mod raymarch;
 pub mod volume;
 use crate::anim::{is_stale, BakeKey};

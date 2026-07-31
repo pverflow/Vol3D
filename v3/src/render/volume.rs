@@ -1,4 +1,5 @@
 use crate::layer::{GenParams, GpuLayer};
+use crate::render::occupancy::{make_occupancy_texture, OccupancyBuilder};
 
 /// Ramp LUT atlas width — fixed at 256 texels/row (one texel per 8-bit density value),
 /// matching `ramp::build_ramp_lut_atlas`'s contract.
@@ -11,6 +12,12 @@ pub struct VolumeGen {
     res: u32,
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    // Coarse max-density-per-macrocell overlay of the live volume (recreated on res change
+    // alongside `texture`), refreshed after every `generate`. Task 2 samples it to skip empty
+    // space; Task 3 bakes per-frame occupancy separately (via `generate_into`'s optional param).
+    occupancy: wgpu::Texture,
+    occupancy_view: wgpu::TextureView,
+    occupancy_builder: OccupancyBuilder,
     params_buf: wgpu::Buffer,
     layers_buf: wgpu::Buffer,
     layer_capacity: u32,
@@ -123,6 +130,8 @@ impl VolumeGen {
         });
 
         let (texture, view) = Self::make_volume_texture(device, res);
+        let (occupancy, occupancy_view) = make_occupancy_texture(device, res);
+        let occupancy_builder = OccupancyBuilder::new(device);
         let bind_group = Self::make_bind_group(
             device,
             &bgl,
@@ -137,6 +146,9 @@ impl VolumeGen {
             res,
             texture,
             view,
+            occupancy,
+            occupancy_view,
+            occupancy_builder,
             params_buf,
             layers_buf,
             layer_capacity,
@@ -253,14 +265,33 @@ impl VolumeGen {
             let (t, v) = Self::make_volume_texture(device, res);
             self.texture = t;
             self.view = v;
+            let (ot, ov) = make_occupancy_texture(device, res);
+            self.occupancy = ot;
+            self.occupancy_view = ov;
             self.res = res;
         }
-        // Clone (an Arc bump) so the internal view isn't borrowed while `&mut self` is passed to
-        // `generate_into` — same underlying texture, so the live path is byte-for-byte unchanged.
+        // Clone (an Arc bump) so the internal views aren't borrowed while `&mut self` is passed to
+        // `generate_into` — same underlying textures, so the live path is byte-for-byte unchanged.
         let view = self.view.clone();
+        let occ = self.occupancy_view.clone();
         self.generate_into(
-            device, queue, &view, res, layers, params, lut_atlas, lut_rows,
+            device,
+            queue,
+            &view,
+            Some(&occ),
+            res,
+            layers,
+            params,
+            lut_atlas,
+            lut_rows,
         );
+    }
+
+    /// The live volume's occupancy overlay view (refreshed by `generate`). Task 2's raymarch
+    /// binds this for empty-space skipping — hence unused until then.
+    #[allow(dead_code)]
+    pub fn occupancy_view(&self) -> &wgpu::TextureView {
+        &self.occupancy_view
     }
 
     /// Bake one volume into an arbitrary storage-texture `target_view` (binding 0): uploads
@@ -275,6 +306,7 @@ impl VolumeGen {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target_view: &wgpu::TextureView,
+        occupancy_view: Option<&wgpu::TextureView>,
         res: u32,
         layers: &[GpuLayer],
         params: &GenParams,
@@ -348,5 +380,12 @@ impl VolumeGen {
             cpass.dispatch_workgroups(g, g, g);
         }
         queue.submit(Some(enc.finish()));
+
+        // Refresh the target's occupancy overlay from the volume we just wrote (skipped when the
+        // caller passes `None`, e.g. FrameCache bakes until Task 3 wires per-frame occupancy).
+        if let Some(occ) = occupancy_view {
+            self.occupancy_builder
+                .build(device, queue, target_view, occ, res);
+        }
     }
 }

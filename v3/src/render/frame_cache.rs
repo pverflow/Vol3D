@@ -76,6 +76,7 @@ impl FrameCache {
                 device,
                 queue,
                 &self.views[i],
+                None, // Task 3 passes the frame's own occupancy view here.
                 res,
                 layers,
                 &p,

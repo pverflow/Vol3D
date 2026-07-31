@@ -31,6 +31,27 @@ mod tests {
     }
 
     #[test]
+    fn macro_dims_ceils() {
+        assert_eq!(macro_dims(256, 8), 32);
+        assert_eq!(macro_dims(128, 8), 16);
+        assert_eq!(macro_dims(250, 8), 32); // ceil, not floor (31.25 -> 32)
+        assert_eq!(macro_dims(0, 8), 1); // floored at 1
+        assert_eq!(macro_dims(64, 0), 64); // macro_size 0 guarded to 1
+    }
+
+    #[test]
+    fn playback_bake_res_budget_and_floors() {
+        let budget = 512 * 1024 * 1024;
+        // 192 -> 32*192³*4 ≈ 906MB > 512MB; 128 -> 32*128³*4 = 256MB ≤ 512MB.
+        assert_eq!(playback_bake_res(256, 32, budget), 128);
+        // Never exceeds source_res.
+        assert_eq!(playback_bake_res(64, 1, budget), 64);
+        assert!(playback_bake_res(200, 1, budget) <= 200);
+        // Nothing fits the budget -> floor 64.
+        assert_eq!(playback_bake_res(256, u32::MAX, 1), 64);
+    }
+
+    #[test]
     fn is_stale_detects_edits() {
         let a = BakeKey::new(&[], 128, 1.0, 8);
         let b = a.clone();
@@ -73,6 +94,31 @@ pub fn max_frames(res: u32, budget_bytes: u64) -> u32 {
     let bytes_per_frame = (res as u64).pow(3) * 4;
     let frames = (budget_bytes / bytes_per_frame).max(1);
     frames.min(MAX_FRAMES_CAP as u64) as u32
+}
+
+/// Macrocell edge length (voxels) for the occupancy overlay. Hardcoded as `8u` in
+/// `shaders/occupancy.wgsl`'s inner scan loop — keep the two in sync.
+pub const MACRO: u32 = 8;
+
+/// Number of macrocells along one axis for a `res³` volume with `macro_size³` cells: ceil so a
+/// partial trailing cell still gets one slot; floored at 1 so a 0/degenerate res still allocates.
+pub fn macro_dims(res: u32, macro_size: u32) -> u32 {
+    res.div_ceil(macro_size.max(1)).max(1)
+}
+
+/// Largest playback bake resolution in `[256,192,128,64]` that is `≤ source_res` AND whose
+/// dense cache (`n` frames × `res³` × 4 bytes rgba8) fits `budget_bytes`. Floors at 64 when
+/// nothing qualifies — a coarse cache beats none.
+pub fn playback_bake_res(source_res: u32, n: u32, budget_bytes: u64) -> u32 {
+    for res in [256u32, 192, 128, 64] {
+        if res > source_res {
+            continue;
+        }
+        if (n.max(1) as u64) * (res as u64).pow(3) * 4 <= budget_bytes {
+            return res;
+        }
+    }
+    64
 }
 
 /// Snapshot of everything a baked `FrameCache` depends on. Comparing two `BakeKey`s (`==`)
