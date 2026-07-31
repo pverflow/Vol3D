@@ -287,11 +287,17 @@ impl VolumeGen {
         );
     }
 
-    /// The live volume's occupancy overlay view (refreshed by `generate`). Task 2's raymarch
-    /// binds this for empty-space skipping — hence unused until then.
-    #[allow(dead_code)]
+    /// The live volume's occupancy overlay view (refreshed by `generate`). The raymarch binds
+    /// this for empty-space skipping.
     pub fn occupancy_view(&self) -> &wgpu::TextureView {
         &self.occupancy_view
+    }
+
+    /// Resolution the volume/occupancy textures currently ARE (not the UI's pending target).
+    /// The raymarch derives `macro_dim` from this so the skip grid always matches the bound
+    /// occupancy texture, even during the res-change debounce before `generate` rebuilds.
+    pub fn res(&self) -> u32 {
+        self.res
     }
 
     /// Bake one volume into an arbitrary storage-texture `target_view` (binding 0): uploads

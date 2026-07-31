@@ -277,7 +277,15 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
         if let Some(phase) = self.playback_phase {
             r.bind_playback(device, phase);
         }
-        queue.write_buffer(&r.raymarch.cam_buf, 0, bytemuck::bytes_of(&self.cam));
+        // Derive `macro_dim` from the resolution the BOUND occupancy texture actually has this
+        // frame (`r.volume.res()`), not the UI's pending target — otherwise a res *decrease*
+        // flips `macro_dim` before `generate` rebuilds the texture (~120ms debounce), and the
+        // skip grid mismatches the still-wider occupancy, jumping over dense cells (holes).
+        // TODO(task 3): use frame_cache bake_res when `playback_phase.is_some()`, so playback's
+        // macro_dim matches the reduced-res cached frames' occupancy.
+        let mut cam = self.cam;
+        cam.macro_dim = crate::anim::macro_dims(r.volume.res(), crate::anim::MACRO) as f32;
+        queue.write_buffer(&r.raymarch.cam_buf, 0, bytemuck::bytes_of(&cam));
         // No readback: generation runs entirely on-GPU (VolumeGen::generate submits its own
         // command buffer), and this callback only ever writes to GPU-side buffers/textures.
         Vec::new()
