@@ -235,10 +235,9 @@ impl VolumeGen {
         })
     }
 
-    /// Regenerate the volume: uploads `layers`/`params`/`lut_atlas` (a `256 x lut_rows` RGBA8
-    /// atlas, one row per layer's color ramp — see `ramp::build_ramp_lut_atlas`), resizing the
-    /// volume texture / layers storage buffer / LUT texture only when `res` / `layers.len()` /
-    /// `lut_rows` actually changed, then dispatches the compute pass. No CPU readback.
+    /// Regenerate the internal volume: resizes the internal volume texture when `res` changed,
+    /// then bakes into it via `generate_into`. The live raymarch path samples `self.view`, so
+    /// this is unchanged behavior from before the `generate_into` refactor. No CPU readback.
     #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &mut self,
@@ -256,7 +255,32 @@ impl VolumeGen {
             self.view = v;
             self.res = res;
         }
+        // Clone (an Arc bump) so the internal view isn't borrowed while `&mut self` is passed to
+        // `generate_into` — same underlying texture, so the live path is byte-for-byte unchanged.
+        let view = self.view.clone();
+        self.generate_into(
+            device, queue, &view, res, layers, params, lut_atlas, lut_rows,
+        );
+    }
 
+    /// Bake one volume into an arbitrary storage-texture `target_view` (binding 0): uploads
+    /// `layers`/`params`/`lut_atlas` (a `256 x lut_rows` RGBA8 atlas, one row per layer's color
+    /// ramp — see `ramp::build_ramp_lut_atlas`), resizing the layers storage buffer / LUT texture
+    /// only when `layers.len()` / `lut_rows` actually changed, rebuilds the compute bind group
+    /// against `target_view`, then dispatches. `target_view` must be an `res³` rgba8unorm D3
+    /// `STORAGE_BINDING` view. No CPU readback — used for both the live volume and the FrameCache.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_into(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_view: &wgpu::TextureView,
+        res: u32,
+        layers: &[GpuLayer],
+        params: &GenParams,
+        lut_atlas: &[u8],
+        lut_rows: u32,
+    ) {
         let needed_layers = (layers.len() as u32).max(1);
         if needed_layers != self.layer_capacity {
             self.layers_buf = Self::make_layers_buffer(device, needed_layers);
@@ -299,11 +323,11 @@ impl VolumeGen {
 
         // Rebuilt every call (not just on resize) since `layers_buf`/`lut_texture` are only
         // *conditionally* replaced above — cheap relative to the compute dispatch itself, and
-        // this is only ever reached when the caller is already regenerating (`dirty`).
+        // this is only ever reached when the caller is already regenerating (`dirty`) or baking.
         self.bind_group = Self::make_bind_group(
             device,
             &self.bgl,
-            &self.view,
+            target_view,
             &self.params_buf,
             &self.layers_buf,
             &self.lut_view,

@@ -1,12 +1,21 @@
+pub mod frame_cache;
 pub mod raymarch;
 pub mod volume;
+use crate::anim::{is_stale, BakeKey};
 use crate::layer::{GenParams, GpuLayer};
+use frame_cache::FrameCache;
 use raymarch::Raymarch;
 use volume::VolumeGen;
 
 pub struct Renderer {
     pub volume: VolumeGen,
     pub raymarch: Raymarch,
+    // Cycle-4 dense playback cache. Populated by `ensure_baked`; sampled via `playback_view`.
+    // Both are only reached once app.rs (Task 4) wires play/pause, hence the allows below.
+    #[allow(dead_code)]
+    pub frame_cache: FrameCache,
+    #[allow(dead_code)]
+    baked: Option<BakeKey>,
 }
 
 impl Renderer {
@@ -20,7 +29,12 @@ impl Renderer {
         );
         let volume = VolumeGen::new(&rs.device, 128);
         let raymarch = Raymarch::new(&rs.device, rs.target_format, &volume.view);
-        Self { volume, raymarch }
+        Self {
+            volume,
+            raymarch,
+            frame_cache: FrameCache::default(),
+            baked: None,
+        }
     }
 
     /// Called from `RaymarchCallback::prepare` each frame. Regenerates the volume (and rebuilds
@@ -45,5 +59,45 @@ impl Renderer {
             // self.raymarch` borrow below even though the two fields are disjoint.
             self.raymarch.rebuild_bind_group(device, &self.volume.view);
         }
+    }
+
+    /// Bake the dense loop cache if the current scene (`key`) differs from what was last baked.
+    /// Idempotent while the scene is unchanged; does no GPU work when already fresh. The live
+    /// path (`ensure_generated`) is untouched — this only fills a separate cache. No readback.
+    #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn ensure_baked(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        key: BakeKey,
+        res: u32,
+        n: u32,
+        layers: &[GpuLayer],
+        params: GenParams,
+        lut_atlas: &[u8],
+        lut_rows: u32,
+    ) {
+        if is_stale(&self.baked, &key) {
+            self.frame_cache.bake(
+                device,
+                queue,
+                &mut self.volume,
+                res,
+                n,
+                layers,
+                params,
+                lut_atlas,
+                lut_rows,
+            );
+            self.baked = Some(key);
+        }
+    }
+
+    /// The baked frame view nearest `phase`, or `None` if the cache is empty. Task 4 binds this
+    /// into the raymarch pass while playing back instead of the live `self.volume.view`.
+    #[allow(dead_code)]
+    pub fn playback_view(&self, phase: f32) -> Option<&wgpu::TextureView> {
+        self.frame_cache.view_for_phase(phase)
     }
 }
