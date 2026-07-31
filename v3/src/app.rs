@@ -116,6 +116,9 @@ pub struct Vol3dApp {
     /// seed) and by the evolutions/frame_count controls; cleared once a bake is issued while
     /// playing. Starts `true` (nothing baked yet).
     pub cache_stale: bool,
+    /// `self.playing` as of the previous frame. Compared each frame to edge-detect a play→pause
+    /// transition (pause snap: force one full-res live regen at `self.phase`, see `ui()`'s tail).
+    was_playing: bool,
 }
 
 impl Default for Vol3dApp {
@@ -142,6 +145,7 @@ impl Default for Vol3dApp {
             evolutions: 1.0,
             frame_count: 24,
             cache_stale: true,
+            was_playing: false,
         }
     }
 }
@@ -197,7 +201,11 @@ impl Vol3dApp {
         let gen_params = GenParams {
             res: self.resolution,
             layer_count: packed.len() as u32,
-            anim_phase: 0.0,
+            // The live volume's phase. Only matters when playback has just stopped (pause snap,
+            // see `ui()`'s tail): the paused full-res frame should match where playback stopped,
+            // not always frame 0. Harmless elsewhere — a live regen from ordinary edits shows
+            // whatever `self.phase` currently is (0.0 until the user has ever played/scrubbed).
+            anim_phase: self.phase,
             anim_evolutions: 1.0,
         };
 
@@ -697,6 +705,19 @@ impl eframe::App for Vol3dApp {
             self.phase = anim::advance_phase(self.phase, dt, self.loop_seconds);
         }
 
+        // Pause snap: the instant playback stops (edge-triggered on `was_playing`, so this fires
+        // exactly once per pause), force one full-res live regen at the phase we stopped on —
+        // bypassing the edit debounce, since this isn't an edit, it's a resolution snap from the
+        // (possibly reduced) bake_res cache back to full res. `pack_for_gpu`'s `anim_phase` is
+        // `self.phase` (above), so the regen lands on the right frame. Deliberately does NOT call
+        // `mark_dirty`/touch `cache_stale`: the bake is still valid, only the live volume (what's
+        // shown once paused) needs refreshing, and invalidating the cache here would force a
+        // needless rebake next Play (breaking the cycle-4 single-fire bake guard's intent).
+        if self.was_playing && !self.playing {
+            self.pending_regen = true;
+        }
+        self.was_playing = self.playing;
+
         // `egui::SidePanel` was unified into `egui::Panel` (+ `PanelSide`) in 0.35.0.
         egui::Panel::left("layers").show(ui, |ui| self.layers_panel(ui));
         egui::Panel::right("properties").show(ui, |ui| self.properties_panel(ui));
@@ -748,10 +769,12 @@ impl eframe::App for Vol3dApp {
             // this CPU-side `cache_stale` flag just avoids re-packing/re-hashing every frame once
             // the cache is fresh.
             let need_bake = self.playing && self.cache_stale && self.frame_count > 0;
-            // Sample the cached frame (at `self.phase`) whenever a valid cache exists this frame:
-            // while playing, or while paused with a still-valid cache (scrub). When paused with a
-            // stale cache we fall back to the live volume (brief's blessed simplification).
-            let use_cache = self.frame_count > 0 && (self.playing || !self.cache_stale);
+            // Sample the cached (reduced-res, `FrameCache::bake_res`) frame only while actually
+            // playing. The moment playback stops, this drops to `false` — the pause-snap regen
+            // above (`was_playing`/`pending_regen`) re-renders the live volume at full res and
+            // this leaves the raymarch bound to it (no `bind_playback` override), so a paused
+            // frame is always full-res, never the bake's reduced resolution (cycle-5 contract).
+            let use_cache = self.playing && self.frame_count > 0;
 
             let empty_params = GenParams {
                 res: self.resolution,
@@ -772,9 +795,11 @@ impl eframe::App for Vol3dApp {
                 self.cache_stale = false;
                 (packed, lut, rows, gp, Some(key), false)
             } else if !self.playing && self.pending_regen {
-                // Live regen path — unchanged. While playing we skip it (the cache is what's
-                // shown); a debounce that fires mid-playback is dropped and re-armed on the next
-                // edit-while-paused, which never displays a stale live volume in practice.
+                // Live regen path — fires from the debounced edit path (unchanged) AND from the
+                // pause snap above (`pending_regen` armed directly, no debounce, at `self.phase`).
+                // While playing we skip it (the cache is what's shown); a debounce that fires
+                // mid-playback is dropped and re-armed on the next edit-while-paused, which never
+                // displays a stale live volume in practice.
                 let (packed, lut, rows, gp) = self.pack_for_gpu();
                 (packed, lut, rows, gp, None, true)
             } else {

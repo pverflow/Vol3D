@@ -102,22 +102,22 @@ impl Renderer {
         }
     }
 
-    /// Point the raymarch bind group at the baked frame nearest `phase` (playback), instead of
-    /// the live `self.volume.view`. Returns `false` and leaves the bind group unchanged if the
-    /// cache is empty. Direct field access (like `ensure_generated`) so the `&self.frame_cache`
-    /// view borrow and the `&mut self.raymarch` rebuild don't collide.
+    /// Point the raymarch bind group at the baked frame nearest `phase` (playback) AND that
+    /// frame's own occupancy overlay, instead of the live `self.volume.view`/occupancy. Returns
+    /// `false` and leaves the bind group unchanged if the cache is empty (None-safe: both the
+    /// frame view and its occupancy must be present). Direct field access (like
+    /// `ensure_generated`) so the `&self.frame_cache` view borrow and the `&mut self.raymarch`
+    /// rebuild don't collide.
     pub fn bind_playback(&mut self, device: &wgpu::Device, phase: f32) -> bool {
-        match self.frame_cache.view_for_phase(phase) {
-            Some(view) => {
-                // Occupancy: the live volume's overlay (Task 3 bakes per-frame occupancy and
-                // binds the frame's own; until then the skip may be slightly off on scrub —
-                // correctness holds since a wrongly-"empty" skip only affects perf, and the
-                // live occupancy is the same scene the cache was baked from).
-                self.raymarch
-                    .rebuild_bind_group(device, view, self.volume.occupancy_view());
+        match (
+            self.frame_cache.view_for_phase(phase),
+            self.frame_cache.occupancy_for_phase(phase),
+        ) {
+            (Some(view), Some(occ)) => {
+                self.raymarch.rebuild_bind_group(device, view, occ);
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 }

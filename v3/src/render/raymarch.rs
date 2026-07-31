@@ -278,13 +278,20 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
             r.bind_playback(device, phase);
         }
         // Derive `macro_dim` from the resolution the BOUND occupancy texture actually has this
-        // frame (`r.volume.res()`), not the UI's pending target — otherwise a res *decrease*
-        // flips `macro_dim` before `generate` rebuilds the texture (~120ms debounce), and the
-        // skip grid mismatches the still-wider occupancy, jumping over dense cells (holes).
-        // TODO(task 3): use frame_cache bake_res when `playback_phase.is_some()`, so playback's
-        // macro_dim matches the reduced-res cached frames' occupancy.
+        // frame, not the UI's pending target — otherwise a res *decrease* flips `macro_dim`
+        // before `generate` rebuilds the texture (~120ms debounce), and the skip grid mismatches
+        // the still-wider occupancy, jumping over dense cells (holes). While playing (the only
+        // time `playback_phase` is `Some`, per `app.rs`'s `use_cache`) the bound occupancy is the
+        // frame cache's own (per-frame, baked at `bake_res` — Task 3), usually smaller than the
+        // live volume's `res()`; live and paused (always full-res, see Task 3's pause snap) bind
+        // the live volume's occupancy, so `res()` is the right resolution there.
         let mut cam = self.cam;
-        cam.macro_dim = crate::anim::macro_dims(r.volume.res(), crate::anim::MACRO) as f32;
+        let macro_res = if self.playback_phase.is_some() && !r.frame_cache.is_empty() {
+            r.frame_cache.bake_res()
+        } else {
+            r.volume.res()
+        };
+        cam.macro_dim = crate::anim::macro_dims(macro_res, crate::anim::MACRO) as f32;
         queue.write_buffer(&r.raymarch.cam_buf, 0, bytemuck::bytes_of(&cam));
         // No readback: generation runs entirely on-GPU (VolumeGen::generate submits its own
         // command buffer), and this callback only ever writes to GPU-side buffers/textures.
