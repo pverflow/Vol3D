@@ -20,7 +20,10 @@ pub struct CamUniform {
     pub aspect: f32,
     pub tan_half_fov: f32,
     pub steps: f32,
-    pub _p3: f32,
+    /// = `anim::macro_dims(res, MACRO) as f32`; the raymarch reads it to size occupancy
+    /// macrocells for empty-space skipping. Reuses the former `_p3` pad slot (size stays 80).
+    /// `basis` leaves it 0.0 — `app.rs` sets it after building the uniform (needs `res`).
+    pub macro_dim: f32,
     pub _p4: f32,
 }
 
@@ -66,7 +69,7 @@ impl OrbitCamera {
             aspect,
             tan_half_fov: (0.5f32).tan(),
             steps,
-            _p3: 0.0,
+            macro_dim: 0.0,
             _p4: 0.0,
         }
     }

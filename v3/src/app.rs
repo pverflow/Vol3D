@@ -739,7 +739,10 @@ impl eframe::App for Vol3dApp {
             }
 
             let aspect = rect.width() / rect.height().max(1.0);
-            let cam = self.cam.basis(aspect, 128.0);
+            let mut cam = self.cam.basis(aspect, 128.0);
+            // Occupancy macrocell count for the raymarch's empty-space skip (needs `res`, which
+            // `basis` doesn't have). Must match the occupancy texture's dims (same `macro_dims`).
+            cam.macro_dim = anim::macro_dims(self.resolution, anim::MACRO) as f32;
 
             // Bake the dense cache when playing with a stale cache (Play press, or re-bake after
             // an edit while playing). `ensure_baked`'s `is_stale` is the real single-fire guard;

@@ -27,7 +27,12 @@ impl Renderer {
             rs.device.limits().max_texture_dimension_3d
         );
         let volume = VolumeGen::new(&rs.device, 128);
-        let raymarch = Raymarch::new(&rs.device, rs.target_format, &volume.view);
+        let raymarch = Raymarch::new(
+            &rs.device,
+            rs.target_format,
+            &volume.view,
+            volume.occupancy_view(),
+        );
         Self {
             volume,
             raymarch,
@@ -56,7 +61,12 @@ impl Renderer {
             // Direct field access (not `self.volume_view()`): that helper borrows all of
             // `self` via its `&self` receiver, which would conflict with the `&mut
             // self.raymarch` borrow below even though the two fields are disjoint.
-            self.raymarch.rebuild_bind_group(device, &self.volume.view);
+            // `occupancy_view()` borrows only `self.volume`, disjoint from `self.raymarch`.
+            self.raymarch.rebuild_bind_group(
+                device,
+                &self.volume.view,
+                self.volume.occupancy_view(),
+            );
         }
     }
 
@@ -99,7 +109,12 @@ impl Renderer {
     pub fn bind_playback(&mut self, device: &wgpu::Device, phase: f32) -> bool {
         match self.frame_cache.view_for_phase(phase) {
             Some(view) => {
-                self.raymarch.rebuild_bind_group(device, view);
+                // Occupancy: the live volume's overlay (Task 3 bakes per-frame occupancy and
+                // binds the frame's own; until then the skip may be slightly off on scrub —
+                // correctness holds since a wrongly-"empty" skip only affects perf, and the
+                // live occupancy is the same scene the cache was baked from).
+                self.raymarch
+                    .rebuild_bind_group(device, view, self.volume.occupancy_view());
                 true
             }
             None => false,
