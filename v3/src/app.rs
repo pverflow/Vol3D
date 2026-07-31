@@ -3,6 +3,7 @@ use crate::gradient::gradient_editor;
 use crate::layer::{self, BlendMode, GenParams, LayerDesc, NoiseType};
 use crate::ramp::{self, ColorRamp};
 use crate::render::raymarch::RaymarchCallback;
+use crate::theme::Theme;
 use crate::ui_logic::{add_layer, delete_layer, duplicate_layer, move_down, move_up, should_regen};
 
 /// Fixed LUT width `ramp::build_ramp_lut_atlas` bakes rows at (one texel per 8-bit density
@@ -86,13 +87,13 @@ pub struct Vol3dApp {
     /// index (now pointing at the layer that shifted down into it), which the index-only check
     /// would miss — comparing the length too catches that case.
     last_layers_len: usize,
-    /// Smoothed frame time in ms, shown as the fps/ms readout at the top of the Layers panel.
+    /// Smoothed frame time in ms, shown as the fps/ms readout in the top bar.
     /// ponytail: simple EMA (0.9 old / 0.1 new) — cheap, no history buffer, good enough for a
     /// glance-at readout. `0.0` means "no sample yet"; `ui()` seeds it from the first frame.
     frame_ms_ema: f32,
-    /// Active UI theme (`theme::apply` runs this against `egui::Visuals` at startup). Defaults
-    /// to `Dark`; the toggle button to flip it live is Task 2.
-    pub theme: crate::theme::Theme,
+    /// Active UI theme (`theme::apply` runs this against `egui::Visuals` at startup, and again
+    /// from the top bar's toggle button on click). Defaults to `Dark`.
+    pub theme: Theme,
 }
 
 impl Default for Vol3dApp {
@@ -112,7 +113,7 @@ impl Default for Vol3dApp {
             last_props_layer: 0,
             last_layers_len,
             frame_ms_ema: 0.0,
-            theme: crate::theme::Theme::default(),
+            theme: Theme::default(),
         }
     }
 }
@@ -173,36 +174,7 @@ impl Vol3dApp {
     }
 
     fn layers_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(format!(
-            "{:.1} ms  ({:.0} fps)",
-            self.frame_ms_ema,
-            1000.0 / self.frame_ms_ema
-        ));
         ui.heading("Vol3D v3");
-
-        let prev_res = self.resolution;
-        egui::ComboBox::from_label("Resolution")
-            .selected_text(format!("{}³", self.resolution))
-            .show_ui(ui, |ui| {
-                for r in [64u32, 128, 256] {
-                    ui.selectable_value(&mut self.resolution, r, format!("{}³", r));
-                }
-            });
-        if self.resolution != prev_res {
-            self.mark_dirty(ui.ctx());
-        }
-
-        if ui
-            .add(
-                egui::DragValue::new(&mut self.global_seed)
-                    .prefix("Seed: ")
-                    .speed(0.1),
-            )
-            .changed()
-        {
-            self.mark_dirty(ui.ctx());
-        }
-
         ui.separator();
         ui.label("Layers");
 
@@ -508,6 +480,62 @@ impl eframe::App for Vol3dApp {
             self.frame_ms_ema * 0.9 + dt * 1000.0 * 0.1
         };
         ui.ctx().request_repaint();
+
+        // Top bar: title, resolution + seed (moved out of `layers_panel`), theme toggle, and the
+        // fps/ms readout (label only — the EMA above is what actually computes it). Sits inside
+        // the root `Ui` like the side/central panels below. `TopBottomPanel` doesn't exist in
+        // installed egui 0.35 — like `SidePanel`, it was unified into `egui::Panel` (+
+        // `PanelSide`); `Panel::top`/`.exact_size` (not `.exact_height`, which doesn't exist
+        // either — `Panel`'s one size knob is width-or-height depending on `PanelSide`) plus the
+        // same `.show(ui, ..)` the left/right panels below already use.
+        egui::Panel::top("topbar").exact_size(48.0).show(ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.heading("Vol3D");
+                ui.separator();
+
+                let prev_res = self.resolution;
+                egui::ComboBox::from_label("Resolution")
+                    .selected_text(format!("{}³", self.resolution))
+                    .show_ui(ui, |ui| {
+                        for r in [64u32, 128, 256] {
+                            ui.selectable_value(&mut self.resolution, r, format!("{}³", r));
+                        }
+                    });
+                if self.resolution != prev_res {
+                    self.mark_dirty(ui.ctx());
+                }
+
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut self.global_seed)
+                            .prefix("Seed: ")
+                            .speed(0.1),
+                    )
+                    .changed()
+                {
+                    self.mark_dirty(ui.ctx());
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let toggle_label = match self.theme {
+                        Theme::Dark => "☀",
+                        Theme::Light => "🌙",
+                    };
+                    if ui.button(toggle_label).clicked() {
+                        self.theme = match self.theme {
+                            Theme::Dark => Theme::Light,
+                            Theme::Light => Theme::Dark,
+                        };
+                        crate::theme::apply(ui.ctx(), self.theme);
+                    }
+                    ui.label(format!(
+                        "{:.1} ms  ({:.0} fps)",
+                        self.frame_ms_ema,
+                        1000.0 / self.frame_ms_ema.max(1e-3)
+                    ));
+                });
+            });
+        });
 
         // `egui::SidePanel` was unified into `egui::Panel` (+ `PanelSide`) in 0.35.0.
         egui::Panel::left("layers").show(ui, |ui| self.layers_panel(ui));

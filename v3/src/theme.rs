@@ -1,6 +1,7 @@
 //! v2's dark/light palette (`src/ui/styles/base.css` custom properties), mapped onto
 //! `egui::Visuals` so the native/web UI matches v2's look. Presentation-only: no behavior here,
-//! just colors/spacing applied once at startup (`apply`). Theme *switching* UI is Task 2.
+//! just colors/spacing applied once at startup (`apply`). Theme *switching* UI is `app.rs`'s
+//! top-bar toggle button.
 
 use egui::{Color32, CornerRadius, Stroke};
 
@@ -83,8 +84,6 @@ impl Palette {
 pub enum Theme {
     #[default]
     Dark,
-    // Not yet constructed outside tests — the toggle button that switches to it is Task 2.
-    #[allow(dead_code)]
     Light,
 }
 
@@ -155,7 +154,8 @@ pub fn visuals(theme: Theme) -> egui::Visuals {
 }
 
 /// Apply `theme` to `ctx`: visuals plus v2-matching spacing (8x6 item spacing, 8x4 button
-/// padding). Called once at startup from `Vol3dApp::new`; the toggle UI is Task 2.
+/// padding). Called once at startup from `Vol3dApp::new`, and again from the top bar's toggle
+/// button on every click.
 ///
 /// egui 0.35's `Context` keeps separate dark/light `Style`s (selected by `Context::theme()`,
 /// switched by `set_theme`) rather than the single `ctx.style()`/`set_style()` from older egui —
