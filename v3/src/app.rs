@@ -90,6 +90,9 @@ pub struct Vol3dApp {
     /// ponytail: simple EMA (0.9 old / 0.1 new) — cheap, no history buffer, good enough for a
     /// glance-at readout. `0.0` means "no sample yet"; `ui()` seeds it from the first frame.
     frame_ms_ema: f32,
+    /// Active UI theme (`theme::apply` runs this against `egui::Visuals` at startup). Defaults
+    /// to `Dark`; the toggle button to flip it live is Task 2.
+    pub theme: crate::theme::Theme,
 }
 
 impl Default for Vol3dApp {
@@ -109,6 +112,7 @@ impl Default for Vol3dApp {
             last_props_layer: 0,
             last_layers_len,
             frame_ms_ema: 0.0,
+            theme: crate::theme::Theme::default(),
         }
     }
 }
@@ -121,7 +125,9 @@ impl Vol3dApp {
             .expect("wgpu render state (renderer=Wgpu)");
         let renderer = crate::render::Renderer::new(rs);
         rs.renderer.write().callback_resources.insert(renderer);
-        Self::default()
+        let app = Self::default();
+        crate::theme::apply(&cc.egui_ctx, app.theme);
+        app
     }
 
     /// Any edit routes through here: marks the scene dirty and stamps the edit time the

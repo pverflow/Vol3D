@@ -4,6 +4,7 @@ mod gradient;
 mod layer;
 mod ramp;
 mod render;
+mod theme;
 mod ui_logic;
 use app::Vol3dApp;
 
