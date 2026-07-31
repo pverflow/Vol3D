@@ -60,13 +60,19 @@ pub fn mat3_from_euler(rx: f32, ry: f32, rz: f32) -> [[f32; 4]; 3] {
 }
 
 /// Per-frame/per-scene uniform, std140/std430-compatible at 16 bytes.
+///
+/// `global_seed` was dropped (cycle 4): it was unread by the shader — already folded into
+/// each layer's `seed` at pack time (see `app.rs::pack_for_gpu`, unchanged) — so carrying it
+/// here too was dead weight. `anim_evolutions` replaces it.
+// TODO(cycle-4 task 2): WGSL `GenParams` in `generate.wgsl` still has the old layout
+// (`res, layer_count, global_seed, anim_phase`) — Task 2 repacks it to match this struct.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GenParams {
     pub res: u32,
     pub layer_count: u32,
-    pub global_seed: f32,
     pub anim_phase: f32,
+    pub anim_evolutions: f32,
 }
 
 /// Packed per-layer GPU form. Field order/offsets are the std430 contract

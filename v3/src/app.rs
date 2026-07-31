@@ -62,7 +62,7 @@ pub struct Vol3dApp {
     /// Volume resolution (64 / 128 / 256), picked in the Layers panel.
     pub resolution: u32,
     /// Folded into every layer's `seed` at pack time (matches v2's `u_seed = layer.seed +
-    /// globalSeed`); also carried in `GenParams.global_seed` for parity with the WGSL struct.
+    /// globalSeed`). Not part of `GenParams` (cycle 4 dropped that field — it was dead there).
     pub global_seed: f32,
     /// True whenever an edit is waiting to be regenerated (set by `mark_dirty`, cleared once the
     /// debounce in `ui_logic::should_regen` fires). Starts `true` so the demo scene generates on
@@ -166,8 +166,8 @@ impl Vol3dApp {
         let gen_params = GenParams {
             res: self.resolution,
             layer_count: packed.len() as u32,
-            global_seed: self.global_seed,
             anim_phase: 0.0,
+            anim_evolutions: 1.0,
         };
 
         (packed, lut_atlas, lut_rows, gen_params)
@@ -651,8 +651,8 @@ impl eframe::App for Vol3dApp {
                     GenParams {
                         res: self.resolution,
                         layer_count: 0,
-                        global_seed: self.global_seed,
                         anim_phase: 0.0,
+                        anim_evolutions: 1.0,
                     },
                 )
             };
