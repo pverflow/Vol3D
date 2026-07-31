@@ -1,3 +1,4 @@
+use crate::anim;
 use crate::camera::OrbitCamera;
 use crate::gradient::gradient_editor;
 use crate::layer::{self, BlendMode, GenParams, LayerDesc, NoiseType};
@@ -94,6 +95,27 @@ pub struct Vol3dApp {
     /// Active UI theme (`theme::apply` runs this against `egui::Visuals` at startup, and again
     /// from the top bar's toggle button on click). Defaults to `Dark`.
     pub theme: Theme,
+
+    // --- cycle-4 animation state (Task 4) ---
+    /// Playback toggle. While `true` the phase clock advances each frame and the raymarch
+    /// samples the baked `FrameCache` (at `phase`) instead of the live volume.
+    pub playing: bool,
+    /// Loop position in `[0, 1)`. Advanced by `anim::advance_phase` while playing; also driven
+    /// directly by the phase-scrub slider while paused.
+    pub phase: f32,
+    /// Wall-clock seconds for one full loop (playback speed only — NOT a bake input, so editing
+    /// it never invalidates the cache).
+    pub loop_seconds: f32,
+    /// Noise-cycle count folded into the bake (`GenParams.anim_evolutions`). A bake input →
+    /// editing sets `cache_stale`.
+    pub evolutions: f32,
+    /// How many dense frames to bake (`FrameCache` clamps to its VRAM budget/cap). A bake input.
+    pub frame_count: u32,
+    /// True whenever the baked cache no longer matches the current bake inputs (layers /
+    /// resolution / seed / evolutions / frame_count). Set by `mark_dirty` (covers layers, res,
+    /// seed) and by the evolutions/frame_count controls; cleared once a bake is issued while
+    /// playing. Starts `true` (nothing baked yet).
+    pub cache_stale: bool,
 }
 
 impl Default for Vol3dApp {
@@ -114,6 +136,12 @@ impl Default for Vol3dApp {
             last_layers_len,
             frame_ms_ema: 0.0,
             theme: Theme::default(),
+            playing: false,
+            phase: 0.0,
+            loop_seconds: 4.0,
+            evolutions: 1.0,
+            frame_count: 24,
+            cache_stale: true,
         }
     }
 }
@@ -136,6 +164,9 @@ impl Vol3dApp {
     fn mark_dirty(&mut self, ctx: &egui::Context) {
         self.dirty = true;
         self.last_edit_time = ctx.input(|i| i.time);
+        // Every layer/resolution/seed edit routes through here, so this one line invalidates the
+        // dense playback cache for all of them (evolutions/frame_count set it at their controls).
+        self.cache_stale = true;
     }
 
     /// Pack the *visible* layers into GPU form: `Vec<GpuLayer>` + the `256xN` ramp LUT atlas +
@@ -522,6 +553,64 @@ impl Vol3dApp {
                 }
             });
     }
+
+    /// Bottom strip: playback controls (Task 4). Plain/unstyled — styling is parked pending
+    /// designer mockups. `loop_seconds` is playback-speed only (not a bake input); `evolutions`
+    /// and `frame_count` are bake inputs, so editing them sets `cache_stale`.
+    fn animation_panel(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let play_label = if self.playing {
+                "⏸ Pause"
+            } else {
+                "▶ Play"
+            };
+            if ui.selectable_label(self.playing, play_label).clicked() {
+                self.playing = !self.playing;
+            }
+            ui.separator();
+
+            ui.label("Loop (s)");
+            ui.add(
+                egui::DragValue::new(&mut self.loop_seconds)
+                    .speed(0.1)
+                    .range(0.1..=60.0),
+            );
+
+            ui.label("Evolutions");
+            if ui
+                .add(
+                    egui::DragValue::new(&mut self.evolutions)
+                        .speed(0.1)
+                        .range(0.0..=64.0),
+                )
+                .changed()
+            {
+                self.cache_stale = true;
+            }
+
+            ui.label("Frames");
+            if ui
+                .add(egui::DragValue::new(&mut self.frame_count).range(1..=64))
+                .changed()
+            {
+                self.cache_stale = true;
+            }
+            ui.separator();
+
+            ui.label("Phase");
+            ui.add(egui::Slider::new(&mut self.phase, 0.0..=1.0));
+            ui.separator();
+
+            // Glance readout: `frame_count`/`resolution` are the *requested* bake inputs — the
+            // FrameCache may clamp N to its VRAM budget (logged), but this is close enough.
+            let status = if self.cache_stale {
+                "cache: stale".to_string()
+            } else {
+                format!("cache: baked {} @ {}³", self.frame_count, self.resolution)
+            };
+            ui.label(status);
+        });
+    }
 }
 
 impl eframe::App for Vol3dApp {
@@ -597,6 +686,17 @@ impl eframe::App for Vol3dApp {
             });
         });
 
+        // Bottom playback strip. Shown after the top bar (both span full width) and before the
+        // side panels, which then fill the strip between them (standard egui panel ordering).
+        egui::Panel::bottom("animation").show(ui, |ui| self.animation_panel(ui));
+
+        // Phase clock: advance the loop position while playing. Continuous repaint is already on
+        // (the fps counter above requests one unconditionally), so no extra repaint needed here.
+        if self.playing {
+            let dt = ui.ctx().input(|i| i.stable_dt);
+            self.phase = anim::advance_phase(self.phase, dt, self.loop_seconds);
+        }
+
         // `egui::SidePanel` was unified into `egui::Panel` (+ `PanelSide`) in 0.35.0.
         egui::Panel::left("layers").show(ui, |ui| self.layers_panel(ui));
         egui::Panel::right("properties").show(ui, |ui| self.properties_panel(ui));
@@ -641,21 +741,44 @@ impl eframe::App for Vol3dApp {
             let aspect = rect.width() / rect.height().max(1.0);
             let cam = self.cam.basis(aspect, 128.0);
 
-            let (layers, lut_atlas, lut_rows, gen_params) = if self.pending_regen {
-                self.pack_for_gpu()
-            } else {
-                (
-                    Vec::new(),
-                    Vec::new(),
-                    0,
-                    GenParams {
-                        res: self.resolution,
-                        layer_count: 0,
-                        anim_phase: 0.0,
-                        anim_evolutions: 1.0,
-                    },
-                )
+            // Bake the dense cache when playing with a stale cache (Play press, or re-bake after
+            // an edit while playing). `ensure_baked`'s `is_stale` is the real single-fire guard;
+            // this CPU-side `cache_stale` flag just avoids re-packing/re-hashing every frame once
+            // the cache is fresh.
+            let need_bake = self.playing && self.cache_stale && self.frame_count > 0;
+            // Sample the cached frame (at `self.phase`) whenever a valid cache exists this frame:
+            // while playing, or while paused with a still-valid cache (scrub). When paused with a
+            // stale cache we fall back to the live volume (brief's blessed simplification).
+            let use_cache = self.frame_count > 0 && (self.playing || !self.cache_stale);
+
+            let empty_params = GenParams {
+                res: self.resolution,
+                layer_count: 0,
+                anim_phase: 0.0,
+                anim_evolutions: 1.0,
             };
+            let (layers, lut_atlas, lut_rows, gen_params, bake_key, pending_regen) = if need_bake {
+                let (packed, lut, rows, _) = self.pack_for_gpu();
+                let gp = GenParams {
+                    res: self.resolution,
+                    layer_count: packed.len() as u32,
+                    anim_phase: 0.0, // bake sets per-frame phase in FrameCache::bake
+                    anim_evolutions: self.evolutions,
+                };
+                let key =
+                    anim::BakeKey::new(&packed, self.resolution, self.evolutions, self.frame_count);
+                self.cache_stale = false;
+                (packed, lut, rows, gp, Some(key), false)
+            } else if !self.playing && self.pending_regen {
+                // Live regen path — unchanged. While playing we skip it (the cache is what's
+                // shown); a debounce that fires mid-playback is dropped and re-armed on the next
+                // edit-while-paused, which never displays a stale live volume in practice.
+                let (packed, lut, rows, gp) = self.pack_for_gpu();
+                (packed, lut, rows, gp, None, true)
+            } else {
+                (Vec::new(), Vec::new(), 0, empty_params, None, false)
+            };
+            self.pending_regen = false;
 
             let cb = RaymarchCallback {
                 cam,
@@ -664,9 +787,11 @@ impl eframe::App for Vol3dApp {
                 gen_params,
                 lut_atlas,
                 lut_rows,
-                pending_regen: self.pending_regen,
+                pending_regen,
+                bake_key,
+                frame_count: self.frame_count,
+                playback_phase: if use_cache { Some(self.phase) } else { None },
             };
-            self.pending_regen = false;
             ui.painter()
                 .add(egui_wgpu::Callback::new_paint_callback(rect, cb));
         });

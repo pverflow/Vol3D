@@ -10,11 +10,9 @@ use volume::VolumeGen;
 pub struct Renderer {
     pub volume: VolumeGen,
     pub raymarch: Raymarch,
-    // Cycle-4 dense playback cache. Populated by `ensure_baked`; sampled via `playback_view`.
-    // Both are only reached once app.rs (Task 4) wires play/pause, hence the allows below.
-    #[allow(dead_code)]
+    // Cycle-4 dense playback cache. Populated by `ensure_baked`; bound for the raymarch via
+    // `bind_playback`. Wired into app.rs (Task 4) play/pause + scrub.
     pub frame_cache: FrameCache,
-    #[allow(dead_code)]
     baked: Option<BakeKey>,
 }
 
@@ -64,7 +62,6 @@ impl Renderer {
     /// Bake the dense loop cache if the current scene (`key`) differs from what was last baked.
     /// Idempotent while the scene is unchanged; does no GPU work when already fresh. The live
     /// path (`ensure_generated`) is untouched — this only fills a separate cache. No readback.
-    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     pub fn ensure_baked(
         &mut self,
@@ -94,10 +91,17 @@ impl Renderer {
         }
     }
 
-    /// The baked frame view nearest `phase`, or `None` if the cache is empty. Task 4 binds this
-    /// into the raymarch pass while playing back instead of the live `self.volume.view`.
-    #[allow(dead_code)]
-    pub fn playback_view(&self, phase: f32) -> Option<&wgpu::TextureView> {
-        self.frame_cache.view_for_phase(phase)
+    /// Point the raymarch bind group at the baked frame nearest `phase` (playback), instead of
+    /// the live `self.volume.view`. Returns `false` and leaves the bind group unchanged if the
+    /// cache is empty. Direct field access (like `ensure_generated`) so the `&self.frame_cache`
+    /// view borrow and the `&mut self.raymarch` rebuild don't collide.
+    pub fn bind_playback(&mut self, device: &wgpu::Device, phase: f32) -> bool {
+        match self.frame_cache.view_for_phase(phase) {
+            Some(view) => {
+                self.raymarch.rebuild_bind_group(device, view);
+                true
+            }
+            None => false,
+        }
     }
 }

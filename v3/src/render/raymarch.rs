@@ -1,3 +1,4 @@
+use crate::anim::BakeKey;
 use crate::camera::CamUniform;
 use crate::layer::{GenParams, GpuLayer};
 use crate::render::Renderer;
@@ -158,6 +159,15 @@ pub struct RaymarchCallback {
     pub lut_atlas: Vec<u8>,
     pub lut_rows: u32,
     pub pending_regen: bool,
+    /// Cycle-4 playback (Task 4). `Some` => bake the dense cache this frame via `ensure_baked`
+    /// using the fields above (`layers`/`gen_params`/`lut_*` carry the bake payload, not live
+    /// regen data, in that case). `None` => the live path (`ensure_generated`) runs as before.
+    pub bake_key: Option<BakeKey>,
+    /// Frames to bake when `bake_key` is `Some` (ignored otherwise).
+    pub frame_count: u32,
+    /// `Some(phase)` => bind the baked frame nearest `phase` as the raymarch volume instead of
+    /// the live volume (playing, or paused-with-valid-cache scrub). `None` => live volume.
+    pub playback_phase: Option<f32>,
 }
 
 impl egui_wgpu::CallbackTrait for RaymarchCallback {
@@ -170,16 +180,39 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
         callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let r: &mut Renderer = callback_resources.get_mut().unwrap();
-        r.ensure_generated(
-            device,
-            queue,
-            self.res,
-            &self.layers,
-            &self.gen_params,
-            &self.lut_atlas,
-            self.lut_rows,
-            self.pending_regen,
-        );
+        if let Some(key) = &self.bake_key {
+            // Playback bake path: fills the dense cache (only if stale — `ensure_baked` guards
+            // with `is_stale`). The live volume is left untouched.
+            r.ensure_baked(
+                device,
+                queue,
+                key.clone(),
+                self.res,
+                self.frame_count,
+                &self.layers,
+                self.gen_params,
+                &self.lut_atlas,
+                self.lut_rows,
+            );
+        } else {
+            // Live path — unchanged.
+            r.ensure_generated(
+                device,
+                queue,
+                self.res,
+                &self.layers,
+                &self.gen_params,
+                &self.lut_atlas,
+                self.lut_rows,
+                self.pending_regen,
+            );
+        }
+        // When playing back (or scrubbing a valid cache), point the raymarch bind group at the
+        // cached frame instead of the live volume. Mirrors `ensure_generated`'s rebuild against
+        // the live view.
+        if let Some(phase) = self.playback_phase {
+            r.bind_playback(device, phase);
+        }
         queue.write_buffer(&r.raymarch.cam_buf, 0, bytemuck::bytes_of(&self.cam));
         // No readback: generation runs entirely on-GPU (VolumeGen::generate submits its own
         // command buffer), and this callback only ever writes to GPU-side buffers/textures.
