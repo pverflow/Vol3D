@@ -1,8 +1,8 @@
-# Running the v3 PoC — Cycle ④ (Animation + Dense GPU Frame Cache)
+# Running the v3 PoC — Cycle ⑤ (Raymarch Perf: Empty-Space Skip + Reduced-Res Playback Bake)
 
 ## Interactive Authoring & Animation
 
-Build a colored volumetric scene with a live-updating UI, now with real-time animation playback. Start with a blank canvas or a preset scene, add/modify layers to author custom color clouds, and animate them by pressing Play. Edits still regenerate with ~120ms debounce; playing bakes frames to a GPU-resident 3D texture cache for smooth playback (no per-frame CPU regeneration). The UI retains the dark pro-tool theme from cycle ③ with light/dark toggle.
+Build a colored volumetric scene with a live-updating UI, now with real-time animation playback and **fast playback baking via empty-space skipping**. Start with a blank canvas or a preset scene, add/modify layers to author custom color clouds, and animate them by pressing Play. Edits still regenerate with ~120ms debounce; pressing Play now bakes at **reduced resolution** so the **full requested frame count fits in VRAM**, each frame is a smaller texture (far less raymarch bandwidth), and the **pause frame snaps to crisp full resolution**. The raymarch jumps over empty regions via a coarse occupancy structure, so sparse fire/smoke scenes render much faster. The UI retains the dark pro-tool theme from cycle ③ with light/dark toggle.
 
 ### Animation Controls & Top Bar
 
@@ -78,48 +78,48 @@ Organized into collapsible groups with tidy aligned rows:
 
 ## What to report back
 
-**Animation controls:**
+**At 256³ (the case that was 1–2 fps) — the key test:**
+- **Is Play now smooth?** Report the ms/frame and fps during playback. (This is the target metric: empty-space skipping + reduced-res playback bake should make 256³ fast.)
+- **Does the full requested frame count bake**, or is it still clamped? (Playback should bake all N frames you request, not just 8.)
+- **Is the paused frame crisp and full-resolution?** (Pause should snap to the full requested resolution, not stay reduced.)
+
+**Empty-space skipping behavior:**
+- **Sparse scene (fire/smoke):** Does it speed up a lot compared to cycle ④? (Expected: big speedup from jumping over empty air.)
+- **Dense cube-filling scene:** Is the speedup less than sparse? (Expected: less empty space to skip.)
+- **Any visual holes or clipping of faint smoke?** (Report if you see clipping artifacts; this indicates the occupancy skip threshold needs tuning. Include a screenshot or description.)
+
+**Animation controls & playback:**
 - Does the **Play/Pause button** start and stop the animation loop?
 - Do the **loop duration, evolutions, and frame count controls** update correctly?
-- Can you **scrub the phase slider** to jump to any point in the loop while paused?
-- Does the **cache readout** show "baked N @res" (e.g., "baked 60 @128³") when cache is ready, and "stale" after an edit?
-
-**Noise evolution (the core animation feature):**
-- Does the **noise visibly EVOLVE** as the loop plays? (The noise pattern should smoothly change over time, driven by the rotating `animatedDomainOffset` in the domain. This is the essence of cycle ④.)
-- Does the animation look **smooth and continuous**, or does it loop with a visible discontinuity at the frame boundary?
-
-**Dense GPU frame cache & playback:**
 - Does **Play bake then play SMOOTHLY**? (Watch the FPS/MS counter in the top bar during playback.)
-  - First play (or first play after editing): Expect a brief one-time bake pause (~1–2 sec for 128³), then smooth playback.
-  - After that: Playback should be smooth with **steady high FPS** (≥60 fps target), **NOT per-frame regen stutter**. If you see stuttering or fps dips, the cache is not working.
-- **Playback FPS at 128³:** Report the frame rate during a full loop on your GPU. (This is the key metric: cache hit should hold steady fps, while live-edit regen would stutter.)
-- **Playback FPS at 256³ (if your GPU allows):** Note this is memory-heavy for the dense cache (256³ × 4 frames × 4 bytes = ~1 GB+). If you hit memory limits or bad perf, that's expected—cycle ⑤ adds a sparse cache to handle 256³+.
 
 **Layer editing during playback:**
 - While playing, **edit a layer** (change amplitude, scale, noise type, etc.).
 - Does the **cache readout flip to "stale"**?
 - Does **playback continue smoothly** with the old cached frames?
-- Press **Play again** (or let it loop): Does it **re-bake with the new edits** before resuming playback? (Expect a brief bake pause.)
-
-**Memory & stability:**
-- At **128³** playback, is memory usage stable and reasonable? (The dense cache holds N frames; ~60 frames at 128³ is ~480 MB.)
-- Any **OOM or crash** at higher resolutions or frame counts? (Note: 256³ dense cache is heavy; deferred sparse cache will fix this.)
+- Press **Play again** (or let it loop): Does it **re-bake with the new edits** before resuming playback?
 
 **Rendering & UI regression:**
-- Does the **viewport rotate smoothly**? (No regression from cycle ③.)
+- Does the **viewport rotate smoothly**? (No regression from cycle ④.)
 - Do **layer editing and gradient controls** still work as before?
 - Any **UI crashes or shader compilation errors**?
 
 **Errors:**
 - Paste any **egui, wgpu, or WGSL compilation error** from the native terminal or web console, especially:
-  - Animation phase clock or cache invalidation crashes
-  - Compute shader bind errors (FrameCache texture creation)
+  - Occupancy texture binding or compute errors
+  - Raymarch empty-space skip shader issues
   - WebGPU adapter fallback (web only)
 
-**Deferred (not in this cycle):**
-- GPU sparse brick cache for 256³+
-- Reduced-resolution baking (half-res cache, interpolate at playback)
-- Temporal interpolation between frames (smoother animation with fewer baked frames)
+## Known this cycle
+
+- **Paused scrubbing:** Currently, the phase slider only moves during Play; scrubbing while paused does NOT update the view. This is a deliberate trade-off to keep the paused frame at crisp full resolution. Can be restored on request.
+- **Cache label:** The readout shows "baked N @res³" — the **res³ is the requested resolution, not the actual reduced bake resolution**. The actual bake is at a lower resolution to fit VRAM; pause restores full resolution.
+
+## Deferred (not in this cycle)
+
+- Lower-resolution screen-space raymarch (currently full-res raymarching)
+- Temporal interpolation between frames (would allow fewer baked frames with smooth playback)
+- True sparse brick atlas (current occupancy is a voxel grid; a brick atlas would be more memory-efficient for very sparse scenes)
 
 ### Run paths
 
