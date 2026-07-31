@@ -69,7 +69,8 @@ pub fn gradient_editor(
         }
     }
 
-    paint_handles(ui.painter(), rect, &ramp.stops, *selected_stop);
+    let accent = ui.visuals().selection.stroke.color;
+    paint_handles(ui.painter(), rect, &ramp.stops, *selected_stop, accent);
 
     ui.horizontal(|ui| match *selected_stop {
         Some(i) if i < ramp.stops.len() => {
@@ -144,8 +145,15 @@ fn paint_gradient(painter: &egui::Painter, rect: Rect, stops: &[RampStop]) {
     }
 }
 
-/// Draw a handle circle at each stop's `t`, highlighting the selected one.
-fn paint_handles(painter: &egui::Painter, rect: Rect, stops: &[RampStop], selected: Option<usize>) {
+/// Draw a handle circle at each stop's `t`, highlighting the selected one with `accent`
+/// (`ui.visuals().selection.stroke.color` — the active theme's accent, dark or light).
+fn paint_handles(
+    painter: &egui::Painter,
+    rect: Rect,
+    stops: &[RampStop],
+    selected: Option<usize>,
+    accent: Color32,
+) {
     for (i, s) in stops.iter().enumerate() {
         let x = rect.left() + s.t * rect.width();
         let center = pos2(x, rect.bottom());
@@ -156,7 +164,7 @@ fn paint_handles(painter: &egui::Painter, rect: Rect, stops: &[RampStop], select
             HANDLE_RADIUS
         };
         let stroke = if is_selected {
-            Stroke::new(2.0, Color32::from_rgb(255, 210, 0))
+            Stroke::new(2.0, accent)
         } else {
             Stroke::new(1.0, Color32::BLACK)
         };

@@ -174,14 +174,15 @@ impl Vol3dApp {
     }
 
     fn layers_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Vol3D v3");
-        ui.separator();
         ui.label("Layers");
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for i in 0..self.layers.len() {
                 ui.horizontal(|ui| {
-                    if ui.checkbox(&mut self.layers[i].visible, "").changed() {
+                    let visible = self.layers[i].visible;
+                    let eye_glyph = if visible { "👁" } else { "🚫" };
+                    if ui.selectable_label(visible, eye_glyph).clicked() {
+                        self.layers[i].visible = !visible;
                         self.mark_dirty(ui.ctx());
                     }
 
@@ -219,7 +220,11 @@ impl Vol3dApp {
                 self.selected = duplicate_layer(&mut self.layers, self.selected);
                 self.mark_dirty(ui.ctx());
             }
-            if ui.button("Delete").clicked() {
+            let danger = self.theme.palette().danger;
+            if ui
+                .button(egui::RichText::new("Delete").color(danger))
+                .clicked()
+            {
                 self.selected = delete_layer(&mut self.layers, self.selected);
                 self.mark_dirty(ui.ctx());
             }
@@ -248,219 +253,274 @@ impl Vol3dApp {
             self.last_props_layer = i;
             self.last_layers_len = self.layers.len();
         }
-
         ui.separator();
-        let prev_nt = self.layers[i].noise_type;
-        egui::ComboBox::from_label("Noise type")
-            .selected_text(noise_type_label(self.layers[i].noise_type))
-            .show_ui(ui, |ui| {
-                for t in NOISE_TYPES {
-                    ui.selectable_value(&mut self.layers[i].noise_type, t, noise_type_label(t));
-                }
-            });
-        if self.layers[i].noise_type != prev_nt {
-            self.mark_dirty(ui.ctx());
-        }
 
-        ui.label("Scale");
+        // Blend mode + opacity are per-layer composite controls that don't belong to any one
+        // group below, so they get a small header row instead of their own CollapsingHeader.
         ui.horizontal(|ui| {
-            for axis in 0..3 {
-                if ui
-                    .add(egui::DragValue::new(&mut self.layers[i].scale[axis]).speed(0.01))
-                    .changed()
-                {
-                    self.mark_dirty(ui.ctx());
-                }
-            }
-        });
-
-        ui.label("Rotation (deg)");
-        ui.horizontal(|ui| {
-            for axis in 0..3 {
-                if ui
-                    .add(egui::DragValue::new(&mut self.layers[i].rotation_deg[axis]).speed(1.0))
-                    .changed()
-                {
-                    self.mark_dirty(ui.ctx());
-                }
-            }
-        });
-
-        ui.label("Offset");
-        ui.horizontal(|ui| {
-            for axis in 0..3 {
-                if ui
-                    .add(egui::DragValue::new(&mut self.layers[i].offset[axis]).speed(0.01))
-                    .changed()
-                {
-                    self.mark_dirty(ui.ctx());
-                }
-            }
-        });
-
-        if ui
-            .add(
-                egui::DragValue::new(&mut self.layers[i].amplitude)
-                    .prefix("Amplitude: ")
-                    .speed(0.01),
-            )
-            .changed()
-        {
-            self.mark_dirty(ui.ctx());
-        }
-        if ui
-            .add(
-                egui::DragValue::new(&mut self.layers[i].opacity)
-                    .prefix("Opacity: ")
-                    .speed(0.01)
-                    .range(0.0..=1.0),
-            )
-            .changed()
-        {
-            self.mark_dirty(ui.ctx());
-        }
-        if ui.checkbox(&mut self.layers[i].invert, "Invert").changed() {
-            self.mark_dirty(ui.ctx());
-        }
-
-        ui.label("Remap");
-        ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::DragValue::new(&mut self.layers[i].in_min)
-                        .prefix("in_min: ")
-                        .speed(0.01),
-                )
-                .changed()
-            {
-                self.mark_dirty(ui.ctx());
-            }
-            if ui
-                .add(
-                    egui::DragValue::new(&mut self.layers[i].in_max)
-                        .prefix("in_max: ")
-                        .speed(0.01),
-                )
-                .changed()
-            {
-                self.mark_dirty(ui.ctx());
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::DragValue::new(&mut self.layers[i].out_min)
-                        .prefix("out_min: ")
-                        .speed(0.01),
-                )
-                .changed()
-            {
-                self.mark_dirty(ui.ctx());
-            }
-            if ui
-                .add(
-                    egui::DragValue::new(&mut self.layers[i].out_max)
-                        .prefix("out_max: ")
-                        .speed(0.01),
-                )
-                .changed()
-            {
-                self.mark_dirty(ui.ctx());
-            }
-        });
-
-        let prev_blend = self.layers[i].blend_mode;
-        egui::ComboBox::from_label("Blend")
-            .selected_text(blend_label(self.layers[i].blend_mode))
-            .show_ui(ui, |ui| {
-                for b in BLEND_MODES {
-                    ui.selectable_value(&mut self.layers[i].blend_mode, b, blend_label(b));
-                }
-            });
-        if self.layers[i].blend_mode != prev_blend {
-            self.mark_dirty(ui.ctx());
-        }
-
-        if self.layers[i].noise_type == NoiseType::Fbm {
-            ui.separator();
-            ui.label("FBM");
-            if ui
-                .add(egui::DragValue::new(&mut self.layers[i].octaves).range(1..=8))
-                .changed()
-            {
-                self.mark_dirty(ui.ctx());
-            }
-            if ui
-                .add(egui::DragValue::new(&mut self.layers[i].persistence).speed(0.01))
-                .changed()
-            {
-                self.mark_dirty(ui.ctx());
-            }
-            if ui
-                .add(egui::DragValue::new(&mut self.layers[i].lacunarity).speed(0.01))
-                .changed()
-            {
-                self.mark_dirty(ui.ctx());
-            }
-            let prev_base = self.layers[i].fbm_base;
-            egui::ComboBox::from_label("FBM base")
-                .selected_text(noise_type_label(self.layers[i].fbm_base))
+            let prev_blend = self.layers[i].blend_mode;
+            egui::ComboBox::from_label("Blend")
+                .selected_text(blend_label(self.layers[i].blend_mode))
                 .show_ui(ui, |ui| {
-                    for t in NOISE_TYPES {
-                        if t != NoiseType::Fbm {
-                            ui.selectable_value(
-                                &mut self.layers[i].fbm_base,
-                                t,
-                                noise_type_label(t),
-                            );
-                        }
+                    for b in BLEND_MODES {
+                        ui.selectable_value(&mut self.layers[i].blend_mode, b, blend_label(b));
                     }
                 });
-            if self.layers[i].fbm_base != prev_base {
+            if self.layers[i].blend_mode != prev_blend {
                 self.mark_dirty(ui.ctx());
             }
-        }
+            if ui
+                .add(
+                    egui::DragValue::new(&mut self.layers[i].opacity)
+                        .prefix("Opacity: ")
+                        .speed(0.01)
+                        .range(0.0..=1.0),
+                )
+                .changed()
+            {
+                self.mark_dirty(ui.ctx());
+            }
+        });
 
-        if self.layers[i].noise_type == NoiseType::SdfSphere {
-            ui.separator();
-            ui.label("SDF Sphere");
-            if ui
-                .add(
-                    egui::DragValue::new(&mut self.layers[i].sdf_radius)
-                        .prefix("Radius: ")
-                        .speed(0.01),
-                )
-                .changed()
-            {
-                self.mark_dirty(ui.ctx());
-            }
-            if ui
-                .add(
-                    egui::DragValue::new(&mut self.layers[i].sdf_softness)
-                        .prefix("Softness: ")
-                        .speed(0.01),
-                )
-                .changed()
-            {
-                self.mark_dirty(ui.ctx());
-            }
-            if ui
-                .add(
-                    egui::DragValue::new(&mut self.layers[i].sdf_height)
-                        .prefix("Height: ")
-                        .speed(0.01),
-                )
-                .changed()
-            {
-                self.mark_dirty(ui.ctx());
-            }
-        }
+        egui::CollapsingHeader::new("Noise")
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::Grid::new("grid-noise").num_columns(2).show(ui, |ui| {
+                    let prev_nt = self.layers[i].noise_type;
+                    ui.label("Type");
+                    egui::ComboBox::from_id_salt("noise-type-combo")
+                        .selected_text(noise_type_label(self.layers[i].noise_type))
+                        .show_ui(ui, |ui| {
+                            for t in NOISE_TYPES {
+                                ui.selectable_value(
+                                    &mut self.layers[i].noise_type,
+                                    t,
+                                    noise_type_label(t),
+                                );
+                            }
+                        });
+                    if self.layers[i].noise_type != prev_nt {
+                        self.mark_dirty(ui.ctx());
+                    }
+                    ui.end_row();
 
-        ui.separator();
-        ui.label("Color ramp");
-        if gradient_editor(ui, &mut self.layers[i].ramp, &mut self.selected_stop).changed() {
-            self.mark_dirty(ui.ctx());
-        }
+                    ui.label("Amplitude");
+                    if ui
+                        .add(egui::DragValue::new(&mut self.layers[i].amplitude).speed(0.01))
+                        .changed()
+                    {
+                        self.mark_dirty(ui.ctx());
+                    }
+                    ui.end_row();
+
+                    ui.label("Invert");
+                    if ui.checkbox(&mut self.layers[i].invert, "").changed() {
+                        self.mark_dirty(ui.ctx());
+                    }
+                    ui.end_row();
+
+                    if self.layers[i].noise_type == NoiseType::Fbm {
+                        ui.label("Octaves");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.layers[i].octaves).range(1..=8))
+                            .changed()
+                        {
+                            self.mark_dirty(ui.ctx());
+                        }
+                        ui.end_row();
+
+                        ui.label("Persistence");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.layers[i].persistence).speed(0.01))
+                            .changed()
+                        {
+                            self.mark_dirty(ui.ctx());
+                        }
+                        ui.end_row();
+
+                        ui.label("Lacunarity");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.layers[i].lacunarity).speed(0.01))
+                            .changed()
+                        {
+                            self.mark_dirty(ui.ctx());
+                        }
+                        ui.end_row();
+
+                        ui.label("FBM base");
+                        let prev_base = self.layers[i].fbm_base;
+                        egui::ComboBox::from_id_salt("fbm-base-combo")
+                            .selected_text(noise_type_label(self.layers[i].fbm_base))
+                            .show_ui(ui, |ui| {
+                                for t in NOISE_TYPES {
+                                    if t != NoiseType::Fbm {
+                                        ui.selectable_value(
+                                            &mut self.layers[i].fbm_base,
+                                            t,
+                                            noise_type_label(t),
+                                        );
+                                    }
+                                }
+                            });
+                        if self.layers[i].fbm_base != prev_base {
+                            self.mark_dirty(ui.ctx());
+                        }
+                        ui.end_row();
+                    }
+
+                    if self.layers[i].noise_type == NoiseType::SdfSphere {
+                        ui.label("Radius");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.layers[i].sdf_radius).speed(0.01))
+                            .changed()
+                        {
+                            self.mark_dirty(ui.ctx());
+                        }
+                        ui.end_row();
+
+                        ui.label("Softness");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.layers[i].sdf_softness).speed(0.01))
+                            .changed()
+                        {
+                            self.mark_dirty(ui.ctx());
+                        }
+                        ui.end_row();
+
+                        ui.label("Height");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.layers[i].sdf_height).speed(0.01))
+                            .changed()
+                        {
+                            self.mark_dirty(ui.ctx());
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+
+        egui::CollapsingHeader::new("Transform")
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::Grid::new("grid-transform")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        ui.label("Scale");
+                        ui.horizontal(|ui| {
+                            for axis in 0..3 {
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut self.layers[i].scale[axis])
+                                            .speed(0.01),
+                                    )
+                                    .changed()
+                                {
+                                    self.mark_dirty(ui.ctx());
+                                }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Rotation (deg)");
+                        ui.horizontal(|ui| {
+                            for axis in 0..3 {
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(
+                                            &mut self.layers[i].rotation_deg[axis],
+                                        )
+                                        .speed(1.0),
+                                    )
+                                    .changed()
+                                {
+                                    self.mark_dirty(ui.ctx());
+                                }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Offset");
+                        ui.horizontal(|ui| {
+                            for axis in 0..3 {
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut self.layers[i].offset[axis])
+                                            .speed(0.01),
+                                    )
+                                    .changed()
+                                {
+                                    self.mark_dirty(ui.ctx());
+                                }
+                            }
+                        });
+                        ui.end_row();
+                    });
+            });
+
+        egui::CollapsingHeader::new("Remap")
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::Grid::new("grid-remap").num_columns(2).show(ui, |ui| {
+                    ui.label("In range");
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut self.layers[i].in_min)
+                                    .prefix("min: ")
+                                    .speed(0.01),
+                            )
+                            .changed()
+                        {
+                            self.mark_dirty(ui.ctx());
+                        }
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut self.layers[i].in_max)
+                                    .prefix("max: ")
+                                    .speed(0.01),
+                            )
+                            .changed()
+                        {
+                            self.mark_dirty(ui.ctx());
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label("Out range");
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut self.layers[i].out_min)
+                                    .prefix("min: ")
+                                    .speed(0.01),
+                            )
+                            .changed()
+                        {
+                            self.mark_dirty(ui.ctx());
+                        }
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut self.layers[i].out_max)
+                                    .prefix("max: ")
+                                    .speed(0.01),
+                            )
+                            .changed()
+                        {
+                            self.mark_dirty(ui.ctx());
+                        }
+                    });
+                    ui.end_row();
+                });
+            });
+
+        egui::CollapsingHeader::new("Color")
+            .default_open(true)
+            .show(ui, |ui| {
+                if gradient_editor(ui, &mut self.layers[i].ramp, &mut self.selected_stop).changed()
+                {
+                    self.mark_dirty(ui.ctx());
+                }
+            });
     }
 }
 
@@ -469,7 +529,7 @@ impl eframe::App for Vol3dApp {
     // shape and hands us the root `&mut Ui` directly; panels are shown via
     // `.show(ui, ...)` rather than `.show(ctx, ...)`.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Smoothed frame time for the fps/ms readout (`layers_panel`'s top line). Requesting a
+        // Smoothed frame time for the fps/ms readout (the top bar's right-aligned label). Requesting a
         // repaint every frame (unconditionally, independent of the debounced regen below) keeps
         // the raymarch/present loop running continuously so the reading reflects steady-state
         // render cost — it does NOT trigger generation, which still only fires on `pending_regen`.
