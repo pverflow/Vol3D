@@ -818,6 +818,8 @@ impl eframe::App for Vol3dApp {
                 bake_key,
                 frame_count: self.frame_count,
                 playback_phase: if use_cache { Some(self.phase) } else { None },
+                // Task 3 replaces this with `self.interp` once the UI toggle exists.
+                interp: false,
             };
             ui.painter()
                 .add(egui_wgpu::Callback::new_paint_callback(rect, cb));

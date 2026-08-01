@@ -107,30 +107,53 @@ impl Renderer {
         }
     }
 
-    /// Point the raymarch bind group at the PAIR of baked frames (`i`, `i+1`) straddling `phase`
-    /// plus each frame's own occupancy overlay, and return the interpolation `frac` in `[0,1)` for
-    /// the callback to write into `cam.frac`. The raymarch lerps the two frames per step (smooth
-    /// playback). Returns `None` and leaves the bind group unchanged for an empty cache — None-safe
-    /// (all four views are `Some` by construction when `frame_count() > 0`). Direct field access
-    /// (like `ensure_generated`) so the `&self.frame_cache` view borrows and the `&mut
-    /// self.raymarch` rebuild don't collide.
-    pub fn bind_playback(&mut self, device: &wgpu::Device, phase: f32) -> Option<f32> {
+    /// Point the raymarch bind group at the baked frame(s) straddling `phase` plus each frame's
+    /// own occupancy overlay, and return the interpolation `frac` in `[0,1)` for the callback to
+    /// write into `cam.frac`. Returns `None` and leaves the bind group unchanged for an empty
+    /// cache — None-safe (all views are `Some` by construction when `frame_count() > 0`). Direct
+    /// field access (like `ensure_generated`) so the `&self.frame_cache` view borrows and the
+    /// `&mut self.raymarch` rebuild don't collide.
+    ///
+    /// `interp == true`: binds the PAIR of frames (`i`, `i+1`) straddling `phase`; the raymarch
+    /// lerps the two per step (smooth playback). `interp == false`: binds the single nearest
+    /// frame to BOTH a/b slots and returns `frac == 0.0` — `mix(sa, sb, 0.0)` on identical
+    /// textures is an exact nearest-frame sample, no blend.
+    pub fn bind_playback(
+        &mut self,
+        device: &wgpu::Device,
+        phase: f32,
+        interp: bool,
+    ) -> Option<f32> {
         let n = self.frame_cache.frame_count();
         if n == 0 {
             return None;
         }
-        let (i, i1, frac) = crate::anim::interp_frame(phase, n);
-        match (
-            self.frame_cache.view_at(i),
-            self.frame_cache.occupancy_at(i),
-            self.frame_cache.view_at(i1),
-            self.frame_cache.occupancy_at(i1),
-        ) {
-            (Some(va), Some(oa), Some(vb), Some(ob)) => {
-                self.raymarch.rebuild_bind_group(device, va, oa, vb, ob);
-                Some(frac)
+        if interp {
+            let (i, i1, frac) = crate::anim::interp_frame(phase, n);
+            match (
+                self.frame_cache.view_at(i),
+                self.frame_cache.occupancy_at(i),
+                self.frame_cache.view_at(i1),
+                self.frame_cache.occupancy_at(i1),
+            ) {
+                (Some(va), Some(oa), Some(vb), Some(ob)) => {
+                    self.raymarch.rebuild_bind_group(device, va, oa, vb, ob);
+                    Some(frac)
+                }
+                _ => None,
             }
-            _ => None,
+        } else {
+            let i = crate::anim::frame_for_phase(phase, n);
+            match (
+                self.frame_cache.view_at(i),
+                self.frame_cache.occupancy_at(i),
+            ) {
+                (Some(v), Some(o)) => {
+                    self.raymarch.rebuild_bind_group(device, v, o, v, o);
+                    Some(0.0)
+                }
+                _ => None,
+            }
         }
     }
 }

@@ -275,6 +275,10 @@ pub struct RaymarchCallback {
     /// `Some(phase)` => bind the baked frame nearest `phase` as the raymarch volume instead of
     /// the live volume (playing, or paused-with-valid-cache scrub). `None` => live volume.
     pub playback_phase: Option<f32>,
+    /// Playback interpolation toggle (ignored unless `playback_phase` is `Some`): `true`
+    /// crossfades the two baked frames straddling `phase`; `false` snaps to the single nearest
+    /// baked frame (see `Renderer::bind_playback`).
+    pub interp: bool,
 }
 
 impl egui_wgpu::CallbackTrait for RaymarchCallback {
@@ -318,7 +322,7 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
         // cached frame instead of the live volume. Mirrors `ensure_generated`'s rebuild against
         // the live view.
         let playback_frac = if let Some(phase) = self.playback_phase {
-            r.bind_playback(device, phase)
+            r.bind_playback(device, phase, self.interp)
         } else {
             None
         };
