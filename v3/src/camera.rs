@@ -24,7 +24,13 @@ pub struct CamUniform {
     /// macrocells for empty-space skipping. Reuses the former `_p3` pad slot (size stays 80).
     /// `basis` leaves it 0.0 — `app.rs` sets it after building the uniform (needs `res`).
     pub macro_dim: f32,
-    pub _p4: f32,
+    /// Interpolation fraction in `[0,1)` between the two bound baked frames (bindings 0/3 = frame
+    /// `i`, bindings 5/6 = frame `i+1`); the raymarch does `mix(sample_a, sample_b, frac)` per
+    /// step. Reuses the former `_p4` tail-pad slot (byte 76; struct size stays 80). `0.0` for the
+    /// live/paused path (both slots bound to the same volume) → `mix(a,a,0)=a`, byte-identical to
+    /// the single-frame result. `basis` leaves it 0.0; `RaymarchCallback::prepare` sets it from
+    /// `bind_playback`'s returned frac when playing.
+    pub frac: f32,
 }
 
 pub struct OrbitCamera {
@@ -70,7 +76,7 @@ impl OrbitCamera {
             tan_half_fov: (0.5f32).tan(),
             steps,
             macro_dim: 0.0,
-            _p4: 0.0,
+            frac: 0.0,
         }
     }
 }

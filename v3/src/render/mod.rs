@@ -62,8 +62,13 @@ impl Renderer {
             // `self` via its `&self` receiver, which would conflict with the `&mut
             // self.raymarch` borrow below even though the two fields are disjoint.
             // `occupancy_view()` borrows only `self.volume`, disjoint from `self.raymarch`.
+            // Live/paused: bind the live volume+occupancy to BOTH interpolation slots. The
+            // callback leaves `cam.frac = 0`, so `mix(a,a,0)=a` and `max(occ,occ)=occ` → the
+            // raymarch is byte-identical to the single-frame path.
             self.raymarch.rebuild_bind_group(
                 device,
+                &self.volume.view,
+                self.volume.occupancy_view(),
                 &self.volume.view,
                 self.volume.occupancy_view(),
             );
@@ -102,22 +107,30 @@ impl Renderer {
         }
     }
 
-    /// Point the raymarch bind group at the baked frame nearest `phase` (playback) AND that
-    /// frame's own occupancy overlay, instead of the live `self.volume.view`/occupancy. Returns
-    /// `false` and leaves the bind group unchanged if the cache is empty (None-safe: both the
-    /// frame view and its occupancy must be present). Direct field access (like
-    /// `ensure_generated`) so the `&self.frame_cache` view borrow and the `&mut self.raymarch`
-    /// rebuild don't collide.
-    pub fn bind_playback(&mut self, device: &wgpu::Device, phase: f32) -> bool {
+    /// Point the raymarch bind group at the PAIR of baked frames (`i`, `i+1`) straddling `phase`
+    /// plus each frame's own occupancy overlay, and return the interpolation `frac` in `[0,1)` for
+    /// the callback to write into `cam.frac`. The raymarch lerps the two frames per step (smooth
+    /// playback). Returns `None` and leaves the bind group unchanged for an empty cache — None-safe
+    /// (all four views are `Some` by construction when `frame_count() > 0`). Direct field access
+    /// (like `ensure_generated`) so the `&self.frame_cache` view borrows and the `&mut
+    /// self.raymarch` rebuild don't collide.
+    pub fn bind_playback(&mut self, device: &wgpu::Device, phase: f32) -> Option<f32> {
+        let n = self.frame_cache.frame_count();
+        if n == 0 {
+            return None;
+        }
+        let (i, i1, frac) = crate::anim::interp_frame(phase, n);
         match (
-            self.frame_cache.view_for_phase(phase),
-            self.frame_cache.occupancy_for_phase(phase),
+            self.frame_cache.view_at(i),
+            self.frame_cache.occupancy_at(i),
+            self.frame_cache.view_at(i1),
+            self.frame_cache.occupancy_at(i1),
         ) {
-            (Some(view), Some(occ)) => {
-                self.raymarch.rebuild_bind_group(device, view, occ);
-                true
+            (Some(va), Some(oa), Some(vb), Some(ob)) => {
+                self.raymarch.rebuild_bind_group(device, va, oa, vb, ob);
+                Some(frac)
             }
-            _ => false,
+            _ => None,
         }
     }
 }

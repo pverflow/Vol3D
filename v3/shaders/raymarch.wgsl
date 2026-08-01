@@ -5,13 +5,19 @@ struct Cam {
   fwd: vec3<f32>, _p1: f32,
   right: vec3<f32>, _p2: f32,
   up: vec3<f32>,
-  aspect: f32, tan_half_fov: f32, steps: f32, macro_dim: f32,
+  aspect: f32, tan_half_fov: f32, steps: f32, macro_dim: f32, frac: f32,
 };
 @group(0) @binding(2) var<uniform> C: Cam;
 // Occupancy overlay (Task 1): r32float max-density per 8³ macrocell. Non-filterable, so a
 // NEAREST/clamp sampler (binding 4). Sampled below to skip empty macrocells.
 @group(0) @binding(3) var occ: texture_3d<f32>;
 @group(0) @binding(4) var occ_samp: sampler;
+// Temporal interpolation (Task 2): the second baked frame (i+1) and its occupancy overlay. Reuse
+// `samp` (1) for both volumes and `occ_samp` (4) for both occupancies. For live/paused these are
+// bound to the SAME textures as `vol`/`occ` with `C.frac == 0`, so the march below is byte-
+// identical to the single-frame path.
+@group(0) @binding(5) var vol_b: texture_3d<f32>;
+@group(0) @binding(6) var occ_b: texture_3d<f32>;
 
 // A macrocell whose max density is below this contributes nothing worth marching — skip it.
 const SKIP_THRESHOLD: f32 = 2.0 / 255.0;
@@ -61,13 +67,20 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     // no per-tile rescale). Occupancy is a macrocell overlay — sample its cell center.
     let mc = floor(pos * md);
     let occ_uvw = (mc + 0.5) / md;
-    let maxd = textureSampleLevel(occ, occ_samp, occ_uvw, 0.0).r;
+    // Skip on the UNION of both frames: never skip a macrocell occupied in EITHER frame, or an
+    // interpolated feature crossing this cell would vanish. Live/paused (occ_b==occ) → max is a
+    // no-op, skip grid unchanged.
+    let maxd = max(textureSampleLevel(occ, occ_samp, occ_uvw, 0.0).r,
+                   textureSampleLevel(occ_b, occ_samp, occ_uvw, 0.0).r);
     if (maxd < SKIP_THRESHOLD) {
       let exit_t = intersect_aabb(pos, rd, mc / md, (mc + 1.0) / md);
       t = t + max(dt, exit_t.y + 1e-4);
       continue;
     }
-    let s = textureSampleLevel(vol, samp, pos, 0.0);
+    // Interpolate the two frames (lerps color .rgb + density .a). frac==0 → sa unchanged.
+    let sa = textureSampleLevel(vol, samp, pos, 0.0);
+    let sb = textureSampleLevel(vol_b, samp, pos, 0.0);
+    let s = mix(sa, sb, C.frac);
     if (s.a > 0.001) {
       let a = 1.0 - exp(-s.a * dt * 12.0);
       acc = acc + s.rgb * a * trans;

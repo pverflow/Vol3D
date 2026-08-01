@@ -73,6 +73,28 @@ impl Raymarch {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
+                // 5: second interpolation frame (vol_b) — filterable like binding 0.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // 6: second frame's occupancy overlay (occ_b) — non-filterable like binding 3.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -130,9 +152,13 @@ impl Raymarch {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Initial bind group: live volume+occupancy bound to BOTH interpolation slots (a and b)
+        // with frac left 0 → single-frame identical until playback rebinds two distinct frames.
         let bind_group = Self::make_bind_group(
             device,
             &bgl,
+            volume_view,
+            occupancy_view,
             volume_view,
             occupancy_view,
             &sampler,
@@ -153,8 +179,10 @@ impl Raymarch {
     fn make_bind_group(
         device: &wgpu::Device,
         bgl: &wgpu::BindGroupLayout,
-        volume_view: &wgpu::TextureView,
-        occupancy_view: &wgpu::TextureView,
+        vol_a: &wgpu::TextureView,
+        occ_a: &wgpu::TextureView,
+        vol_b: &wgpu::TextureView,
+        occ_b: &wgpu::TextureView,
         sampler: &wgpu::Sampler,
         occ_sampler: &wgpu::Sampler,
         cam_buf: &wgpu::Buffer,
@@ -165,7 +193,7 @@ impl Raymarch {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(volume_view),
+                    resource: wgpu::BindingResource::TextureView(vol_a),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -177,30 +205,45 @@ impl Raymarch {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(occupancy_view),
+                    resource: wgpu::BindingResource::TextureView(occ_a),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::Sampler(occ_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(vol_b),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(occ_b),
+                },
             ],
         })
     }
 
-    /// Re-creates the bind group against the current volume + occupancy views. Required whenever
-    /// the volume texture is replaced (resolution change) or the bound frame changes (playback),
-    /// since the old views would otherwise dangle in a cached bind group.
+    /// Re-creates the bind group against the current volume + occupancy views for BOTH
+    /// interpolation frames (a = frame `i`, b = frame `i+1`). Required whenever the volume texture
+    /// is replaced (resolution change) or the bound frame pair changes (playback), since the old
+    /// views would otherwise dangle. Live/paused pass the live volume+occupancy for both a and b
+    /// (with `cam.frac = 0`), giving a single-frame-identical result.
+    #[allow(clippy::too_many_arguments)]
     pub fn rebuild_bind_group(
         &mut self,
         device: &wgpu::Device,
-        volume_view: &wgpu::TextureView,
-        occupancy_view: &wgpu::TextureView,
+        vol_a: &wgpu::TextureView,
+        occ_a: &wgpu::TextureView,
+        vol_b: &wgpu::TextureView,
+        occ_b: &wgpu::TextureView,
     ) {
         self.bind_group = Self::make_bind_group(
             device,
             &self.bgl,
-            volume_view,
-            occupancy_view,
+            vol_a,
+            occ_a,
+            vol_b,
+            occ_b,
             &self.sampler,
             &self.occ_sampler,
             &self.cam_buf,
@@ -274,9 +317,11 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
         // When playing back (or scrubbing a valid cache), point the raymarch bind group at the
         // cached frame instead of the live volume. Mirrors `ensure_generated`'s rebuild against
         // the live view.
-        if let Some(phase) = self.playback_phase {
-            r.bind_playback(device, phase);
-        }
+        let playback_frac = if let Some(phase) = self.playback_phase {
+            r.bind_playback(device, phase)
+        } else {
+            None
+        };
         // Derive `macro_dim` from the resolution the BOUND occupancy texture actually has this
         // frame, not the UI's pending target — otherwise a res *decrease* flips `macro_dim`
         // before `generate` rebuilds the texture (~120ms debounce), and the skip grid mismatches
@@ -292,6 +337,9 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
             r.volume.res()
         };
         cam.macro_dim = crate::anim::macro_dims(macro_res, crate::anim::MACRO) as f32;
+        // Interpolation fraction between the two bound frames; `None` (live/paused, or empty cache)
+        // → 0.0, so `mix(a,b,0)=a` keeps the single-frame path byte-identical.
+        cam.frac = playback_frac.unwrap_or(0.0);
         queue.write_buffer(&r.raymarch.cam_buf, 0, bytemuck::bytes_of(&cam));
         // No readback: generation runs entirely on-GPU (VolumeGen::generate submits its own
         // command buffer), and this callback only ever writes to GPU-side buffers/textures.
