@@ -103,18 +103,27 @@ pub struct Vol3dApp {
     /// Loop position in `[0, 1)`. Advanced by `anim::advance_phase` while playing; also driven
     /// directly by the phase-scrub slider while paused.
     pub phase: f32,
-    /// Wall-clock seconds for one full loop (playback speed only — NOT a bake input, so editing
-    /// it never invalidates the cache).
+    /// Wall-clock seconds for one full loop. Also a bake input (`fps * loop_seconds` derives
+    /// `frame_count`, see `recompute_frame_count`) — editing it sets `cache_stale`.
     pub loop_seconds: f32,
     /// Noise-cycle count folded into the bake (`GenParams.anim_evolutions`). A bake input →
     /// editing sets `cache_stale`.
     pub evolutions: f32,
-    /// How many dense frames to bake (`FrameCache` clamps to its VRAM budget/cap). A bake input.
+    /// Playback frame rate. A bake input (drives `frame_count` via `recompute_frame_count`) —
+    /// editing it sets `cache_stale`.
+    pub fps: u32,
+    /// How many dense frames to bake (`FrameCache` clamps to its VRAM budget/cap). Derived from
+    /// `fps * loop_seconds`, clamped to `anim::max_loop_frames`'s cap — see
+    /// `recompute_frame_count`. Not edited directly by the UI anymore.
     pub frame_count: u32,
+    /// Whether cached-frame playback interpolates between the two nearest baked frames (`true`)
+    /// or snaps to the nearest one (`false`, default). Playback-only — never invalidates the
+    /// bake, so toggling it does NOT set `cache_stale`.
+    pub interp: bool,
     /// True whenever the baked cache no longer matches the current bake inputs (layers /
-    /// resolution / seed / evolutions / frame_count). Set by `mark_dirty` (covers layers, res,
-    /// seed) and by the evolutions/frame_count controls; cleared once a bake is issued while
-    /// playing. Starts `true` (nothing baked yet).
+    /// resolution / seed / evolutions / fps / loop_seconds). Set by `mark_dirty` (covers layers,
+    /// res, seed) and by the evolutions/fps/loop_seconds controls; cleared once a bake is issued
+    /// while playing. Starts `true` (nothing baked yet).
     pub cache_stale: bool,
     /// `self.playing` as of the previous frame. Compared each frame to edge-detect a play→pause
     /// transition (pause snap: force one full-res live regen at `self.phase`, see `ui()`'s tail).
@@ -143,7 +152,9 @@ impl Default for Vol3dApp {
             phase: 0.0,
             loop_seconds: 4.0,
             evolutions: 1.0,
+            fps: 30,
             frame_count: 24,
+            interp: false,
             cache_stale: true,
             was_playing: false,
         }
@@ -158,9 +169,20 @@ impl Vol3dApp {
             .expect("wgpu render state (renderer=Wgpu)");
         let renderer = crate::render::Renderer::new(rs);
         rs.renderer.write().callback_resources.insert(renderer);
-        let app = Self::default();
+        let mut app = Self::default();
+        app.recompute_frame_count();
         crate::theme::apply(&cc.egui_ctx, app.theme);
         app
+    }
+
+    /// Derives `frame_count` from `fps * loop_seconds`, clamped to `anim::max_loop_frames`'s
+    /// VRAM-budget cap (so the UI's requested N never exceeds what `FrameCache` could actually
+    /// bake). Called whenever `fps` or `loop_seconds` changes.
+    fn recompute_frame_count(&mut self) {
+        let cap =
+            anim::max_loop_frames(crate::render::frame_cache::FRAME_CACHE_BUDGET_BYTES) as f32;
+        let n = (self.fps as f32 * self.loop_seconds).round();
+        self.frame_count = n.clamp(1.0, cap) as u32;
     }
 
     /// Any edit routes through here: marks the scene dirty and stamps the edit time the
@@ -563,8 +585,9 @@ impl Vol3dApp {
     }
 
     /// Bottom strip: playback controls (Task 4). Plain/unstyled — styling is parked pending
-    /// designer mockups. `loop_seconds` is playback-speed only (not a bake input); `evolutions`
-    /// and `frame_count` are bake inputs, so editing them sets `cache_stale`.
+    /// designer mockups. `fps`, `loop_seconds`, and `evolutions` are bake inputs (editing them
+    /// sets `cache_stale` and, for `fps`/`loop_seconds`, recomputes the derived `frame_count`);
+    /// `interp` is playback-only and never invalidates the bake.
     fn animation_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let play_label = if self.playing {
@@ -578,11 +601,17 @@ impl Vol3dApp {
             ui.separator();
 
             ui.label("Loop (s)");
-            ui.add(
-                egui::DragValue::new(&mut self.loop_seconds)
-                    .speed(0.1)
-                    .range(0.1..=60.0),
-            );
+            if ui
+                .add(
+                    egui::DragValue::new(&mut self.loop_seconds)
+                        .speed(0.1)
+                        .range(0.1..=60.0),
+                )
+                .changed()
+            {
+                self.recompute_frame_count();
+                self.cache_stale = true;
+            }
 
             ui.label("Evolutions");
             if ui
@@ -596,25 +625,44 @@ impl Vol3dApp {
                 self.cache_stale = true;
             }
 
-            ui.label("Frames");
+            ui.label("FPS");
             if ui
-                .add(egui::DragValue::new(&mut self.frame_count).range(1..=64))
+                .add(egui::DragValue::new(&mut self.fps).range(1..=120))
                 .changed()
             {
+                self.recompute_frame_count();
                 self.cache_stale = true;
             }
+
+            ui.checkbox(&mut self.interp, "Interpolate");
             ui.separator();
 
             ui.label("Phase");
             ui.add(egui::Slider::new(&mut self.phase, 0.0..=1.0));
             ui.separator();
 
-            // Glance readout: `frame_count`/`resolution` are the *requested* bake inputs — the
-            // FrameCache may clamp N to its VRAM budget (logged), but this is close enough.
+            // Glance readout: `frame_count` is the *derived* (fps*loop, clamped) bake input, so
+            // no live renderer access is needed here — `playback_bake_res` is the same pure
+            // reduction `FrameCache::bake` applies, so this predicts its resolution exactly.
             let status = if self.cache_stale {
                 "cache: stale".to_string()
             } else {
-                format!("cache: baked {} @ {}³", self.frame_count, self.resolution)
+                let bake_res = anim::playback_bake_res(
+                    self.resolution,
+                    self.frame_count,
+                    crate::render::frame_cache::FRAME_CACHE_BUDGET_BYTES,
+                );
+                let gb =
+                    self.frame_count as f64 * (bake_res as f64).powi(3) * 4.0 / (1u64 << 30) as f64;
+                let eff_fps = self.frame_count as f32 / self.loop_seconds.max(1e-3);
+                format!(
+                    "baked {} @ {}³  ({:.1} GB)  {:.0} fps  {}",
+                    self.frame_count,
+                    bake_res,
+                    gb,
+                    eff_fps,
+                    if self.interp { "smooth" } else { "steps" }
+                )
             };
             ui.label(status);
         });
@@ -818,8 +866,7 @@ impl eframe::App for Vol3dApp {
                 bake_key,
                 frame_count: self.frame_count,
                 playback_phase: if use_cache { Some(self.phase) } else { None },
-                // Task 3 replaces this with `self.interp` once the UI toggle exists.
-                interp: false,
+                interp: self.interp,
             };
             ui.painter()
                 .add(egui_wgpu::Callback::new_paint_callback(rect, cb));
