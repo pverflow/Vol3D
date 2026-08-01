@@ -124,6 +124,18 @@ impl FrameCache {
         self.occ_views.get(frame_for_phase(phase, self.n))
     }
 
+    /// The baked frame at index `i`, or `None` if out of bounds (including an empty cache). For
+    /// `interp_frame`-driven playback — the caller fetches both straddling indices and blends.
+    pub fn view_at(&self, i: usize) -> Option<&wgpu::TextureView> {
+        self.views.get(i)
+    }
+
+    /// The occupancy overlay for the baked frame at index `i`, or `None` if out of bounds
+    /// (including an empty cache). Parallels `view_at`.
+    pub fn occupancy_at(&self, i: usize) -> Option<&wgpu::TextureView> {
+        self.occ_views.get(i)
+    }
+
     fn make_frame(device: &wgpu::Device, res: u32) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("frame-cache-frame"),

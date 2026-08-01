@@ -16,6 +16,19 @@ mod tests {
     }
 
     #[test]
+    fn interp_frame_wraps_and_fractions() {
+        assert_eq!(interp_frame(0.0, 8), (0, 1, 0.0));
+        let (i, i1, f) = interp_frame(0.5, 8); // f = 4.0
+        assert_eq!((i, i1), (4, 5));
+        assert!(f.abs() < 1e-6);
+        let (i, i1, f) = interp_frame(0.9375, 8); // f = 7.5 -> i=7, i1=0 (wrap), frac=0.5
+        assert_eq!((i, i1), (7, 0));
+        assert!((f - 0.5).abs() < 1e-5);
+        // n==1 -> same frame, no panic.
+        assert_eq!(interp_frame(0.3, 1), (0, 0, interp_frame(0.3, 1).2));
+    }
+
+    #[test]
     fn frame_for_phase_nearest_wraps() {
         assert_eq!(frame_for_phase(0.0, 8), 0);
         assert_eq!(frame_for_phase(0.99, 8), 0); // rounds to 8 -> wraps to 0
@@ -81,6 +94,20 @@ pub fn frame_for_phase(phase: f32, n: u32) -> usize {
         return 0;
     }
     ((phase.rem_euclid(1.0) * n as f32).round() as usize) % n as usize
+}
+
+/// Map a `phase` in `[0, 1)` to the pair of baked frame indices straddling it out of `n`, plus
+/// the interpolation fraction between them — `i` is the floor frame, `i1` is `i`'s successor
+/// (wrapping so the frame after the last one is frame `0`, keeping the loop seamless), and
+/// `frac` in `[0, 1)` is how far `phase` sits from `i` towards `i1`. `n == 0` returns
+/// `(0, 0, 0.0)` (the `.max(1)` below only guards the modulo divisor from a div-by-zero; `f`
+/// itself is `0.0` when `n` is `0`, so `frac` comes out `0.0` too).
+pub fn interp_frame(phase: f32, n: u32) -> (usize, usize, f32) {
+    let f = phase.rem_euclid(1.0) * n as f32;
+    let i = (f.floor() as usize) % (n.max(1) as usize);
+    let i1 = (i + 1) % (n.max(1) as usize);
+    let frac = f - f.floor();
+    (i, i1, frac)
 }
 
 /// Cap for `max_frames` — a dense `FrameCache` of more than this many `res³` textures isn't a
