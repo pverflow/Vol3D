@@ -73,6 +73,12 @@ mod tests {
         assert!(is_stale(&Some(a), &c));
         assert!(is_stale(&None, &c)); // never baked = stale
     }
+
+    #[test]
+    fn max_loop_frames_fits_floor_res() {
+        assert_eq!(max_loop_frames(4 * 1024 * 1024 * 1024), 4096); // 4 GB / 1 MiB
+        assert_eq!(max_loop_frames(1), 1); // floor at 1
+    }
 }
 
 use crate::layer::GpuLayer;
@@ -146,6 +152,14 @@ pub fn playback_bake_res(source_res: u32, n: u32, budget_bytes: u64) -> u32 {
         }
     }
     64
+}
+
+/// Max baked frames whose floor-res (64³ rgba8) dense cache still fits `budget_bytes` —
+/// the ceiling `app.rs` clamps N (fps × loop) to, so `playback_bake_res`'s 64³ floor never
+/// exceeds VRAM. Floored at 1.
+pub fn max_loop_frames(budget_bytes: u64) -> u32 {
+    let per = (64u64).pow(3) * 4; // 1 MiB
+    (budget_bytes / per).max(1) as u32
 }
 
 /// Snapshot of everything a baked `FrameCache` depends on. Comparing two `BakeKey`s (`==`)

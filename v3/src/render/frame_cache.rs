@@ -11,9 +11,9 @@ use crate::render::volume::VolumeGen;
 
 /// Dense `FrameCache` VRAM budget: baked frames use at most this many bytes. `bake` picks the
 /// largest `bake_res` (`anim::playback_bake_res`) so the full requested frame count fits this
-/// budget, rather than clamping frame count at a fixed resolution (e.g. 512 MB -> 32 frames @
-/// 128³, fewer at higher `bake_res`).
-const FRAME_CACHE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
+/// budget, rather than clamping frame count at a fixed resolution (e.g. 4 GB -> 64 frames @
+/// 256³, 512 @ 128³).
+pub const FRAME_CACHE_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// N baked loop frames + their views, plus each frame's own occupancy overlay. All frame
 /// textures are `bake_res³` rgba8unorm with `STORAGE_BINDING | TEXTURE_BINDING` (written by the
