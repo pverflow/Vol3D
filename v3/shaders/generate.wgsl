@@ -369,6 +369,65 @@ fn sdf_sphere(p: vec3<f32>, radius: f32, softness: f32) -> f32 {
   return 1.0 - smoothstep(0.0, max(softness, 1e-4), sd);
 }
 
+// True for noise_type values whose eval_noise is a signed-distance shape
+// (4=SdfSphere, 8..12=box/cone/capsule/cylinder/plume) rather than a
+// procedural noise field — mirrors layer.rs's NoiseType::is_sdf.
+fn is_sdf(t: u32) -> bool {
+  return t == 4u || t >= 8u;
+}
+
+// sdf_box.glsl L6-12 (noiseEval). Box half-extent = sdf_radius on all 3 axes.
+fn sdf_box(p: vec3<f32>, radius: f32, softness: f32) -> f32 {
+  let q = abs(p) - vec3<f32>(radius);
+  let outside = length(max(q, vec3<f32>(0.0)));
+  let inside = min(max(q.x, max(q.y, q.z)), 0.0);
+  let sd = outside + inside;
+  return 1.0 - smoothstep(0.0, max(softness, 1e-4), sd);
+}
+
+// sdf_cone.glsl L7-13 (noiseEval). Capped cone along +Y, height = 2*radius,
+// base radius = radius; `h` floors at 1e-4 to avoid divide-by-zero at
+// radius=0.
+fn sdf_cone(p: vec3<f32>, radius: f32, softness: f32) -> f32 {
+  let h = max(radius, 1e-4);
+  let d2 = length(p.xz) - radius * (1.0 - (p.y + h) / (2.0 * h));
+  let dy = abs(p.y) - h;
+  let sd = max(d2, dy);
+  return 1.0 - smoothstep(0.0, max(softness, 1e-4), sd);
+}
+
+// sdf_capsule.glsl L9-14 (noiseEval). Capsule along +Y; `height` is the
+// half-height of the straight segment between the two end caps.
+fn sdf_capsule(p: vec3<f32>, radius: f32, softness: f32, height: f32) -> f32 {
+  let h = max(height, 1e-4);
+  let cy = clamp(p.y, -h, h);
+  let sd = length(vec3<f32>(p.x, p.y - cy, p.z)) - radius;
+  return 1.0 - smoothstep(0.0, max(softness, 1e-4), sd);
+}
+
+// sdf_cylinder.glsl L9-17 (noiseEval). Flat-capped cylinder along +Y;
+// `height` is the half-height.
+fn sdf_cylinder(p: vec3<f32>, radius: f32, softness: f32, height: f32) -> f32 {
+  let h = max(height, 1e-4);
+  let dx = length(p.xz) - radius;
+  let dy = abs(p.y) - h;
+  let outside = length(vec2<f32>(max(dx, 0.0), max(dy, 0.0)));
+  let inside = min(max(dx, dy), 0.0);
+  let sd = outside + inside;
+  return 1.0 - smoothstep(0.0, max(softness, 1e-4), sd);
+}
+
+// sdf_plume.glsl L9-16 (noiseEval). Tapered capsule along +Y (radius shrinks
+// linearly base->top to 15%, flame silhouette); `height` is the half-height.
+fn sdf_plume(p: vec3<f32>, radius: f32, softness: f32, height: f32) -> f32 {
+  let h = max(height, 1e-4);
+  let t = clamp((p.y + h) / (2.0 * h), 0.0, 1.0);
+  let rr = radius * (1.0 - 0.85 * t);
+  let cy = clamp(p.y, -h, h);
+  let sd = length(vec3<f32>(p.x, p.y - cy, p.z)) - rr;
+  return 1.0 - smoothstep(0.0, max(softness, 1e-4), sd);
+}
+
 // ---------------------------------------------------------------------
 // Noise: src/shaders/noise/worley3d.glsl -> noise_worley(p, seed, mode)
 // worley_mode: 0 = F1, 1 = F2, 2 = F2-F1 (matches v2's u_worleyMode /
@@ -689,10 +748,11 @@ struct GenParams {
 @group(0) @binding(4) var ramp_samp: sampler;
 
 // eval_noise(L, p): dispatches on L.noise_type. 0=value,1=perlin,2=simplex,
-// 3=fbm,4=sdf_sphere,5=worley,6=voronoi,7=white; default (and 3/fbm) reads
+// 3=fbm,4=sdf_sphere,5=worley,6=voronoi,7=white,8=sdf_box,9=sdf_cone,
+// 10=sdf_capsule,11=sdf_cylinder,12=sdf_plume; default (and 3/fbm) reads
 // the extra fields off L (octaves/persistence/lacunarity/fbm_base for fbm;
-// sdf_radius/sdf_softness for sdf_sphere; worley_mode for worley) since
-// WGSL has no global uniforms to fall back on.
+// sdf_radius/sdf_softness[/sdf_height] for the SDF shapes; worley_mode for
+// worley) since WGSL has no global uniforms to fall back on.
 fn eval_noise(L: GpuLayer, p: vec3<f32>) -> f32 {
   switch (L.noise_type) {
     case 0u: { return noise_value(p, L.seed); }
@@ -703,6 +763,11 @@ fn eval_noise(L: GpuLayer, p: vec3<f32>) -> f32 {
     case 5u: { return noise_worley(p, L.seed, L.worley_mode); }
     case 6u: { return noise_voronoi(p, L.seed); }
     case 7u: { return noise_white(p, L.seed); }
+    case 8u: { return sdf_box(p, L.sdf_radius, L.sdf_softness); }
+    case 9u: { return sdf_cone(p, L.sdf_radius, L.sdf_softness); }
+    case 10u: { return sdf_capsule(p, L.sdf_radius, L.sdf_softness, L.sdf_height); }
+    case 11u: { return sdf_cylinder(p, L.sdf_radius, L.sdf_softness, L.sdf_height); }
+    case 12u: { return sdf_plume(p, L.sdf_radius, L.sdf_softness, L.sdf_height); }
     default: { return noise_value(p, L.seed); }
   }
 }
@@ -729,19 +794,19 @@ fn animated_domain_offset(seed: f32, anim_phase: f32, anim_evolutions: f32) -> v
 }
 
 // layer_gen.frag.glsl L44-67 (sampleNoiseAtVolumePos) — fix round 1. Per-
-// source-type position transform: SDF sources (noise_type 4u = SdfSphere,
-// the only SDF type today, L44-46/L48-54) center the volume first so
-// offset=[0,0,0] puts the shape at uvw=0.5, and skip domain animation
-// entirely (an SDF shape has no tiling seams to hide); noise sources
-// (L55-59) scale+offset directly in [0,1] volume space, then rotate, then
-// apply animatedDomainOffset() (L59, cycle-4 task 2 — now wired below).
-// v2's `applyDistortion(p)` (L63, both branches) is NOT ported — distortion_type
-// isn't wired to any distortion function this cycle (out of scope; see
-// GpuLayer.distortion_type).
+// source-type position transform: SDF sources (is_sdf(noise_type) — sphere
+// plus box/cone/capsule/cylinder/plume, L44-46/L48-54) center the volume
+// first so offset=[0,0,0] puts the shape at uvw=0.5, and skip domain
+// animation entirely (an SDF shape has no tiling seams to hide); noise
+// sources (L55-59) scale+offset directly in [0,1] volume space, then
+// rotate, then apply animatedDomainOffset() (L59, cycle-4 task 2 — now
+// wired below). v2's `applyDistortion(p)` (L63, both branches) is NOT
+// ported — distortion_type isn't wired to any distortion function this
+// cycle (out of scope; see GpuLayer.distortion_type).
 fn sample_noise_at(L: GpuLayer, uvw: vec3<f32>) -> f32 {
   let rot = mat3x3<f32>(L.rot0.xyz, L.rot1.xyz, L.rot2.xyz);
   var p: vec3<f32>;
-  if (L.noise_type == 4u) {
+  if (is_sdf(L.noise_type)) {
     // SDF_SOURCE branch (layer_gen.frag.glsl L48-54).
     p = (uvw - vec3<f32>(0.5)) * L.scale.xyz + L.offset.xyz;
     p = rot * p;
@@ -806,7 +871,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // layer_gen.frag.glsl L169-177: SDF sources sample once (no tiling
     // blend); everything else goes through the 8-corner tileable blend.
     var v: f32;
-    if (L.noise_type == 4u) {
+    if (is_sdf(L.noise_type)) {
       v = sample_noise_at(L, uvw);
     } else {
       v = sample_noise_tileable(L, uvw);

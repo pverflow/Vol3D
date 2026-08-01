@@ -12,7 +12,7 @@ use crate::ui_logic::{add_layer, delete_layer, duplicate_layer, move_down, move_
 const LUT_WIDTH: usize = 256;
 
 /// Noise-type choices offered by the Properties panel's combo box, in display order.
-const NOISE_TYPES: [NoiseType; 8] = [
+const NOISE_TYPES: [NoiseType; 13] = [
     NoiseType::Value,
     NoiseType::Perlin,
     NoiseType::Simplex,
@@ -21,6 +21,11 @@ const NOISE_TYPES: [NoiseType; 8] = [
     NoiseType::Worley,
     NoiseType::Voronoi,
     NoiseType::White,
+    NoiseType::SdfBox,
+    NoiseType::SdfCone,
+    NoiseType::SdfCapsule,
+    NoiseType::SdfCylinder,
+    NoiseType::SdfPlume,
 ];
 
 /// Worley-mode choices (F1/F2/F2-F1 -> `worley_mode` 0/1/2, matches v2's
@@ -50,6 +55,11 @@ fn noise_type_label(t: NoiseType) -> &'static str {
         NoiseType::Worley => "Worley",
         NoiseType::Voronoi => "Voronoi",
         NoiseType::White => "White",
+        NoiseType::SdfBox => "SDF Box",
+        NoiseType::SdfCone => "SDF Cone",
+        NoiseType::SdfCapsule => "SDF Capsule",
+        NoiseType::SdfCylinder => "SDF Cylinder",
+        NoiseType::SdfPlume => "SDF Plume",
     }
 }
 
@@ -471,7 +481,7 @@ impl Vol3dApp {
                         ui.end_row();
                     }
 
-                    if self.layers[i].noise_type == NoiseType::SdfSphere {
+                    if self.layers[i].noise_type.is_sdf() {
                         ui.label("Radius");
                         if ui
                             .add(egui::DragValue::new(&mut self.layers[i].sdf_radius).speed(0.01))
@@ -490,14 +500,25 @@ impl Vol3dApp {
                         }
                         ui.end_row();
 
-                        ui.label("Height");
-                        if ui
-                            .add(egui::DragValue::new(&mut self.layers[i].sdf_height).speed(0.01))
-                            .changed()
-                        {
-                            self.mark_dirty(ui.ctx());
+                        // Height only affects capsule/cylinder/plume (generate.wgsl
+                        // sdf_capsule/sdf_cylinder/sdf_plume); sphere/box/cone derive
+                        // their extent from radius alone (v2 sdfField.ts parity).
+                        if matches!(
+                            self.layers[i].noise_type,
+                            NoiseType::SdfCapsule | NoiseType::SdfCylinder | NoiseType::SdfPlume
+                        ) {
+                            ui.label("Height");
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut self.layers[i].sdf_height)
+                                        .speed(0.01),
+                                )
+                                .changed()
+                            {
+                                self.mark_dirty(ui.ctx());
+                            }
+                            ui.end_row();
                         }
-                        ui.end_row();
                     }
                 });
             });

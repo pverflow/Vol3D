@@ -19,7 +19,10 @@ use crate::ramp::ColorRamp;
 /// discriminants (`generate.wgsl`'s `eval_noise`/`eval_base_noise` switches):
 /// `0=Value, 1=Perlin, 2=Simplex, 3=FBM, 4=SdfSphere, 5=Worley, 6=Voronoi,
 /// 7=White` (Worley/Voronoi/White appended cycle 4 task 1, v2 parity port —
-/// see v2's `NoiseType`/`WorleyMode`, `src/types/noise.ts`).
+/// see v2's `NoiseType`/`WorleyMode`, `src/types/noise.ts`), `8=SdfBox,
+/// 9=SdfCone, 10=SdfCapsule, 11=SdfCylinder, 12=SdfPlume` (cycle 4 task 2,
+/// v2 parity port — see v2's `src/core/sdfField.ts` /
+/// `src/shaders/noise/sdf_{box,cone,capsule,cylinder,plume}.glsl`).
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoiseType {
@@ -31,16 +34,28 @@ pub enum NoiseType {
     Worley = 5,
     Voronoi = 6,
     White = 7,
+    SdfBox = 8,
+    SdfCone = 9,
+    SdfCapsule = 10,
+    SdfCylinder = 11,
+    SdfPlume = 12,
 }
 
 impl NoiseType {
     /// True for source types whose `eval_noise` is a signed-distance-based
     /// shape (reads sdf_radius/sdf_softness[/sdf_height]) rather than a
     /// procedural noise field — mirrors v2's `isSdfSource`
-    /// (`src/types/noise.ts`). Only `SdfSphere` today; task 2 (box/cone/
-    /// plume/capsule/cylinder SDFs) extends this match.
+    /// (`src/types/noise.ts`). All 6 SDF shapes (task 2 completed the set).
     pub fn is_sdf(self) -> bool {
-        matches!(self, NoiseType::SdfSphere)
+        matches!(
+            self,
+            NoiseType::SdfSphere
+                | NoiseType::SdfBox
+                | NoiseType::SdfCone
+                | NoiseType::SdfCapsule
+                | NoiseType::SdfCylinder
+                | NoiseType::SdfPlume
+        )
     }
 }
 
@@ -391,6 +406,11 @@ mod tests {
         assert_eq!(NoiseType::Worley as u32, 5);
         assert_eq!(NoiseType::Voronoi as u32, 6);
         assert_eq!(NoiseType::White as u32, 7);
+        assert_eq!(NoiseType::SdfBox as u32, 8);
+        assert_eq!(NoiseType::SdfCone as u32, 9);
+        assert_eq!(NoiseType::SdfCapsule as u32, 10);
+        assert_eq!(NoiseType::SdfCylinder as u32, 11);
+        assert_eq!(NoiseType::SdfPlume as u32, 12);
 
         assert_eq!(BlendMode::Normal as u32, 0);
         assert_eq!(BlendMode::Add as u32, 1);
@@ -399,6 +419,31 @@ mod tests {
         assert_eq!(BlendMode::Overlay as u32, 4);
         assert_eq!(BlendMode::Subtract as u32, 5);
         assert_eq!(BlendMode::SmoothMin as u32, 6);
+    }
+
+    #[test]
+    fn is_sdf_true_for_sdf_shapes_false_for_noise_sources() {
+        for t in [
+            NoiseType::SdfSphere,
+            NoiseType::SdfBox,
+            NoiseType::SdfCone,
+            NoiseType::SdfCapsule,
+            NoiseType::SdfCylinder,
+            NoiseType::SdfPlume,
+        ] {
+            assert!(t.is_sdf(), "{t:?} should be an SDF source");
+        }
+        for t in [
+            NoiseType::Value,
+            NoiseType::Perlin,
+            NoiseType::Simplex,
+            NoiseType::Fbm,
+            NoiseType::Worley,
+            NoiseType::Voronoi,
+            NoiseType::White,
+        ] {
+            assert!(!t.is_sdf(), "{t:?} should not be an SDF source");
+        }
     }
 
     #[test]
