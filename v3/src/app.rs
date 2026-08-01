@@ -1,7 +1,7 @@
 use crate::anim;
 use crate::camera::OrbitCamera;
 use crate::gradient::gradient_editor;
-use crate::layer::{self, BlendMode, GenParams, LayerDesc, NoiseType};
+use crate::layer::{self, BlendMode, DistortionType, GenParams, LayerDesc, NoiseType};
 use crate::ramp::{self, ColorRamp};
 use crate::render::raymarch::RaymarchCallback;
 use crate::theme::Theme;
@@ -32,6 +32,16 @@ const NOISE_TYPES: [NoiseType; 13] = [
 /// `WorleyMode` enum order, `src/types/noise.ts`), offered by the Properties
 /// panel's Worley Mode combo when `noise_type == Worley`.
 const WORLEY_MODES: [u32; 3] = [0, 1, 2];
+
+/// Distortion-type choices offered by the Properties panel's combo box, in display order
+/// (matches v2's `DistortionType`, `src/types/layer.ts`).
+const DISTORTION_TYPES: [DistortionType; 5] = [
+    DistortionType::None,
+    DistortionType::DomainWarp,
+    DistortionType::Curl,
+    DistortionType::Swirl,
+    DistortionType::Polar,
+];
 
 /// Blend-mode choices offered by the Layers/Properties panels' combo boxes, in display order
 /// (matches v2's `BLEND_MODE_INDEX`).
@@ -69,6 +79,16 @@ fn worley_mode_label(mode: u32) -> &'static str {
         0 => "F1",
         1 => "F2",
         _ => "F2 - F1",
+    }
+}
+
+fn distortion_type_label(t: DistortionType) -> &'static str {
+    match t {
+        DistortionType::None => "None",
+        DistortionType::DomainWarp => "Domain Warp",
+        DistortionType::Curl => "Curl",
+        DistortionType::Swirl => "Swirl",
+        DistortionType::Polar => "Polar",
     }
 }
 
@@ -578,6 +598,74 @@ impl Vol3dApp {
                             }
                         });
                         ui.end_row();
+                    });
+            });
+
+        egui::CollapsingHeader::new("Distortion")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::Grid::new("grid-distortion")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        let prev_dt = self.layers[i].distortion_type;
+                        ui.label("Type");
+                        egui::ComboBox::from_id_salt("distortion-type-combo")
+                            .selected_text(distortion_type_label(self.layers[i].distortion_type))
+                            .show_ui(ui, |ui| {
+                                for t in DISTORTION_TYPES {
+                                    ui.selectable_value(
+                                        &mut self.layers[i].distortion_type,
+                                        t,
+                                        distortion_type_label(t),
+                                    );
+                                }
+                            });
+                        if self.layers[i].distortion_type != prev_dt {
+                            self.mark_dirty(ui.ctx());
+                        }
+                        ui.end_row();
+
+                        if self.layers[i].distortion_type != DistortionType::None {
+                            ui.label("Strength");
+                            if ui
+                                .add(egui::Slider::new(
+                                    &mut self.layers[i].distortion_strength,
+                                    0.0..=2.0,
+                                ))
+                                .changed()
+                            {
+                                self.mark_dirty(ui.ctx());
+                            }
+                            ui.end_row();
+
+                            if self.layers[i].distortion_type == DistortionType::DomainWarp {
+                                ui.label("Warp Freq");
+                                if ui
+                                    .add(egui::Slider::new(
+                                        &mut self.layers[i].distortion_frequency,
+                                        0.5..=10.0,
+                                    ))
+                                    .changed()
+                                {
+                                    self.mark_dirty(ui.ctx());
+                                }
+                                ui.end_row();
+                            }
+
+                            if self.layers[i].distortion_type == DistortionType::Swirl {
+                                ui.label("Swirl Amt");
+                                if ui
+                                    .add(egui::Slider::new(
+                                        &mut self.layers[i].distortion_swirl,
+                                        -5.0..=5.0,
+                                    ))
+                                    .changed()
+                                {
+                                    self.mark_dirty(ui.ctx());
+                                }
+                                ui.end_row();
+                            }
+                        }
                     });
             });
 
