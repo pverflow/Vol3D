@@ -1,10 +1,12 @@
-# Running the v3 PoC — Cycle ⑤ (Raymarch Perf: Empty-Space Skip + Reduced-Res Playback Bake) + Temporal Interpolation
+# Running the v3 PoC — Cycle ⑥ (FPS-Driven Cache + Interpolation Toggle)
 
 ## Interactive Authoring & Animation
 
-Build a colored volumetric scene with a live-updating UI, now with real-time animation playback and **fast playback baking via empty-space skipping**. Start with a blank canvas or a preset scene, add/modify layers to author custom color clouds, and animate them by pressing Play. Edits still regenerate with ~120ms debounce; pressing Play now bakes at **reduced resolution** so the **full requested frame count fits in VRAM**, each frame is a smaller texture (far less raymarch bandwidth), and the **pause frame snaps to crisp full resolution**. The raymarch jumps over empty regions via a coarse occupancy structure, so sparse fire/smoke scenes render much faster. 
+Build a colored volumetric scene with a live-updating UI, now with **FPS-driven animation playback**. Start with a blank canvas or a preset scene, add/modify layers to author custom color clouds, and animate them by pressing Play. Edits still regenerate with ~120ms debounce; pressing Play now bakes `fps × loop_seconds` frames into a **4 GB cache** (auto-resolution: ~128³–192³ for typical game loops, 64³ for long ones) and plays them at real time — so **type 30 → ~30 updates/sec, type 60 → ~60**.
 
-**NEW: Playback now interpolates smoothly between baked frames**, blending adjacent frames by the current animation phase. This means a **long loop (e.g. 10 seconds) with a modest frame count (e.g. 24) now plays smoothly**—no more stepping or choppiness. Smoothness no longer requires a high frame count, so you can bake fewer frames and still get fluid motion.
+**NEW: FPS control replaces raw frame count.** Type any FPS value, and playback adapts the update rate accordingly. The **Interpolate checkbox** (off by default) lets you choose between **crisp true-FPS steps** (no ghosting) or **smooth crossfade blend** between frames (smoother on slow motion, but may ghost on fast-moving features).
+
+**Minimum spec: 4 GB free VRAM.** A one-time bake hitch on Play scales with N (e.g. 30 fps × 17 s ≈ 510 frames); async/progressive bake is a deferred follow-up.
 
 The UI retains the dark pro-tool theme from cycle ③ with light/dark toggle.
 
@@ -23,9 +25,10 @@ The UI retains the **dark pro-tool theme** matching v2's visual language. A **li
 - **Play / Pause button:** Start/stop the loop animation
 - **Loop duration (seconds):** How long one full loop takes
 - **Evolutions slider:** Number of animated noise evolutions (raising this makes noise animate faster)
-- **Frame count:** Total number of distinct baked frames N. Interpolation smooths playback *between* these frames, so you can keep this modest and still get smooth motion.
+- **FPS field:** Playback framerate (default 30). Typing 30 bakes ~30 frames into cache and plays at ~30 updates/sec; typing 60 → ~60 updates/sec.
+- **Interpolate checkbox:** Off (default) = crisp true-FPS steps (no ghosting); On = crossfade blend between frames (smoother motion, may ghost on fast-moving features).
 - **Phase scrub slider:** Jump to any point in the loop (0 to 1)
-- **Cache readout:** Shows cache status — e.g., "baked 60 @128³" or "stale" (invalidated by edits)
+- **Cache readout:** Shows bake status — e.g., "baked 60 @ 128³ (0.5 GB) — 30 fps — steps" or "baked 60 @ 128³ (0.5 GB) — 30 fps — smooth" (if Interpolate on), or "stale" (invalidated by edits)
 
 ### Layout
 
@@ -65,12 +68,14 @@ Organized into collapsible groups with tidy aligned rows:
     - **Changes apply live** to the viewport (debounced ~120ms)
 
 **Bottom panel (Animation controls):**
+Refer to "Animation panel" above for the full list. Key controls:
 - Play/Pause button
 - Loop duration slider (in seconds)
 - Evolutions slider (affects noise animation speed)
-- Frame count display (set by bake)
+- **FPS field** (default 30) — type to adjust playback framerate
+- **Interpolate checkbox** — toggle between crisp (off) and smooth (on) playback
 - Phase scrub slider (jump to any point in the loop)
-- Cache status readout (e.g., "baked 60 @128³" or "stale")
+- Cache status readout (e.g., "baked 60 @ 128³ (0.5 GB) — 30 fps — steps" or "stale")
 
 **Center (Viewport):**
 - 3D view of the current volume, animated if playing
@@ -82,27 +87,18 @@ Organized into collapsible groups with tidy aligned rows:
 
 ## What to report back
 
-**Temporal interpolation (NEW — the key test):**
-- **Set a long loop (e.g. 10 seconds) with low frame count (e.g. 24)** and press Play.
-  - **Is playback smooth now?** Should see no stepping or choppiness — the animation should flow smoothly between the baked frames.
-  - **Any ghosting or double-imaging on fast motion?** (E.g. high **Evolutions** or fast domain movement.) Linear frame blending can cause ghosting on fast-moving features. Report any scenes where it's visibly bad so we can prioritize velocity-warp (ghost-free) interpolation.
-- **Is live editing + paused unchanged?** Edit a layer while paused, and compare the paused frame to before. Should be identical (live edits do not use interpolation; they use the union of both frames, same as before).
-- **Any visual artifacts — holes or clipping on occupancy boundary?** Should not see any; the occupancy skip uses the union of both interpolated frames. Report any holes or clipping.
+**The core FPS + interpolation test:**
 
-**At 256³ (the case that was 1–2 fps) — the baseline test:**
-- **Is Play now smooth?** Report the ms/frame and fps during playback. (This is the target metric: empty-space skipping + reduced-res playback bake should make 256³ fast.)
-- **Does the full requested frame count bake**, or is it still clamped? (Playback should bake all N frames you request, not just 8.)
-- **Is the paused frame crisp and full-resolution?** (Pause should snap to the full requested resolution, not stay reduced.)
+1. **Typed FPS visibly matches update rate?** Type **30**, press Play, and watch the motion. Then type **60** and play again. Does the animation speed up accordingly (twice as fast at 60 fps)? Report the actual fps from the top-bar counter during playback.
 
-**Empty-space skipping behavior:**
-- **Sparse scene (fire/smoke):** Does it speed up a lot compared to cycle ④? (Expected: big speedup from jumping over empty air.)
-- **Dense cube-filling scene:** Is the speedup less than sparse? (Expected: less empty space to skip.)
-- **Any visual holes or clipping of faint smoke?** (Report if you see clipping artifacts; this indicates the occupancy skip threshold needs tuning. Include a screenshot or description.)
+2. **Interpolate toggle crisp vs smooth?** 
+   - Set **Interpolate OFF** (default) and play a loop. Should see crisp, true-FPS stepping — no blur between frames.
+   - Toggle **Interpolate ON**. Same loop should now crossfade smoothly between frames. Does it look smoother? 
+   - On fast-moving features or high-evolution scenes, does **ON** cause visible ghosting (double-imaging)? Report any ghosting you see.
 
-**Animation controls & playback:**
-- Does the **Play/Pause button** start and stop the animation loop?
-- Do the **loop duration, evolutions, and frame count controls** update correctly?
-- Does **Play bake then play SMOOTHLY**? (Watch the FPS/MS counter in the top bar during playback.)
+3. **Readout looks sane?** Watch the cache readout during playback. Does it show format like `"baked N @ res³ (X.X GB) — Y fps — steps/smooth"`? Do the numbers track with what you typed? (E.g. type 30 fps → should show 30; type 60 → should show 60.)
+
+4. **Long loops soften, not crash?** Set **Loop duration** to a long value (e.g. 20–30 seconds) with **FPS 30**, then press Play. The bake should auto-downres to 64³ to fit the 4 GB budget, not crash or hang. Does it bake and play? Compare the cached resolution in the readout to a short loop (should soften from 128³–192³ to 64³).
 
 **Layer editing during playback:**
 - While playing, **edit a layer** (change amplitude, scale, noise type, etc.).
@@ -110,27 +106,27 @@ Organized into collapsible groups with tidy aligned rows:
 - Does **playback continue smoothly** with the old cached frames?
 - Press **Play again** (or let it loop): Does it **re-bake with the new edits** before resuming playback?
 
+**Interpolation & live editing:**
+- Is live editing + paused unchanged? Edit a layer while paused, and compare the paused frame to before. Should be identical (live edits do not use interpolation; they use static union of both frames, same as before).
+
 **Rendering & UI regression:**
-- Does the **viewport rotate smoothly**? (No regression from cycle ④.)
+- Does the **viewport rotate smoothly**?
 - Do **layer editing and gradient controls** still work as before?
 - Any **UI crashes or shader compilation errors**?
 
 **Errors:**
-- Paste any **egui, wgpu, or WGSL compilation error** from the native terminal or web console, especially:
-  - Occupancy texture binding or compute errors
-  - Raymarch empty-space skip shader issues
-  - WebGPU adapter fallback (web only)
+- Paste any **egui, wgpu, or WGSL compilation error** from the native terminal or web console.
 
 ## Known this cycle
 
+- **One-time bake hitch on Play:** The cache bakes all N frames on the first Play press after an edit. This scales with N (e.g. 30 fps × 17 s ≈ 510 frames = noticeable delay). Async/progressive bake is deferred.
 - **Paused scrubbing:** Currently, the phase slider only moves during Play; scrubbing while paused does NOT update the view. This is a deliberate trade-off to keep the paused frame at crisp full resolution. Can be restored on request.
-- **Cache label:** The readout shows "baked N @res³" — the **res³ is the requested resolution, not the actual reduced bake resolution**. The actual bake is at a lower resolution to fit VRAM; pause restores full resolution.
 
 ## Deferred (not in this cycle)
 
-- Lower-resolution screen-space raymarch (currently full-res raymarching)
+- **Async / progressive bake:** Currently all N frames bake synchronously on Play press. Should defer baking to background thread, display a progress bar, and start playback with available frames.
+- **Live-regen playback:** VRAM-free alternative that re-renders each frame on-demand (trades compute for memory). Ghost-free, no cache ceiling, but slower playback. For future exploration if the 4 GB cache becomes a bottleneck.
 - Velocity-warp / optical-flow interpolation (ghost-free fast motion; current linear blend can ghost on fast-moving features)
-- Temporal interpolation of the live editing path (live edits currently use static union of two frames; could interpolate for smoother live scrubbing)
 - True sparse brick atlas (current occupancy is a voxel grid; a brick atlas would be more memory-efficient for very sparse scenes)
 
 ### Run paths
