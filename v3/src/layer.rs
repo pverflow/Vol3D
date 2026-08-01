@@ -15,9 +15,11 @@
 
 use crate::ramp::ColorRamp;
 
-/// Noise/shape source for a layer's `noiseEval`. Fixed subset for v3 cycle 2
-/// (Task 2's WGSL depends on these exact discriminants):
-/// `0=Value, 1=Perlin, 2=Simplex, 3=FBM, 4=SdfSphere`.
+/// Noise/shape source for a layer's `noiseEval`. WGSL depends on these exact
+/// discriminants (`generate.wgsl`'s `eval_noise`/`eval_base_noise` switches):
+/// `0=Value, 1=Perlin, 2=Simplex, 3=FBM, 4=SdfSphere, 5=Worley, 6=Voronoi,
+/// 7=White` (Worley/Voronoi/White appended cycle 4 task 1, v2 parity port —
+/// see v2's `NoiseType`/`WorleyMode`, `src/types/noise.ts`).
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoiseType {
@@ -26,6 +28,20 @@ pub enum NoiseType {
     Simplex = 2,
     Fbm = 3,
     SdfSphere = 4,
+    Worley = 5,
+    Voronoi = 6,
+    White = 7,
+}
+
+impl NoiseType {
+    /// True for source types whose `eval_noise` is a signed-distance-based
+    /// shape (reads sdf_radius/sdf_softness[/sdf_height]) rather than a
+    /// procedural noise field — mirrors v2's `isSdfSource`
+    /// (`src/types/noise.ts`). Only `SdfSphere` today; task 2 (box/cone/
+    /// plume/capsule/cylinder SDFs) extends this match.
+    pub fn is_sdf(self) -> bool {
+        matches!(self, NoiseType::SdfSphere)
+    }
 }
 
 /// Compositing mode a layer blends into the accumulated volume with. Order
@@ -372,6 +388,9 @@ mod tests {
         assert_eq!(NoiseType::Simplex as u32, 2);
         assert_eq!(NoiseType::Fbm as u32, 3);
         assert_eq!(NoiseType::SdfSphere as u32, 4);
+        assert_eq!(NoiseType::Worley as u32, 5);
+        assert_eq!(NoiseType::Voronoi as u32, 6);
+        assert_eq!(NoiseType::White as u32, 7);
 
         assert_eq!(BlendMode::Normal as u32, 0);
         assert_eq!(BlendMode::Add as u32, 1);

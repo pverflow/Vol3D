@@ -12,13 +12,21 @@ use crate::ui_logic::{add_layer, delete_layer, duplicate_layer, move_down, move_
 const LUT_WIDTH: usize = 256;
 
 /// Noise-type choices offered by the Properties panel's combo box, in display order.
-const NOISE_TYPES: [NoiseType; 5] = [
+const NOISE_TYPES: [NoiseType; 8] = [
     NoiseType::Value,
     NoiseType::Perlin,
     NoiseType::Simplex,
     NoiseType::Fbm,
     NoiseType::SdfSphere,
+    NoiseType::Worley,
+    NoiseType::Voronoi,
+    NoiseType::White,
 ];
+
+/// Worley-mode choices (F1/F2/F2-F1 -> `worley_mode` 0/1/2, matches v2's
+/// `WorleyMode` enum order, `src/types/noise.ts`), offered by the Properties
+/// panel's Worley Mode combo when `noise_type == Worley`.
+const WORLEY_MODES: [u32; 3] = [0, 1, 2];
 
 /// Blend-mode choices offered by the Layers/Properties panels' combo boxes, in display order
 /// (matches v2's `BLEND_MODE_INDEX`).
@@ -39,6 +47,18 @@ fn noise_type_label(t: NoiseType) -> &'static str {
         NoiseType::Simplex => "Simplex",
         NoiseType::Fbm => "FBM",
         NoiseType::SdfSphere => "SDF Sphere",
+        NoiseType::Worley => "Worley",
+        NoiseType::Voronoi => "Voronoi",
+        NoiseType::White => "White",
+    }
+}
+
+/// Label for a `worley_mode` u32 (0/1/2), matching `WORLEY_MODES` order.
+fn worley_mode_label(mode: u32) -> &'static str {
+    match mode {
+        0 => "F1",
+        1 => "F2",
+        _ => "F2 - F1",
     }
 }
 
@@ -380,6 +400,26 @@ impl Vol3dApp {
                     }
                     ui.end_row();
 
+                    if self.layers[i].noise_type == NoiseType::Worley {
+                        ui.label("Worley Mode");
+                        let prev_mode = self.layers[i].worley_mode;
+                        egui::ComboBox::from_id_salt("worley-mode-combo")
+                            .selected_text(worley_mode_label(self.layers[i].worley_mode))
+                            .show_ui(ui, |ui| {
+                                for m in WORLEY_MODES {
+                                    ui.selectable_value(
+                                        &mut self.layers[i].worley_mode,
+                                        m,
+                                        worley_mode_label(m),
+                                    );
+                                }
+                            });
+                        if self.layers[i].worley_mode != prev_mode {
+                            self.mark_dirty(ui.ctx());
+                        }
+                        ui.end_row();
+                    }
+
                     if self.layers[i].noise_type == NoiseType::Fbm {
                         ui.label("Octaves");
                         if ui
@@ -414,7 +454,9 @@ impl Vol3dApp {
                             .selected_text(noise_type_label(self.layers[i].fbm_base))
                             .show_ui(ui, |ui| {
                                 for t in NOISE_TYPES {
-                                    if t != NoiseType::Fbm {
+                                    // fbm never recurses into itself or an sdf shape
+                                    // (see eval_base_noise in generate.wgsl).
+                                    if t != NoiseType::Fbm && !t.is_sdf() {
                                         ui.selectable_value(
                                             &mut self.layers[i].fbm_base,
                                             t,

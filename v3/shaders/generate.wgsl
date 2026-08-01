@@ -8,7 +8,9 @@
 // (bind group layout, buffer upload) to this shader.
 //
 // noise_type u32 mapping (must match v3/src/layer.rs `NoiseType`, pinned by
-// Task 1): 0 = Value, 1 = Perlin, 2 = Simplex, 3 = Fbm, 4 = SdfSphere.
+// Task 1): 0 = Value, 1 = Perlin, 2 = Simplex, 3 = Fbm, 4 = SdfSphere,
+// 5 = Worley, 6 = Voronoi, 7 = White (Worley/Voronoi/White added cycle 4
+// task 1, v2 parity port).
 // blend_mode u32 mapping (must match v3/src/layer.rs `BlendMode`, same v2
 // BLEND_MODE_INDEX order): 0 Normal, 1 Add, 2 Multiply, 3 Screen,
 // 4 Overlay, 5 Subtract, 6 SmoothMin.
@@ -32,16 +34,17 @@ fn hash13(p3_in: vec3<f32>) -> f32 {
   return fract((p3.x + p3.y) * p3.z);
 }
 
-// hash.glsl L16-20 (ported for fidelity/completeness; not currently called —
-// v2's worley/distortion noise types are out of scope for this task, see
-// GpuLayer.worley_mode/distortion_type which are carried but unused here).
+// hash.glsl L16-20. Used by noise_worley/noise_voronoi below (cycle 4 task
+// 1); GpuLayer.distortion_type remains carried-but-unused (out of scope for
+// this task).
 fn hash33(p3_in: vec3<f32>) -> vec3<f32> {
   var p3 = fract(p3_in * vec3<f32>(0.1031, 0.1030, 0.0973));
   p3 = p3 + vec3<f32>(dot(p3, p3.yxz + vec3<f32>(33.33)));
   return fract((p3.xxy + p3.yxx) * p3.zyx);
 }
 
-// hash.glsl L22-26 (see hash33 note above — unused today, ported for parity).
+// hash.glsl L22-26 (ported for parity; not currently called — no v2 source
+// used hash23 either).
 fn hash23(p3_in: vec3<f32>) -> vec2<f32> {
   var p3 = fract(p3_in * vec3<f32>(0.1031, 0.1030, 0.0973));
   p3 = p3 + vec3<f32>(dot(p3, p3.yzx + vec3<f32>(33.33)));
@@ -316,15 +319,19 @@ fn noise_simplex(p: vec3<f32>, seed: f32) -> f32 {
 // shader assembler; here that dispatch is explicit via eval_base_noise.
 // ---------------------------------------------------------------------
 
-// Dispatch helper for fbm's per-octave base noise (value/perlin/simplex
-// only, matching v2's assembler-selected base — fbm never recurses into sdf
-// or fbm itself). `base` uses the same NoiseType discriminants as
-// noise_type (0/1/2 meaningful here).
+// Dispatch helper for fbm's per-octave base noise (matching v2's
+// assembler-selected base — fbm never recurses into sdf or fbm itself).
+// `base` uses the same NoiseType discriminants as noise_type (0/1/2/5/6/7
+// meaningful here). Worley's base case has no `GpuLayer` in scope to read a
+// per-layer worley_mode from, so it hardcodes mode 0u (F1).
 fn eval_base_noise(base: u32, p: vec3<f32>, seed: f32) -> f32 {
   switch (base) {
     case 0u: { return noise_value(p, seed); }
     case 1u: { return noise_perlin(p, seed); }
     case 2u: { return noise_simplex(p, seed); }
+    case 5u: { return noise_worley(p, seed, 0u); }
+    case 6u: { return noise_voronoi(p, seed); }
+    case 7u: { return noise_white(p, seed); }
     default: { return noise_value(p, seed); }
   }
 }
@@ -360,6 +367,97 @@ fn noise_fbm(p_in: vec3<f32>, octaves: u32, persistence: f32, lacunarity: f32, b
 fn sdf_sphere(p: vec3<f32>, radius: f32, softness: f32) -> f32 {
   let sd = length(p) - radius;
   return 1.0 - smoothstep(0.0, max(softness, 1e-4), sd);
+}
+
+// ---------------------------------------------------------------------
+// Noise: src/shaders/noise/worley3d.glsl -> noise_worley(p, seed, mode)
+// worley_mode: 0 = F1, 1 = F2, 2 = F2-F1 (matches v2's u_worleyMode /
+// TS WorleyMode enum order, src/types/noise.ts).
+// ---------------------------------------------------------------------
+
+// worley3d.glsl L7-25 (_worley3) — 3x3x3 cell search, returns vec2(F1, F2).
+fn worley_f1f2(p: vec3<f32>, seed: f32) -> vec2<f32> {
+  let ip = floor(p);
+  let fp = fract(p);
+
+  var f1 = 999.0;
+  var f2 = 999.0;
+
+  for (var k: i32 = -1; k <= 1; k = k + 1) {
+    for (var j: i32 = -1; j <= 1; j = j + 1) {
+      for (var i: i32 = -1; i <= 1; i = i + 1) {
+        let cell = vec3<f32>(f32(i), f32(j), f32(k));
+        let cell_point = cell + hash33(ip + cell + vec3<f32>(seed));
+        let d = length(cell_point - fp);
+        if (d < f1) {
+          f2 = f1;
+          f1 = d;
+        } else if (d < f2) {
+          f2 = d;
+        }
+      }
+    }
+  }
+  return vec2<f32>(f1, f2);
+}
+
+// worley3d.glsl L27-32 (noiseEval)
+fn noise_worley(p: vec3<f32>, seed: f32, mode: u32) -> f32 {
+  let f = worley_f1f2(p, seed);
+  if (mode == 0u) {
+    return clamp(1.0 - f.x * 1.5, 0.0, 1.0);
+  } else if (mode == 1u) {
+    return clamp(1.0 - f.y * 1.1, 0.0, 1.0);
+  }
+  return clamp((f.y - f.x) * 2.0, 0.0, 1.0);
+}
+
+// ---------------------------------------------------------------------
+// Noise: src/shaders/noise/voronoi3d.glsl -> noise_voronoi(p, seed)
+// ---------------------------------------------------------------------
+
+// voronoi3d.glsl L4-6 (_voronoiPoint)
+fn voronoi_point(cell: vec3<f32>, seed: f32) -> vec3<f32> {
+  return cell + hash33(cell + vec3<f32>(seed * 0.1));
+}
+
+// voronoi3d.glsl L8-36 (noiseEval). v2 also computes `fp = fract(p)` and a
+// `minPoint` that are assigned but never read (the returned edge value only
+// depends on minDist/secondDist) — dropped here as dead code.
+fn noise_voronoi(p: vec3<f32>, seed: f32) -> f32 {
+  let ip = floor(p);
+
+  var min_dist = 999.0;
+  var second_dist = 999.0;
+
+  for (var k: i32 = -1; k <= 1; k = k + 1) {
+    for (var j: i32 = -1; j <= 1; j = j + 1) {
+      for (var i: i32 = -1; i <= 1; i = i + 1) {
+        let cell = ip + vec3<f32>(f32(i), f32(j), f32(k));
+        let cell_point = voronoi_point(cell, seed);
+        let d = length(cell_point - p);
+        if (d < min_dist) {
+          second_dist = min_dist;
+          min_dist = d;
+        } else if (d < second_dist) {
+          second_dist = d;
+        }
+      }
+    }
+  }
+
+  // Smooth cell edges (voronoi3d.glsl L34-35).
+  let edge = second_dist - min_dist;
+  return clamp(edge * 2.5, 0.0, 1.0);
+}
+
+// ---------------------------------------------------------------------
+// Noise: src/shaders/noise/white3d.glsl -> noise_white(p, seed)
+// ---------------------------------------------------------------------
+
+// white3d.glsl L4-6 (noiseEval)
+fn noise_white(p: vec3<f32>, seed: f32) -> f32 {
+  return hash13(floor(p) + vec3<f32>(seed * 0.91));
 }
 
 // ---------------------------------------------------------------------
@@ -591,9 +689,10 @@ struct GenParams {
 @group(0) @binding(4) var ramp_samp: sampler;
 
 // eval_noise(L, p): dispatches on L.noise_type. 0=value,1=perlin,2=simplex,
-// 3=fbm,4=sdf_sphere; default (and 3/fbm) reads the extra fields off L
-// (octaves/persistence/lacunarity/fbm_base for fbm; sdf_radius/sdf_softness
-// for sdf_sphere) since WGSL has no global uniforms to fall back on.
+// 3=fbm,4=sdf_sphere,5=worley,6=voronoi,7=white; default (and 3/fbm) reads
+// the extra fields off L (octaves/persistence/lacunarity/fbm_base for fbm;
+// sdf_radius/sdf_softness for sdf_sphere; worley_mode for worley) since
+// WGSL has no global uniforms to fall back on.
 fn eval_noise(L: GpuLayer, p: vec3<f32>) -> f32 {
   switch (L.noise_type) {
     case 0u: { return noise_value(p, L.seed); }
@@ -601,6 +700,9 @@ fn eval_noise(L: GpuLayer, p: vec3<f32>) -> f32 {
     case 2u: { return noise_simplex(p, L.seed); }
     case 3u: { return noise_fbm(p, L.octaves, L.persistence, L.lacunarity, L.fbm_base, L.seed); }
     case 4u: { return sdf_sphere(p, L.sdf_radius, L.sdf_softness); }
+    case 5u: { return noise_worley(p, L.seed, L.worley_mode); }
+    case 6u: { return noise_voronoi(p, L.seed); }
+    case 7u: { return noise_white(p, L.seed); }
     default: { return noise_value(p, L.seed); }
   }
 }
@@ -634,8 +736,8 @@ fn animated_domain_offset(seed: f32, anim_phase: f32, anim_evolutions: f32) -> v
 // (L55-59) scale+offset directly in [0,1] volume space, then rotate, then
 // apply animatedDomainOffset() (L59, cycle-4 task 2 — now wired below).
 // v2's `applyDistortion(p)` (L63, both branches) is NOT ported — distortion_type
-// isn't wired to any distortion function this cycle (same "out of scope"
-// carve-out as Worley, see GpuLayer.worley_mode/distortion_type).
+// isn't wired to any distortion function this cycle (out of scope; see
+// GpuLayer.distortion_type).
 fn sample_noise_at(L: GpuLayer, uvw: vec3<f32>) -> f32 {
   let rot = mat3x3<f32>(L.rot0.xyz, L.rot1.xyz, L.rot2.xyz);
   var p: vec3<f32>;
