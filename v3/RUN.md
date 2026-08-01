@@ -43,6 +43,21 @@ Signed Distance Functions for volumetric sculpting; all parameterized by **Radiu
 
 The rest of the layer UI (Transform, Remap, Color, Blend mode, Gradient editor) remains unchanged.
 
+### Distortion
+
+Per-layer **Distortion** section in the Properties panel (v2 parity):
+- **Type:** combo (None, Domain Warp, Curl, Swirl, Polar)
+  - **None** — default; no distortion applied
+  - **Domain Warp** — wobbles the domain via noise, causing a liquid-like displacement
+  - **Curl** — divergence-free swirling flow (based on curl noise)
+  - **Swirl** — twists around the Y axis by height, creating a helical effect
+  - **Polar** — Cartesian→polar coordinate remap, remapping the domain radially
+- **Strength** (0–2) — scales the distortion magnitude (shown when type ≠ None)
+- **Warp Freq** (0.5–10) — domain frequency for **Domain Warp** only
+- **Swirl Amt** (−5..5) — twist amount for **Swirl** only
+
+Each distortion type warps the noise layer before rendering, enabling domain-based visual effects beyond simple coordinate transforms.
+
 
 ## What to report back
 
@@ -74,6 +89,28 @@ Verify the new generation primitives work correctly:
    - Adjust **Octaves** and **Lacunarity**. Should see fractal layering of the cellular/edge/static pattern, not a crash or blank output.
    - Report whether the FBM looks correct and distinct from the base noise.
 
+6. **New Distortion types warp layers visibly?**
+   - Create a layer with **Value** or **Perlin** noise. Set its distortion **Type** to each of: **Domain Warp, Curl, Swirl, Polar** (one at a time).
+   - For each type, adjust the **Strength** slider. Does the layer visibly warp?
+     - **Domain Warp** — should wobble the noise like a liquid displacement
+     - **Curl** — should create flowing, swirling patterns
+     - **Swirl** — should twist around the Y axis
+     - **Polar** — should remap the domain radially
+   - Verify **Strength** parameter scales the effect magnitude.
+   - For **Domain Warp**, adjust **Warp Freq** (0.5–10). Does the wobble frequency change?
+   - For **Swirl**, adjust **Swirl Amt** (−5..5). Does the twist amount change?
+   - Report whether each distortion type produces the expected visual effect.
+
+7. **Distortion type=None leaves layers unchanged?**
+   - Create a noise layer and verify its appearance.
+   - Set distortion **Type** to **None** (the default). Layer should look identical.
+   - Report whether type=None is a true no-op.
+
+8. **Existing scenes remain unaffected?**
+   - Load or recreate a v3 scene from before this cycle.
+   - Compare visually to before the distortion release. Should look identical (all layers have type=None by default).
+   - Report any unexpected changes or regressions.
+
 **Errors:**
 - Paste any **egui, wgpu, or WGSL compilation error** from the native terminal or web console.
 - Report any **visual artifacts** (z-fighting, NaN values, clipping) in the viewport.
@@ -85,10 +122,11 @@ Verify the new generation primitives work correctly:
 
 ## Deferred (not in this cycle)
 
-- **Distortion primitives:** Domain warp (curl noise, swirl, polar mapping), FBM-driven distortion — enables warping the input domain before evaluation.
 - **Export:** Save/load preset layers, scene bundles, and animated sequences.
 - **Presets:** Factory library of named FBM/Worley/Voronoi combinations, preset shape rigs.
 - **Feather & remap curve UI:** Spline-based in/out remapping (beyond hard min/max sliders); feather/falloff for SDF blend softness.
+- **Cutoff & contrast:** Hard clip and contrast scaling in the layer pipeline.
+- **Slice & projection views:** Multi-plane slice views and 2D projection UI for easier inspection of volumetric data.
 
 ### Run paths
 
