@@ -25,7 +25,7 @@ The UI retains the **dark pro-tool theme** matching v2's visual language. A **li
 - **Play / Pause button:** Start/stop the loop animation
 - **Loop duration (seconds):** How long one full loop takes
 - **Evolutions slider:** Number of animated noise evolutions (raising this makes noise animate faster)
-- **FPS field:** Playback framerate (default 30). Typing 30 bakes ~30 frames into cache and plays at ~30 updates/sec; typing 60 → ~60 updates/sec.
+- **FPS field:** Playback framerate (default 30). Sets the update rate: `fps × loop_seconds` frames are baked into cache. Type 30 → ~30 updates/sec; type 60 → ~60 updates/sec.
 - **Interpolate checkbox:** Off (default) = crisp true-FPS steps (no ghosting); On = crossfade blend between frames (smoother motion, may ghost on fast-moving features).
 - **Phase scrub slider:** Jump to any point in the loop (0 to 1)
 - **Cache readout:** Shows bake status — e.g., "baked 60 @ 128³ (0.5 GB) — 30 fps — steps" or "baked 60 @ 128³ (0.5 GB) — 30 fps — smooth" (if Interpolate on), or "stale" (invalidated by edits)
@@ -89,7 +89,7 @@ Refer to "Animation panel" above for the full list. Key controls:
 
 **The core FPS + interpolation test:**
 
-1. **Typed FPS visibly matches update rate?** Type **30**, press Play, and watch the motion. Then type **60** and play again. Does the animation speed up accordingly (twice as fast at 60 fps)? Report the actual fps from the top-bar counter during playback.
+1. **Typed FPS visibly matches update rate?** Type **30**, press Play, and watch the motion. Then type **60** and play again. The motion speed should stay the same (motion speed is set by Loop duration), but playback should look smoother/less stepped at 60 fps. Report the actual fps from the top-bar counter during playback.
 
 2. **Interpolate toggle crisp vs smooth?** 
    - Set **Interpolate OFF** (default) and play a loop. Should see crisp, true-FPS stepping — no blur between frames.
