@@ -35,8 +35,7 @@ fn hash13(p3_in: vec3<f32>) -> f32 {
 }
 
 // hash.glsl L16-20. Used by noise_worley/noise_voronoi below (cycle 4 task
-// 1); GpuLayer.distortion_type remains carried-but-unused (out of scope for
-// this task).
+// 1).
 fn hash33(p3_in: vec3<f32>) -> vec3<f32> {
   var p3 = fract(p3_in * vec3<f32>(0.1031, 0.1030, 0.0973));
   p3 = p3 + vec3<f32>(dot(p3, p3.yxz + vec3<f32>(33.33)));
@@ -727,7 +726,11 @@ struct GpuLayer {
   feather_shape: u32,
   octaves: u32,
   fbm_base: u32,
-  distortion_type: u32,     // 204..208
+  distortion_type: u32,      // 204..208
+  distortion_strength: f32,  // 208
+  distortion_frequency: f32, // 212
+  distortion_swirl: f32,     // 216
+  _pad_distort: f32,         // 220..224
 };
 
 struct GenParams {
@@ -793,16 +796,97 @@ fn animated_domain_offset(seed: f32, anim_phase: f32, anim_evolutions: f32) -> v
   return (axis_a * cos(angle) + axis_b * sin(angle)) * ANIM_RADIUS;
 }
 
+// Distortion: src/shaders/distortion/{domain_warp,curl,swirl,polar}.glsl.
+//
+// v2's shader assembler picks the layer's own `noiseEval` as `_baseNoiseEval`
+// for domain_warp/curl, EXCEPT when the layer's noise type is FBM: there,
+// `_baseNoiseEval` is aliased to the FBM's base noise (a single octave),
+// not the full FBM sum (ShaderCompiler.ts `buildLayerGenShader` — the FBM
+// base snippet is renamed to `_baseNoiseEval` and `fbm.glsl` becomes
+// `noiseEval`). `base_noise_eval` reproduces that split explicitly since
+// WGSL has no textual function aliasing/renaming.
+fn base_noise_eval(L: GpuLayer, p: vec3<f32>) -> f32 {
+  if (L.noise_type == 3u) {
+    return eval_base_noise(L.fbm_base, p, L.seed);
+  }
+  return eval_noise(L, p);
+}
+
+// apply_distortion(L, p): dispatches on L.distortion_type. 0=None (identity,
+// v2's IDENTITY_DISTORTION), 1=DomainWarp, 2=Curl, 3=Swirl, 4=Polar — each
+// case a verbatim port of its GLSL source (uniforms u_warpStrength/
+// u_warpFrequency/u_swirlAmount -> L.distortion_strength/
+// distortion_frequency/distortion_swirl).
+fn apply_distortion(L: GpuLayer, p: vec3<f32>) -> vec3<f32> {
+  switch (L.distortion_type) {
+    case 1u: {
+      // domain_warp.glsl L9-18.
+      if (L.distortion_strength < 0.001) {
+        return p;
+      }
+      let wp = p * L.distortion_frequency;
+      let nx = base_noise_eval(L, wp + vec3<f32>(0.0, 1.7, 9.2));
+      let ny = base_noise_eval(L, wp + vec3<f32>(8.3, 2.8, 4.1));
+      let nz = base_noise_eval(L, wp + vec3<f32>(4.0, 3.1, 6.7));
+      let warp = (vec3<f32>(nx, ny, nz) - vec3<f32>(0.5)) * 2.0 * L.distortion_strength;
+      return p + warp;
+    }
+    case 2u: {
+      // curl.glsl L6-24.
+      if (L.distortion_strength < 0.001) {
+        return p;
+      }
+      let eps: f32 = 0.01;
+      let n1 = base_noise_eval(L, p + vec3<f32>(eps, 0.0, 0.0));
+      let n2 = base_noise_eval(L, p - vec3<f32>(eps, 0.0, 0.0));
+      let n3 = base_noise_eval(L, p + vec3<f32>(0.0, eps, 0.0));
+      let n4 = base_noise_eval(L, p - vec3<f32>(0.0, eps, 0.0));
+      let n5 = base_noise_eval(L, p + vec3<f32>(0.0, 0.0, eps));
+      let n6 = base_noise_eval(L, p - vec3<f32>(0.0, 0.0, eps));
+      let inv2eps = 1.0 / (2.0 * eps);
+      let curl = vec3<f32>(
+        (n4 - n3 - n6 + n5) * inv2eps,
+        (n5 - n6 - n2 + n1) * inv2eps,
+        (n2 - n1 - n3 + n4) * inv2eps
+      );
+      return p + curl * L.distortion_strength;
+    }
+    case 3u: {
+      // swirl.glsl L7-13.
+      let angle = p.y * L.distortion_swirl * L.distortion_strength * 6.28318;
+      let cos_a = cos(angle);
+      let sin_a = sin(angle);
+      let x = p.x * cos_a - p.z * sin_a;
+      let z = p.x * sin_a + p.z * cos_a;
+      return vec3<f32>(x, p.y, z);
+    }
+    case 4u: {
+      // polar.glsl L7-14.
+      if (L.distortion_strength < 0.001) {
+        return p;
+      }
+      let centered = p.xy - vec2<f32>(0.5);
+      let radius = length(centered) * 2.0;
+      let angle = atan2(centered.y, centered.x) / 6.28318 + 0.5;
+      let polar = vec3<f32>(angle, radius, p.z);
+      return mix(p, polar, L.distortion_strength);
+    }
+    default: {
+      // 0=None: v2's IDENTITY_DISTORTION (`applyDistortion(p) { return p; }`).
+      return p;
+    }
+  }
+}
+
 // layer_gen.frag.glsl L44-67 (sampleNoiseAtVolumePos) — fix round 1. Per-
 // source-type position transform: SDF sources (is_sdf(noise_type) — sphere
 // plus box/cone/capsule/cylinder/plume, L44-46/L48-54) center the volume
 // first so offset=[0,0,0] puts the shape at uvw=0.5, and skip domain
 // animation entirely (an SDF shape has no tiling seams to hide); noise
 // sources (L55-59) scale+offset directly in [0,1] volume space, then
-// rotate, then apply animatedDomainOffset() (L59, cycle-4 task 2 — now
-// wired below). v2's `applyDistortion(p)` (L63, both branches) is NOT
-// ported — distortion_type isn't wired to any distortion function this
-// cycle (out of scope; see GpuLayer.distortion_type).
+// rotate, then apply animatedDomainOffset() (L59, cycle-4 task 2). Both
+// branches then run v2's `applyDistortion(p)` (L63) — wired below as
+// `apply_distortion`.
 fn sample_noise_at(L: GpuLayer, uvw: vec3<f32>) -> f32 {
   let rot = mat3x3<f32>(L.rot0.xyz, L.rot1.xyz, L.rot2.xyz);
   var p: vec3<f32>;
@@ -816,7 +900,7 @@ fn sample_noise_at(L: GpuLayer, uvw: vec3<f32>) -> f32 {
     p = rot * p;
     p = p + animated_domain_offset(L.seed, params.anim_phase, params.anim_evolutions);
   }
-  // TODO(distortion, out of scope this cycle): applyDistortion(p) (L63).
+  p = apply_distortion(L, p);
   return eval_noise(L, p);
 }
 

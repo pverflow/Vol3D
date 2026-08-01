@@ -73,6 +73,20 @@ pub enum BlendMode {
     SmoothMin = 6,
 }
 
+/// Domain-distortion applied to a layer's sample position before noise
+/// evaluation (`generate.wgsl`'s `apply_distortion` switch). Mirrors v2's
+/// `DistortionType` (`src/types/layer.ts`); GLSL sources ported verbatim:
+/// `src/shaders/distortion/{domain_warp,curl,swirl,polar}.glsl`.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DistortionType {
+    None = 0,
+    DomainWarp = 1,
+    Curl = 2,
+    Swirl = 3,
+    Polar = 4,
+}
+
 /// Build a column-major mat3 from Euler XYZ rotation **in radians**
 /// (`Rx * Ry * Rz`), returned as 3 padded columns matching a WGSL `mat3x3`
 /// reconstructed from 3 `vec4`s (`.xyz` = column, `.w` = 0). Ported from v2's
@@ -118,7 +132,7 @@ pub struct GpuLayer {
     pub remap_curve: [f32; 4],   // 80
     pub feather_curve: [f32; 4], // 96
     pub feather: [f32; 4],       // 112 (.xyz = feather x/y/z, .w pad)
-    // scalar block 128..208 (20 x 4 bytes):
+    // scalar block 128..224 (24 x 4 bytes):
     pub amplitude: f32,
     pub seed: f32,
     pub opacity: f32,
@@ -139,6 +153,10 @@ pub struct GpuLayer {
     pub octaves: u32,
     pub fbm_base: u32,
     pub distortion_type: u32, // 192
+    pub distortion_strength: f32,
+    pub distortion_frequency: f32,
+    pub distortion_swirl: f32,
+    pub _pad_distort: f32, // 208
 }
 
 /// Ergonomic Rust-side layer description (ported field-for-field from v2's
@@ -171,7 +189,10 @@ pub struct LayerDesc {
     pub feather_shape: u32,
     pub feather_curve: [f32; 4],
     pub worley_mode: u32,
-    pub distortion_type: u32,
+    pub distortion_type: DistortionType,
+    pub distortion_strength: f32,
+    pub distortion_frequency: f32,
+    pub distortion_swirl: f32,
     pub ramp: ColorRamp,
     /// UI-only visibility toggle (cycle 3): invisible layers are skipped at
     /// pack time (`app.rs`), contributing neither shape nor color. Not part
@@ -207,7 +228,10 @@ impl Default for LayerDesc {
             feather_shape: 0,
             feather_curve: [0.0, 0.0, 1.0, 1.0],
             worley_mode: 0,
-            distortion_type: 0,
+            distortion_type: DistortionType::None,
+            distortion_strength: 0.3, // v2 defaultLayer() distortion.strength
+            distortion_frequency: 2.0, // v2 defaultLayer() distortion.warpFrequency
+            distortion_swirl: 1.0,    // v2 defaultLayer() distortion.swirlAmount
             ramp: ColorRamp::default(), // disabled, no stops
             visible: true,
         }
@@ -251,7 +275,11 @@ pub fn pack_layer(l: &LayerDesc) -> GpuLayer {
         feather_shape: l.feather_shape,
         octaves: l.octaves,
         fbm_base: l.fbm_base as u32,
-        distortion_type: l.distortion_type,
+        distortion_type: l.distortion_type as u32,
+        distortion_strength: l.distortion_strength,
+        distortion_frequency: l.distortion_frequency,
+        distortion_swirl: l.distortion_swirl,
+        _pad_distort: 0.0,
     }
 }
 
@@ -366,7 +394,7 @@ mod tests {
     #[test]
     fn gpu_layer_std430_layout() {
         use std::mem::{offset_of, size_of};
-        assert_eq!(size_of::<GpuLayer>(), 208); // multiple of 16
+        assert_eq!(size_of::<GpuLayer>(), 224); // multiple of 16
         assert_eq!(offset_of!(GpuLayer, rot0), 0);
         assert_eq!(offset_of!(GpuLayer, scale), 48);
         assert_eq!(offset_of!(GpuLayer, offset), 64);
@@ -375,6 +403,10 @@ mod tests {
         assert_eq!(offset_of!(GpuLayer, amplitude), 128);
         assert_eq!(offset_of!(GpuLayer, noise_type), 176);
         assert_eq!(offset_of!(GpuLayer, distortion_type), 204);
+        assert_eq!(offset_of!(GpuLayer, distortion_strength), 208);
+        assert_eq!(offset_of!(GpuLayer, distortion_frequency), 212);
+        assert_eq!(offset_of!(GpuLayer, distortion_swirl), 216);
+        assert_eq!(offset_of!(GpuLayer, _pad_distort), 220);
     }
 
     #[test]
@@ -419,6 +451,12 @@ mod tests {
         assert_eq!(BlendMode::Overlay as u32, 4);
         assert_eq!(BlendMode::Subtract as u32, 5);
         assert_eq!(BlendMode::SmoothMin as u32, 6);
+
+        assert_eq!(DistortionType::None as u32, 0);
+        assert_eq!(DistortionType::DomainWarp as u32, 1);
+        assert_eq!(DistortionType::Curl as u32, 2);
+        assert_eq!(DistortionType::Swirl as u32, 3);
+        assert_eq!(DistortionType::Polar as u32, 4);
     }
 
     #[test]
