@@ -367,6 +367,10 @@ impl Vol3dApp {
         }
         let max_existing_id = s.layers.iter().map(|l| l.id + 1).max().unwrap_or(0);
         self.layers = s.layers;
+        // Every other layers-mutating path (add/duplicate/delete) clamps `selected` into range;
+        // a swapped-in scene can be shorter than whatever was selected before, so this must too
+        // (else the next `self.layers[self.selected]` — e.g. Delete — panics out of bounds).
+        self.selected = self.selected.min(self.layers.len().saturating_sub(1));
         self.dims = s.dims;
         self.global_seed = s.global_seed;
         self.loop_seconds = s.loop_seconds;
@@ -1717,5 +1721,67 @@ mod tests {
         });
         assert_eq!(app.layers.len(), 1);
         assert_eq!(app.next_layer_id, 42); // floored at max(existing id) + 1, not the saved 0
+    }
+
+    /// Regression for the reachable panic a review caught: `apply_scene` swapping in a shorter
+    /// `layers` (e.g. Reset after selecting a late layer) left `selected` pointing past the end,
+    /// so the very next `self.layers[self.selected]` (Delete, Duplicate, ...) would panic.
+    /// Every other layers-mutating path clamps `selected`; `apply_scene` must too.
+    #[test]
+    fn apply_scene_clamps_selected_into_range() {
+        let mut app = Vol3dApp::default();
+        app.selected = app.layers.len() - 1 + 5; // simulate having selected a since-removed layer
+
+        let mut layers = layer::demo_scene();
+        layers.truncate(1); // scene being applied is shorter than `selected` pointed into
+        app.apply_scene(persistence::SceneFile {
+            layers,
+            ..Default::default()
+        });
+
+        assert!(app.selected < app.layers.len());
+        let _ = app.layers[app.selected]; // would panic pre-fix
+    }
+
+    /// `to_scene()` / `apply_scene()` symmetry across every persisted field: build an app with
+    /// distinctive, non-default values everywhere `SceneFile` reaches, snapshot it, apply that
+    /// snapshot to a *different* fresh app, and assert every field matches. Catches a
+    /// wrong-field/transposed-value bug in either direction that the `SceneFile`-only JSON
+    /// round-trip tests above can't see (they never touch `Vol3dApp` at all).
+    #[test]
+    // `Vol3dApp` has ~25 fields; a struct-literal-with-update would need to name every one
+    // clippy's `field_reassign_with_default` wants set at construction, for no clarity gain over
+    // reassigning just the ones this test cares about.
+    #[allow(clippy::field_reassign_with_default)]
+    fn to_scene_apply_scene_field_symmetry() {
+        let mut app = Vol3dApp::default();
+        app.dims = [64, 64, 256];
+        app.global_seed = 1.5;
+        app.loop_seconds = 7.0;
+        app.evolutions = 2.0;
+        app.fps = 48;
+        app.interp = true;
+        let layer_id = app.layers[0].id;
+        app.timeline.upsert(layer_id, ParamField::Opacity, 0.0, 0.2);
+        app.timeline.upsert(layer_id, ParamField::Opacity, 1.0, 0.9);
+        app.cam.yaw = 1.23;
+        app.cam.pitch = -0.55;
+        app.cam.distance = 9.0;
+
+        let scene = app.to_scene();
+        let mut b = Vol3dApp::default();
+        b.apply_scene(scene);
+
+        assert_eq!(b.dims, app.dims);
+        assert_eq!(b.global_seed, app.global_seed);
+        assert_eq!(b.loop_seconds, app.loop_seconds);
+        assert_eq!(b.evolutions, app.evolutions);
+        assert_eq!(b.fps, app.fps);
+        assert_eq!(b.interp, app.interp);
+        assert_eq!(b.timeline.hash(), app.timeline.hash());
+        assert_eq!(b.cam.yaw, app.cam.yaw);
+        assert_eq!(b.cam.pitch, app.cam.pitch);
+        assert_eq!(b.cam.distance, app.cam.distance);
+        assert_eq!(b.layers.len(), app.layers.len());
     }
 }
