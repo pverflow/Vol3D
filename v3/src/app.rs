@@ -2,7 +2,7 @@ use crate::anim;
 use crate::anim_timeline::Timeline;
 use crate::camera::OrbitCamera;
 use crate::gradient::gradient_editor;
-use crate::layer::{self, BlendMode, DistortionType, GenParams, LayerDesc, NoiseType};
+use crate::layer::{self, BlendMode, DistortionType, GenParams, LayerDesc, NoiseType, ParamField};
 use crate::ramp::{self, ColorRamp};
 use crate::render::raymarch::RaymarchCallback;
 use crate::theme::Theme;
@@ -105,6 +105,46 @@ fn blend_label(b: BlendMode) -> &'static str {
         BlendMode::Subtract => "Subtract",
         BlendMode::SmoothMin => "Smooth Min",
     }
+}
+
+/// Draws a stopwatch ◆/◇ toggle before a scalar widget, wiring it to `tl`'s keyframe track for
+/// `(id, field)`. A free fn (not a method) so callers can hold `&mut self.timeline` and
+/// `&mut self.layers[i].<field>` (via a local copy) at once without aliasing `self` — see the
+/// call sites in `properties_panel`. Returns `true` if a regen is needed (toggle or value edit),
+/// so callers route the result through `self.mark_dirty(ui.ctx())`.
+fn anim_param(
+    ui: &mut egui::Ui,
+    tl: &mut Timeline,
+    playhead: f32,
+    id: u64,
+    field: ParamField,
+    value: &mut f32,
+    widget: impl FnOnce(&mut egui::Ui, &mut f32) -> egui::Response,
+) -> bool {
+    let mut need = false;
+    let animated = tl.is_animated(id, field);
+    if ui
+        .small_button(if animated { "◆" } else { "◇" })
+        .on_hover_text("keyframe")
+        .clicked()
+    {
+        if animated {
+            tl.remove(id, field);
+        } else {
+            tl.upsert(id, field, playhead, *value);
+        }
+        need = true;
+    }
+    if animated {
+        ui.weak(format!("{}", tl.track_len(id, field)));
+    }
+    if widget(ui, value).changed() {
+        if tl.is_animated(id, field) {
+            tl.upsert(id, field, playhead, *value);
+        }
+        need = true;
+    }
+    need
 }
 
 pub struct Vol3dApp {
@@ -413,6 +453,11 @@ impl Vol3dApp {
         }
         ui.separator();
 
+        // `id`/`ph` (both `Copy`) are captured once here so every `anim_param` call site below
+        // can pass them alongside `&mut self.timeline` without re-borrowing `self`.
+        let id = self.layers[i].id;
+        let ph = self.phase;
+
         // Blend mode + opacity are per-layer composite controls that don't belong to any one
         // group below, so they get a small header row instead of their own CollapsingHeader.
         ui.horizontal(|ui| {
@@ -427,15 +472,25 @@ impl Vol3dApp {
             if self.layers[i].blend_mode != prev_blend {
                 self.mark_dirty(ui.ctx());
             }
-            if ui
-                .add(
-                    egui::DragValue::new(&mut self.layers[i].opacity)
-                        .prefix("Opacity: ")
-                        .speed(0.01)
-                        .range(0.0..=1.0),
-                )
-                .changed()
-            {
+            let mut v = self.layers[i].opacity;
+            let need = anim_param(
+                ui,
+                &mut self.timeline,
+                ph,
+                id,
+                ParamField::Opacity,
+                &mut v,
+                |ui, v| {
+                    ui.add(
+                        egui::DragValue::new(v)
+                            .prefix("Opacity: ")
+                            .speed(0.01)
+                            .range(0.0..=1.0),
+                    )
+                },
+            );
+            self.layers[i].opacity = v;
+            if need {
                 self.mark_dirty(ui.ctx());
             }
         });
@@ -463,11 +518,21 @@ impl Vol3dApp {
                     ui.end_row();
 
                     ui.label("Amplitude");
-                    if ui
-                        .add(egui::DragValue::new(&mut self.layers[i].amplitude).speed(0.01))
-                        .changed()
                     {
-                        self.mark_dirty(ui.ctx());
+                        let mut v = self.layers[i].amplitude;
+                        let need = anim_param(
+                            ui,
+                            &mut self.timeline,
+                            ph,
+                            id,
+                            ParamField::Amplitude,
+                            &mut v,
+                            |ui, v| ui.add(egui::DragValue::new(v).speed(0.01)),
+                        );
+                        self.layers[i].amplitude = v;
+                        if need {
+                            self.mark_dirty(ui.ctx());
+                        }
                     }
                     ui.end_row();
 
@@ -508,20 +573,40 @@ impl Vol3dApp {
                         ui.end_row();
 
                         ui.label("Persistence");
-                        if ui
-                            .add(egui::DragValue::new(&mut self.layers[i].persistence).speed(0.01))
-                            .changed()
                         {
-                            self.mark_dirty(ui.ctx());
+                            let mut v = self.layers[i].persistence;
+                            let need = anim_param(
+                                ui,
+                                &mut self.timeline,
+                                ph,
+                                id,
+                                ParamField::Persistence,
+                                &mut v,
+                                |ui, v| ui.add(egui::DragValue::new(v).speed(0.01)),
+                            );
+                            self.layers[i].persistence = v;
+                            if need {
+                                self.mark_dirty(ui.ctx());
+                            }
                         }
                         ui.end_row();
 
                         ui.label("Lacunarity");
-                        if ui
-                            .add(egui::DragValue::new(&mut self.layers[i].lacunarity).speed(0.01))
-                            .changed()
                         {
-                            self.mark_dirty(ui.ctx());
+                            let mut v = self.layers[i].lacunarity;
+                            let need = anim_param(
+                                ui,
+                                &mut self.timeline,
+                                ph,
+                                id,
+                                ParamField::Lacunarity,
+                                &mut v,
+                                |ui, v| ui.add(egui::DragValue::new(v).speed(0.01)),
+                            );
+                            self.layers[i].lacunarity = v;
+                            if need {
+                                self.mark_dirty(ui.ctx());
+                            }
                         }
                         ui.end_row();
 
@@ -550,20 +635,40 @@ impl Vol3dApp {
 
                     if self.layers[i].noise_type.is_sdf() {
                         ui.label("Radius");
-                        if ui
-                            .add(egui::DragValue::new(&mut self.layers[i].sdf_radius).speed(0.01))
-                            .changed()
                         {
-                            self.mark_dirty(ui.ctx());
+                            let mut v = self.layers[i].sdf_radius;
+                            let need = anim_param(
+                                ui,
+                                &mut self.timeline,
+                                ph,
+                                id,
+                                ParamField::SdfRadius,
+                                &mut v,
+                                |ui, v| ui.add(egui::DragValue::new(v).speed(0.01)),
+                            );
+                            self.layers[i].sdf_radius = v;
+                            if need {
+                                self.mark_dirty(ui.ctx());
+                            }
                         }
                         ui.end_row();
 
                         ui.label("Softness");
-                        if ui
-                            .add(egui::DragValue::new(&mut self.layers[i].sdf_softness).speed(0.01))
-                            .changed()
                         {
-                            self.mark_dirty(ui.ctx());
+                            let mut v = self.layers[i].sdf_softness;
+                            let need = anim_param(
+                                ui,
+                                &mut self.timeline,
+                                ph,
+                                id,
+                                ParamField::SdfSoftness,
+                                &mut v,
+                                |ui, v| ui.add(egui::DragValue::new(v).speed(0.01)),
+                            );
+                            self.layers[i].sdf_softness = v;
+                            if need {
+                                self.mark_dirty(ui.ctx());
+                            }
                         }
                         ui.end_row();
 
@@ -575,13 +680,18 @@ impl Vol3dApp {
                             NoiseType::SdfCapsule | NoiseType::SdfCylinder | NoiseType::SdfPlume
                         ) {
                             ui.label("Height");
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut self.layers[i].sdf_height)
-                                        .speed(0.01),
-                                )
-                                .changed()
-                            {
+                            let mut v = self.layers[i].sdf_height;
+                            let need = anim_param(
+                                ui,
+                                &mut self.timeline,
+                                ph,
+                                id,
+                                ParamField::SdfHeight,
+                                &mut v,
+                                |ui, v| ui.add(egui::DragValue::new(v).speed(0.01)),
+                            );
+                            self.layers[i].sdf_height = v;
+                            if need {
                                 self.mark_dirty(ui.ctx());
                             }
                             ui.end_row();
@@ -598,14 +708,21 @@ impl Vol3dApp {
                     .show(ui, |ui| {
                         ui.label("Scale");
                         ui.horizontal(|ui| {
-                            for axis in 0..3 {
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut self.layers[i].scale[axis])
-                                            .speed(0.01),
-                                    )
-                                    .changed()
-                                {
+                            let fields =
+                                [ParamField::ScaleX, ParamField::ScaleY, ParamField::ScaleZ];
+                            for (axis, field) in fields.into_iter().enumerate() {
+                                let mut v = self.layers[i].scale[axis];
+                                let need = anim_param(
+                                    ui,
+                                    &mut self.timeline,
+                                    ph,
+                                    id,
+                                    field,
+                                    &mut v,
+                                    |ui, v| ui.add(egui::DragValue::new(v).speed(0.01)),
+                                );
+                                self.layers[i].scale[axis] = v;
+                                if need {
                                     self.mark_dirty(ui.ctx());
                                 }
                             }
@@ -614,16 +731,24 @@ impl Vol3dApp {
 
                         ui.label("Rotation (deg)");
                         ui.horizontal(|ui| {
-                            for axis in 0..3 {
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(
-                                            &mut self.layers[i].rotation_deg[axis],
-                                        )
-                                        .speed(1.0),
-                                    )
-                                    .changed()
-                                {
+                            let fields = [
+                                ParamField::RotationX,
+                                ParamField::RotationY,
+                                ParamField::RotationZ,
+                            ];
+                            for (axis, field) in fields.into_iter().enumerate() {
+                                let mut v = self.layers[i].rotation_deg[axis];
+                                let need = anim_param(
+                                    ui,
+                                    &mut self.timeline,
+                                    ph,
+                                    id,
+                                    field,
+                                    &mut v,
+                                    |ui, v| ui.add(egui::DragValue::new(v).speed(1.0)),
+                                );
+                                self.layers[i].rotation_deg[axis] = v;
+                                if need {
                                     self.mark_dirty(ui.ctx());
                                 }
                             }
@@ -632,14 +757,24 @@ impl Vol3dApp {
 
                         ui.label("Offset");
                         ui.horizontal(|ui| {
-                            for axis in 0..3 {
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut self.layers[i].offset[axis])
-                                            .speed(0.01),
-                                    )
-                                    .changed()
-                                {
+                            let fields = [
+                                ParamField::OffsetX,
+                                ParamField::OffsetY,
+                                ParamField::OffsetZ,
+                            ];
+                            for (axis, field) in fields.into_iter().enumerate() {
+                                let mut v = self.layers[i].offset[axis];
+                                let need = anim_param(
+                                    ui,
+                                    &mut self.timeline,
+                                    ph,
+                                    id,
+                                    field,
+                                    &mut v,
+                                    |ui, v| ui.add(egui::DragValue::new(v).speed(0.01)),
+                                );
+                                self.layers[i].offset[axis] = v;
+                                if need {
                                     self.mark_dirty(ui.ctx());
                                 }
                             }
@@ -674,14 +809,21 @@ impl Vol3dApp {
 
                         if self.layers[i].distortion_type != DistortionType::None {
                             ui.label("Strength");
-                            if ui
-                                .add(egui::Slider::new(
-                                    &mut self.layers[i].distortion_strength,
-                                    0.0..=2.0,
-                                ))
-                                .changed()
                             {
-                                self.mark_dirty(ui.ctx());
+                                let mut v = self.layers[i].distortion_strength;
+                                let need = anim_param(
+                                    ui,
+                                    &mut self.timeline,
+                                    ph,
+                                    id,
+                                    ParamField::DistortionStrength,
+                                    &mut v,
+                                    |ui, v| ui.add(egui::Slider::new(v, 0.0..=2.0)),
+                                );
+                                self.layers[i].distortion_strength = v;
+                                if need {
+                                    self.mark_dirty(ui.ctx());
+                                }
                             }
                             ui.end_row();
 
@@ -690,13 +832,18 @@ impl Vol3dApp {
                                 DistortionType::DomainWarp | DistortionType::Turbulence
                             ) {
                                 ui.label("Warp Freq");
-                                if ui
-                                    .add(egui::Slider::new(
-                                        &mut self.layers[i].distortion_frequency,
-                                        0.5..=10.0,
-                                    ))
-                                    .changed()
-                                {
+                                let mut v = self.layers[i].distortion_frequency;
+                                let need = anim_param(
+                                    ui,
+                                    &mut self.timeline,
+                                    ph,
+                                    id,
+                                    ParamField::DistortionFrequency,
+                                    &mut v,
+                                    |ui, v| ui.add(egui::Slider::new(v, 0.5..=10.0)),
+                                );
+                                self.layers[i].distortion_frequency = v;
+                                if need {
                                     self.mark_dirty(ui.ctx());
                                 }
                                 ui.end_row();
@@ -704,13 +851,18 @@ impl Vol3dApp {
 
                             if self.layers[i].distortion_type == DistortionType::Swirl {
                                 ui.label("Swirl Amt");
-                                if ui
-                                    .add(egui::Slider::new(
-                                        &mut self.layers[i].distortion_swirl,
-                                        -5.0..=5.0,
-                                    ))
-                                    .changed()
-                                {
+                                let mut v = self.layers[i].distortion_swirl;
+                                let need = anim_param(
+                                    ui,
+                                    &mut self.timeline,
+                                    ph,
+                                    id,
+                                    ParamField::DistortionSwirl,
+                                    &mut v,
+                                    |ui, v| ui.add(egui::Slider::new(v, -5.0..=5.0)),
+                                );
+                                self.layers[i].distortion_swirl = v;
+                                if need {
                                     self.mark_dirty(ui.ctx());
                                 }
                                 ui.end_row();
@@ -761,17 +913,30 @@ impl Vol3dApp {
 
                             ui.label("Distortion Rot (deg)");
                             ui.horizontal(|ui| {
-                                for axis in 0..3 {
-                                    if ui
-                                        .add(
-                                            egui::DragValue::new(
-                                                &mut self.layers[i].distortion_rotation[axis],
+                                let fields = [
+                                    ParamField::DistortionRotX,
+                                    ParamField::DistortionRotY,
+                                    ParamField::DistortionRotZ,
+                                ];
+                                for (axis, field) in fields.into_iter().enumerate() {
+                                    let mut v = self.layers[i].distortion_rotation[axis];
+                                    let need = anim_param(
+                                        ui,
+                                        &mut self.timeline,
+                                        ph,
+                                        id,
+                                        field,
+                                        &mut v,
+                                        |ui, v| {
+                                            ui.add(
+                                                egui::DragValue::new(v)
+                                                    .speed(1.0)
+                                                    .range(-180.0..=180.0),
                                             )
-                                            .speed(1.0)
-                                            .range(-180.0..=180.0),
-                                        )
-                                        .changed()
-                                    {
+                                        },
+                                    );
+                                    self.layers[i].distortion_rotation[axis] = v;
+                                    if need {
                                         self.mark_dirty(ui.ctx());
                                     }
                                 }
@@ -787,24 +952,33 @@ impl Vol3dApp {
                 egui::Grid::new("grid-remap").num_columns(2).show(ui, |ui| {
                     ui.label("In range");
                     ui.horizontal(|ui| {
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut self.layers[i].in_min)
-                                    .prefix("min: ")
-                                    .speed(0.01),
-                            )
-                            .changed()
-                        {
+                        let mut v = self.layers[i].in_min;
+                        let need = anim_param(
+                            ui,
+                            &mut self.timeline,
+                            ph,
+                            id,
+                            ParamField::InMin,
+                            &mut v,
+                            |ui, v| ui.add(egui::DragValue::new(v).prefix("min: ").speed(0.01)),
+                        );
+                        self.layers[i].in_min = v;
+                        if need {
                             self.mark_dirty(ui.ctx());
                         }
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut self.layers[i].in_max)
-                                    .prefix("max: ")
-                                    .speed(0.01),
-                            )
-                            .changed()
-                        {
+
+                        let mut v = self.layers[i].in_max;
+                        let need = anim_param(
+                            ui,
+                            &mut self.timeline,
+                            ph,
+                            id,
+                            ParamField::InMax,
+                            &mut v,
+                            |ui, v| ui.add(egui::DragValue::new(v).prefix("max: ").speed(0.01)),
+                        );
+                        self.layers[i].in_max = v;
+                        if need {
                             self.mark_dirty(ui.ctx());
                         }
                     });
@@ -812,24 +986,33 @@ impl Vol3dApp {
 
                     ui.label("Out range");
                     ui.horizontal(|ui| {
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut self.layers[i].out_min)
-                                    .prefix("min: ")
-                                    .speed(0.01),
-                            )
-                            .changed()
-                        {
+                        let mut v = self.layers[i].out_min;
+                        let need = anim_param(
+                            ui,
+                            &mut self.timeline,
+                            ph,
+                            id,
+                            ParamField::OutMin,
+                            &mut v,
+                            |ui, v| ui.add(egui::DragValue::new(v).prefix("min: ").speed(0.01)),
+                        );
+                        self.layers[i].out_min = v;
+                        if need {
                             self.mark_dirty(ui.ctx());
                         }
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut self.layers[i].out_max)
-                                    .prefix("max: ")
-                                    .speed(0.01),
-                            )
-                            .changed()
-                        {
+
+                        let mut v = self.layers[i].out_max;
+                        let need = anim_param(
+                            ui,
+                            &mut self.timeline,
+                            ph,
+                            id,
+                            ParamField::OutMax,
+                            &mut v,
+                            |ui, v| ui.add(egui::DragValue::new(v).prefix("max: ").speed(0.01)),
+                        );
+                        self.layers[i].out_max = v;
+                        if need {
                             self.mark_dirty(ui.ctx());
                         }
                     });
