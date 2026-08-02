@@ -9,11 +9,34 @@ use crate::anim::fnv1a;
 use crate::layer::{LayerDesc, ParamField};
 use std::collections::BTreeMap;
 
+/// Per-key interpolation mode: how `Track::sample` blends from this key to
+/// the next one. Old scene files (no `interp` field) deserialize as `Linear`
+/// via `#[serde(default)]` on `Keyframe::interp`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Interp {
+    #[default]
+    Linear,
+    Hold,
+    Ease,
+}
+
 /// A single animated value at a point in the loop's `[0, 1)` phase.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Keyframe {
     pub phase: f32,
     pub value: f32,
+    #[serde(default)]
+    pub interp: Interp,
+}
+
+impl Keyframe {
+    pub fn new(phase: f32, value: f32) -> Self {
+        Self {
+            phase,
+            value,
+            interp: Interp::default(),
+        }
+    }
 }
 
 /// Keyframes for one animated field, always kept sorted by `phase`.
@@ -40,15 +63,21 @@ impl Track {
         for w in ks.windows(2) {
             if phase <= w[1].phase {
                 let span = (w[1].phase - w[0].phase).max(1e-8);
-                let t = ((phase - w[0].phase) / span).clamp(0.0, 1.0);
+                let raw = ((phase - w[0].phase) / span).clamp(0.0, 1.0);
+                let t = match w[0].interp {
+                    Interp::Linear => raw,
+                    Interp::Hold => 0.0,
+                    Interp::Ease => raw * raw * (3.0 - 2.0 * raw),
+                };
                 return w[0].value + (w[1].value - w[0].value) * t;
             }
         }
         ks[last].value
     }
 
-    /// Replace the key within `1e-5` of `phase`, if any, else insert a new
-    /// one — keeping `keys` sorted by phase either way.
+    /// Replace the key within `1e-5` of `phase`, if any (keeping its
+    /// `interp`), else insert a new `Linear` key — keeping `keys` sorted by
+    /// phase either way.
     pub fn upsert(&mut self, phase: f32, value: f32) {
         if let Some(existing) = self
             .keys
@@ -59,7 +88,62 @@ impl Track {
             return;
         }
         let idx = self.keys.partition_point(|k| k.phase < phase);
-        self.keys.insert(idx, Keyframe { phase, value });
+        self.keys.insert(idx, Keyframe::new(phase, value));
+    }
+
+    /// The full key (phase, value, interp) at `phase` (within `1e-5`), if any.
+    pub fn key_at(&self, phase: f32) -> Option<Keyframe> {
+        self.keys
+            .iter()
+            .find(|k| (k.phase - phase).abs() < 1e-5)
+            .copied()
+    }
+
+    /// Replace the key within `1e-5` of `key.phase`, if any, else insert
+    /// `key` — keeping `keys` sorted by phase either way. Unlike `upsert`,
+    /// this also overwrites `interp` (used by `move_key` to relocate a key
+    /// verbatim).
+    pub fn insert_key(&mut self, key: Keyframe) {
+        if let Some(existing) = self
+            .keys
+            .iter_mut()
+            .find(|k| (k.phase - key.phase).abs() < 1e-5)
+        {
+            *existing = key;
+            return;
+        }
+        let idx = self.keys.partition_point(|k| k.phase < key.phase);
+        self.keys.insert(idx, key);
+    }
+
+    /// Set the value of the key at `phase` (within `1e-5`), if any.
+    pub fn set_value_at(&mut self, phase: f32, v: f32) {
+        if let Some(k) = self
+            .keys
+            .iter_mut()
+            .find(|k| (k.phase - phase).abs() < 1e-5)
+        {
+            k.value = v;
+        }
+    }
+
+    /// Set the interp mode of the key at `phase` (within `1e-5`), if any.
+    pub fn set_interp_at(&mut self, phase: f32, i: Interp) {
+        if let Some(k) = self
+            .keys
+            .iter_mut()
+            .find(|k| (k.phase - phase).abs() < 1e-5)
+        {
+            k.interp = i;
+        }
+    }
+
+    /// The interp mode of the key at `phase` (within `1e-5`), if one exists.
+    pub fn interp_at(&self, phase: f32) -> Option<Interp> {
+        self.keys
+            .iter()
+            .find(|k| (k.phase - phase).abs() < 1e-5)
+            .map(|k| k.interp)
     }
 
     pub fn len(&self) -> usize {
@@ -154,15 +238,40 @@ impl Timeline {
     }
 
     /// Retime the keyframe at `from` to `to` (clamped to `[0, 1]`), preserving
-    /// its value. No-op if there's no track or no key at `from`.
+    /// its value and interp. No-op if there's no track or no key at `from`.
     pub fn move_key(&mut self, id: u64, f: ParamField, from: f32, to: f32) {
         let key = (id, f as u8);
         if let Some(t) = self.tracks.get_mut(&key) {
-            if let Some(v) = t.value_at_key(from) {
+            if let Some(mut k) = t.key_at(from) {
                 t.remove_at(from);
-                t.upsert(to.clamp(0.0, 1.0), v);
+                k.phase = to.clamp(0.0, 1.0);
+                t.insert_key(k);
             }
         }
+    }
+
+    /// Set the value of the key at `phase` on `(id, f)`'s track, if any.
+    pub fn set_key_value(&mut self, id: u64, f: ParamField, phase: f32, v: f32) {
+        if let Some(t) = self.tracks.get_mut(&(id, f as u8)) {
+            t.set_value_at(phase, v);
+        }
+    }
+
+    /// Set the interp mode of the key at `phase` on `(id, f)`'s track, if any.
+    pub fn set_key_interp(&mut self, id: u64, f: ParamField, phase: f32, i: Interp) {
+        if let Some(t) = self.tracks.get_mut(&(id, f as u8)) {
+            t.set_interp_at(phase, i);
+        }
+    }
+
+    /// The interp mode of the key at `phase` on `(id, f)`'s track, if any.
+    pub fn key_interp(&self, id: u64, f: ParamField, phase: f32) -> Option<Interp> {
+        self.tracks.get(&(id, f as u8))?.interp_at(phase)
+    }
+
+    /// The value of the key at `phase` on `(id, f)`'s track, if any.
+    pub fn key_value(&self, id: u64, f: ParamField, phase: f32) -> Option<f32> {
+        self.tracks.get(&(id, f as u8))?.value_at_key(phase)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -326,5 +435,64 @@ mod tests {
         tl.upsert(9, ParamField::ScaleX, 0.5, 3.0);
         let back = Timeline::from_entries(tl.to_entries());
         assert_eq!(back.hash(), tl.hash());
+    }
+
+    #[test]
+    fn keyframe_interp_serde_roundtrip_and_old_json_defaults_linear() {
+        let k = Keyframe {
+            phase: 0.25,
+            value: 1.5,
+            interp: Interp::Ease,
+        };
+        let json = serde_json::to_string(&k).unwrap();
+        let back: Keyframe = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, k);
+
+        // Pre-SP3 saved scenes have no `interp` field — must default to Linear.
+        let old: Keyframe = serde_json::from_str(r#"{"phase":0.0,"value":1.0}"#).unwrap();
+        assert_eq!(old.interp, Interp::Linear);
+    }
+
+    #[test]
+    fn track_sample_honors_per_key_interp() {
+        let mut t = Track::default();
+        t.upsert(0.0, 0.0);
+        t.upsert(1.0, 4.0);
+
+        // All-Linear: identity with today's plain lerp.
+        assert!((t.sample(0.25) - 1.0).abs() < 1e-6);
+
+        // Hold on key0: value stays at key0's value across the whole segment.
+        t.set_interp_at(0.0, Interp::Hold);
+        assert_eq!(t.sample(0.25), 0.0);
+        assert!((t.sample(0.99) - 0.0).abs() < 1e-6);
+
+        // Ease on key0: smoothstep remap.
+        t.set_interp_at(0.0, Interp::Ease);
+        assert!((t.sample(0.5) - 2.0).abs() < 1e-6);
+        assert!((t.sample(0.25) - 0.625).abs() < 1e-6); // 4.0 * smoothstep(0.25)
+    }
+
+    #[test]
+    fn upsert_keeps_interp_on_value_replace() {
+        let mut t = Track::default();
+        t.upsert(0.5, 1.0);
+        t.set_interp_at(0.5, Interp::Ease);
+        t.upsert(0.5, 9.0);
+        assert_eq!(t.interp_at(0.5), Some(Interp::Ease));
+        assert_eq!(t.value_at_key(0.5), Some(9.0));
+    }
+
+    #[test]
+    fn move_key_preserves_value_and_interp() {
+        let mut tl = Timeline::default();
+        tl.upsert(7, ParamField::Opacity, 0.2, 0.5);
+        tl.set_key_interp(7, ParamField::Opacity, 0.2, Interp::Hold);
+        tl.move_key(7, ParamField::Opacity, 0.2, 0.6);
+        assert_eq!(
+            tl.key_interp(7, ParamField::Opacity, 0.6),
+            Some(Interp::Hold)
+        );
+        assert_eq!(tl.key_value(7, ParamField::Opacity, 0.6), Some(0.5));
     }
 }
