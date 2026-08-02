@@ -1353,10 +1353,13 @@ impl eframe::App for Vol3dApp {
             }
 
             let aspect = rect.width() / rect.height().max(1.0);
-            // `cam.macro_dims`/`box_aspect` are left 0.0/1.0 here; `RaymarchCallback::prepare`
-            // sets them from the BOUND volume's actual dims (not `self.dims`, which may be
-            // mid-debounce).
-            let cam = self.cam.basis(aspect, 128.0);
+            // `cam.macro_dims`/the shader-facing `box_aspect_*` scalar fields are left
+            // 0.0/1.0 by `basis` — `RaymarchCallback::prepare` overwrites those from the BOUND
+            // volume's actual dims (not `self.dims`, which may be mid-debounce). The box-shape
+            // fed into `basis` here for camera framing (center/fit) is `self.dims`-derived
+            // instead — a one-frame mismatch during debounce is harmless for camera position.
+            let box_aspect = anim::aspect_from_dims(self.dims);
+            let cam = self.cam.basis(aspect, 128.0, box_aspect);
 
             // Bake the dense cache when playing with a stale cache (Play press, or re-bake after
             // an edit while playing). `ensure_baked`'s `is_stale` is the real single-fire guard;

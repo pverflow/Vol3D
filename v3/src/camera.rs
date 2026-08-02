@@ -35,10 +35,11 @@ pub struct CamUniform {
     /// `mix(a,a,0)=a`, byte-identical to the single-frame result. `basis` leaves it 0.0;
     /// `RaymarchCallback::prepare` sets it from `bind_playback`'s returned frac when playing.
     pub frac: f32,
-    /// = `anim::aspect_from_dims(dims)`; each axis's size relative to the largest (max axis = 1.0,
-    /// see Task 1). The raymarch scales the unit-box intersect and the volume/occupancy sample
-    /// coordinate by this so a non-cubic volume renders as a box of the right proportions instead
-    /// of being squashed into a cube. `basis` sets this `[1,1,1]` (cubic — no-op).
+    /// = `anim::aspect_from_dims(dims)`; each axis's size relative to the shortest (shortest
+    /// axis = 1.0, min-normalized — see Task 1). The raymarch scales the unit-box intersect and
+    /// the volume/occupancy sample coordinate by this so a non-cubic volume renders as a box of
+    /// the right proportions instead of being squashed into a cube. `basis` leaves this field
+    /// `[1,1,1]`; `RaymarchCallback::prepare` sets it from the bound dims.
     pub box_aspect_x: f32,
     pub box_aspect_y: f32,
     pub box_aspect_z: f32,
@@ -68,15 +69,33 @@ impl Default for OrbitCamera {
 }
 
 impl OrbitCamera {
-    pub fn basis(&self, aspect: f32, steps: f32) -> CamUniform {
-        let center = [0.5f32, 0.5, 0.5];
+    /// `box_aspect` (see `anim::aspect_from_dims`) is the rendered box's per-axis size relative
+    /// to its shortest axis (shortest = 1.0) — `basis` frames the orbit on that box's actual
+    /// center (`box_aspect * 0.5`, not the cube's fixed `[0.5]³`) and scales `self.distance` by
+    /// the box's diagonal-vs-cube-diagonal ratio (`fit`) so a taller/wider box still fits in
+    /// view instead of orbiting at a cube-sized distance around an off-center point. At
+    /// `[1,1,1]` (cubic), `center = [0.5]³` and `fit = 1` — byte-identical to the old hardcoded
+    /// behavior.
+    pub fn basis(&self, aspect: f32, steps: f32, box_aspect: [f32; 3]) -> CamUniform {
+        let center = [
+            box_aspect[0] * 0.5,
+            box_aspect[1] * 0.5,
+            box_aspect[2] * 0.5,
+        ];
+        let fit = ((box_aspect[0] * box_aspect[0]
+            + box_aspect[1] * box_aspect[1]
+            + box_aspect[2] * box_aspect[2])
+            .sqrt()
+            / 3.0f32.sqrt())
+        .max(1e-4);
+        let d = self.distance * fit;
         let (cp, sp) = (self.pitch.cos(), self.pitch.sin());
         let (cy, sy) = (self.yaw.cos(), self.yaw.sin());
         let dir = [cp * cy, sp, cp * sy]; // eye offset direction
         let eye = [
-            center[0] + dir[0] * self.distance,
-            center[1] + dir[1] * self.distance,
-            center[2] + dir[2] * self.distance,
+            center[0] + dir[0] * d,
+            center[1] + dir[1] * d,
+            center[2] + dir[2] * d,
         ];
         let fwd = norm([center[0] - eye[0], center[1] - eye[1], center[2] - eye[2]]);
         let world_up = [0.0f32, 1.0, 0.0];
@@ -126,8 +145,8 @@ mod tests {
 
     #[test]
     fn basis_is_orthonormal_and_looks_at_center() {
-        let c = OrbitCamera::default().basis(1.0, 64.0);
-        // fwd points from eye toward center (0.5,0.5,0.5)
+        let c = OrbitCamera::default().basis(1.0, 128.0, [1.0, 1.0, 1.0]); // cube: center [0.5]³, fit 1
+                                                                           // fwd points from eye toward center (0.5,0.5,0.5)
         let to_center = norm([0.5 - c.eye[0], 0.5 - c.eye[1], 0.5 - c.eye[2]]);
         for (f, t) in c.fwd.iter().zip(to_center.iter()) {
             assert!((f - t).abs() < 1e-4);
@@ -137,6 +156,14 @@ mod tests {
         assert!(dot(c.fwd, c.right).abs() < 1e-4);
         assert!(dot(c.fwd, c.up).abs() < 1e-4);
         assert!((dot(c.right, c.right) - 1.0).abs() < 1e-3);
+
+        // tall box centers higher in Z and pulls the eye further out:
+        let t = OrbitCamera::default().basis(1.0, 128.0, [1.0, 1.0, 4.0]);
+        // fwd aims at box center [0.5,0.5,2.0]
+        let tc = norm([0.5 - t.eye[0], 0.5 - t.eye[1], 2.0 - t.eye[2]]);
+        for (f, x) in t.fwd.iter().zip(tc.iter()) {
+            assert!((f - x).abs() < 1e-5);
+        }
     }
 
     #[test]
