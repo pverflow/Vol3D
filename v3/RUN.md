@@ -172,6 +172,75 @@ Multiple animated parameters compose naturally:
 - Animate parameters on different layers → each animates independently, and their blended output is rendered
 - Animate the same **Noise** and **Distortion** parameters → both affect the layer's final appearance
 
+## Visual Timeline (SP2)
+
+A **timeline panel** now sits below the animation controls, displaying all animated parameters as **lanes** with **keyframe dots** on a **seconds ruler**:
+
+### Timeline interactions
+
+- **Playhead (vertical line):** Marks the current **Phase** position on the timeline. **Drag left/right** to scrub through the animation; the viewport renders the interpolated scene in real time as you drag.
+- **Keyframe dots:** Each animated parameter shows as a labeled lane (`L{layer}·{param}`, e.g., `L0·Opacity`). Dots on the ruler mark where keyframes exist.
+  - **Click a dot** to select it (appears highlighted).
+  - **Drag a selected dot left/right** to retime that keyframe; the playback interpolation updates immediately to reflect the new timing.
+- **Delete / Backspace** (or click the **🗑** button in the timeline controls): Removes the selected keyframe.
+  - When the **last** keyframe for a parameter is removed, the **◆** stopwatch next to that parameter **un-fills** (reverts to ◇), and the parameter becomes static again.
+- **Add keyframes:** Click the **◆** stopwatch next to any parameter (as in SP1) to enable animation, then adjust the parameter value at any **Phase** position. A new keyframe is automatically created.
+- **Scrolling:** When a scene has many animated parameters, the timeline panel scrolls vertically to show all lanes. Non-animated scenes show an **empty timeline** (no lanes).
+
+### Run paths
+
+**Native:**
+```bash
+cd v3 && cargo run
+```
+
+**Web (WebGPU):**
+```bash
+cd v3 && trunk serve        # (cargo install trunk, once)
+```
+
+### What to report back
+
+Verify the timeline panel and keyframe editing work correctly:
+
+1. **Animated params appear as lanes with dots at the right spots on the ruler?**
+   - Create a layer and keyframe **Opacity** at Phase 0.0 (value 1.0), Phase 0.5 (value 0.2), Phase 1.0 (value 1.0).
+   - The timeline panel should show a lane labeled `L0·Opacity` with **three dots** at approximately 0s, 0.5s, and 1.0s positions (scaled to the seconds ruler).
+   - Verify the dots align visually with your keyframe positions.
+   - Report: Do animated params appear as labeled lanes with dots at the correct positions?
+
+2. **Dragging the playhead scrubs the animation?**
+   - With the animated layer from (1), drag the **playhead (vertical line)** left and right across the timeline.
+   - The viewport should render the interpolated scene in real time; **Opacity** should smoothly fade in and out as you drag.
+   - Report: Does playhead drag scrub the animation smoothly without stalling?
+
+3. **Clicking a dot selects it, dragging it retimes the keyframe (and playback reflects the new timing)?**
+   - Click one of the **Opacity** keyframe dots on the timeline (e.g., the middle dot at 0.5s).
+   - It should appear **highlighted** (visually selected).
+   - **Drag that dot left** to ~0.3s and release.
+   - The keyframe should move; when you press **Play**, the layer's opacity should now fade faster (opacity reaches 0.2 at 0.3s instead of 0.5s).
+   - Report: Does clicking select a dot, and does dragging it retime the keyframe (with playback reflecting the new timing)?
+
+4. **Delete removes the selected key (and the ◆ un-fills when its last key goes)?**
+   - With the timeline showing the animated **Opacity** layer, click a keyframe dot to select it.
+   - Press **Delete** (or **Backspace**, or click the **🗑** button).
+   - The dot should disappear from the timeline.
+   - If you delete the **last** keyframe for **Opacity**, the **◆** stopwatch next to the **Opacity** slider should **change to ◇** (animation disabled), and the parameter becomes static.
+   - Report: Does Delete remove the selected keyframe, and does the ◆ un-fill when the last key is removed?
+
+5. **Many animated params scroll in the panel; a non-animated scene shows an empty timeline?**
+   - Animate 5–10 different parameters across different layers (e.g., Opacity, Offset X, Offset Y, Color, Emission on multiple layers).
+   - The timeline panel should show all lanes; if they exceed the panel height, **scroll vertically** to reveal more.
+   - Create a separate non-animated scene (no parameters with ◆ enabled).
+   - The timeline panel should appear **empty** (no lanes, just the ruler and playhead).
+   - Report: Does the timeline scroll when many lanes are present, and does an empty scene show no lanes?
+
+### Next: SP3 (Value Curves & Vertical Editing)
+
+**SP2 is horizontal-retime only** (drag dots left/right to adjust timing). Coming in **SP3**:
+- **Per-keyframe value editing:** Drag keyframes **vertically** to adjust their values directly on the timeline.
+- **Interpolation curves:** Bezier / hold / step modes per keyframe for non-linear interpolation.
+
 ### Deferred
 
 This is **SP1 (foundation)** of a 4-part timeline roadmap. Still coming:
