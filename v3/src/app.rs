@@ -35,12 +35,13 @@ const WORLEY_MODES: [u32; 3] = [0, 1, 2];
 
 /// Distortion-type choices offered by the Properties panel's combo box, in display order
 /// (matches v2's `DistortionType`, `src/types/layer.ts`).
-const DISTORTION_TYPES: [DistortionType; 5] = [
+const DISTORTION_TYPES: [DistortionType; 6] = [
     DistortionType::None,
     DistortionType::DomainWarp,
     DistortionType::Curl,
     DistortionType::Swirl,
     DistortionType::Polar,
+    DistortionType::Turbulence,
 ];
 
 /// Blend-mode choices offered by the Layers/Properties panels' combo boxes, in display order
@@ -666,6 +667,68 @@ impl Vol3dApp {
                                 }
                                 ui.end_row();
                             }
+
+                            if matches!(
+                                self.layers[i].distortion_type,
+                                DistortionType::DomainWarp
+                                    | DistortionType::Curl
+                                    | DistortionType::Turbulence
+                            ) {
+                                ui.label("Warp Noise");
+                                let prev_warp_noise = self.layers[i].warp_noise;
+                                egui::ComboBox::from_id_salt("warp-noise-combo")
+                                    .selected_text(noise_type_label(self.layers[i].warp_noise))
+                                    .show_ui(ui, |ui| {
+                                        for t in NOISE_TYPES {
+                                            if !t.is_sdf() && t != NoiseType::Fbm {
+                                                ui.selectable_value(
+                                                    &mut self.layers[i].warp_noise,
+                                                    t,
+                                                    noise_type_label(t),
+                                                );
+                                            }
+                                        }
+                                    });
+                                if self.layers[i].warp_noise != prev_warp_noise {
+                                    self.mark_dirty(ui.ctx());
+                                }
+                                ui.end_row();
+                            }
+
+                            if self.layers[i].distortion_type == DistortionType::Turbulence {
+                                ui.label("Octaves");
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(
+                                            &mut self.layers[i].distortion_octaves,
+                                        )
+                                        .range(1..=8),
+                                    )
+                                    .changed()
+                                {
+                                    self.mark_dirty(ui.ctx());
+                                }
+                                ui.end_row();
+                            }
+
+                            ui.label("Distortion Rot (deg)");
+                            ui.horizontal(|ui| {
+                                for axis in 0..3 {
+                                    if ui
+                                        .add(
+                                            egui::DragValue::new(
+                                                &mut self.layers[i].distortion_rotation[axis],
+                                            )
+                                            .speed(1.0)
+                                            .range(-180.0..=180.0),
+                                        )
+                                        .changed()
+                                    {
+                                        self.mark_dirty(ui.ctx());
+                                    }
+                                }
+                            });
+                            ui.end_row();
                         }
                     });
             });
