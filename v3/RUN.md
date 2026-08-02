@@ -57,6 +57,7 @@ Per-layer **Distortion** section in the Properties panel (v2 parity + v3 improve
 - **Warp Noise** (shown when type ∈ {Domain Warp, Curl, Turbulence}): noise type that drives the warp (Value, Perlin, Simplex, Worley, Voronoi, White). **Critical for SDF shapes** (e.g., cone, box) which have flat underlying fields; choosing a Warp Noise enables domain displacement. For procedural noise layers, using their own field; for SDFs, Warp Noise provides the distortion source.
 - **Distortion Rotation X/Y/Z** (degrees, shown when type ≠ None) — orients the distortion field on any axis. **Swirl** (normally Y-axis twist) and **Polar** (normally radial on XZ plane) can now act on any orientation.
 - **Warp Offset X/Y/Z** (range −10..10, shown when type ∈ {Domain Warp, Curl, Turbulence}) — shifts where the warp field is sampled, scrolling or advecting the distortion field. **Keyframable** (has the ◆ stopwatch). Key use: keyframe **Warp Offset Z** (or X/Y) from 0 to a few units over the loop to make a **Turbulence-distorted flame drift like wind** while looping smoothly. Offset 0 = no change (default; existing scenes unaffected).
+- **Loop Offset** (toggle, shown when type ∈ {Domain Warp, Curl, Turbulence}) — determines whether the warp field scrolls infinitely or tiles. **Off (default):** the warp offset scrolls infinitely through non-repeating noise (as before); changing Warp Offset creates an endless advection. **On:** the warp field becomes tileable (uses a tileable Perlin regardless of the Warp Noise selector), and **Warp Offset is measured in loops** (0–1 = one full cycle). This enables **seamless loopable motion**: keyframe **Warp Offset** 0 → 1 over your animation loop, and the distortion drifts with no jump at the loop seam (e.g., a wind-scrolled flame that loops smoothly). Loop mode is useful for authored seamless animation.
 - **Warp Freq** (0.5–10) — domain frequency for **Domain Warp** only
 - **Swirl Amt** (−5..5) — twist amount for **Swirl** only
 - **Octaves** (1–8, shown when type = **Turbulence**) — fractal depth; higher octaves add finer detail to the turbulence field
@@ -362,6 +363,35 @@ Verify keyframing and animation composition work correctly:
     - Press **Play** again. The layer should now have a constant opacity (the slider's current value) and not animate.
     - Click ◆ again to re-enable. The animation should resume.
     - Report: Does toggling ◆ off freeze the animation and toggle ◇ back on resume it?
+
+### Loop Offset (Loopable Warp)
+
+Verify the new Loop Offset toggle enables seamless loopable distortion:
+
+1. **Loop Offset OFF = unchanged infinite scroll?**
+   - Create a noise layer with **Simplex** or **Perlin**.
+   - Set distortion **Type** to **Turbulence**, **Strength** = 1.0.
+   - Ensure **Loop Offset** is toggled **OFF** (default).
+   - Adjust **Warp Offset Z** from 0 to 5 and back. The warp field should scroll infinitely (no obvious repeating pattern).
+   - Compare to a scene from before this release (same distortion setup). Should look identical.
+   - Report: Does Loop OFF produce unchanged infinite scroll?
+
+2. **Loop Offset ON + keyframe Warp Offset 0→1 over the loop = seamless drift?**
+   - Create a noise layer with **Simplex** or **Perlin**.
+   - Set distortion **Type** to **Turbulence**, **Strength** = 1.0.
+   - Toggle **Loop Offset** to **ON**.
+   - Enable animation on **Warp Offset Z** at **Phase** = 0.0 (value = 0.0).
+   - At **Phase** = 1.0, set **Warp Offset Z** to 1.0 (creates a second keyframe; note: in loop mode, 1.0 = one full cycle).
+   - Press **Play**. The warp field should smoothly drift over the loop with **no jump or discontinuity at the loop seam**.
+   - Compare the loop point (where Phase = 1.0 wraps back to 0.0). The distortion should be visually continuous, as if drifting seamlessly.
+   - Report: Does keyframing Warp Offset Z from 0 to 1 over the loop produce seamless drift with no jump at the seam?
+
+3. **Toggling Loop Offset doesn't break existing Distortion?**
+   - Load a scene with **Domain Warp**, **Curl**, or **Turbulence** distortion (any Warp Noise, any Warp Offset, animated or not).
+   - Toggle **Loop Offset** ON and OFF several times.
+   - Verify no crashes, shader errors, or visual glitches.
+   - Toggle back to the original state; the distortion should restore to its previous appearance.
+   - Report: Does toggling Loop Offset work without errors or visual breakage?
 
 ## Known this cycle
 
