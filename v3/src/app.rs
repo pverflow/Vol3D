@@ -1277,7 +1277,8 @@ impl Vol3dApp {
                     crate::render::frame_cache::FRAME_CACHE_BUDGET_BYTES,
                 );
                 let product = bake_dims[0] as f64 * bake_dims[1] as f64 * bake_dims[2] as f64;
-                let gb = self.frame_count as f64 * product * 4.0 / (1u64 << 30) as f64;
+                let gb = self.frame_count as f64 * product * anim::BYTES_PER_VOXEL as f64
+                    / (1u64 << 30) as f64;
                 let eff_fps = self.frame_count as f32 / self.loop_seconds.max(1e-3);
                 format!(
                     "baked {} @ {}×{}×{}  ({:.1} GB)  {:.0} fps  {}",
@@ -1353,7 +1354,9 @@ impl eframe::App for Vol3dApp {
                     self.wire_flash_start = ui.ctx().input(|i| i.time);
                 }
 
-                let mb = self.dims.iter().map(|&d| d as u64).product::<u64>() * 4 / (1024 * 1024);
+                let mb = self.dims.iter().map(|&d| d as u64).product::<u64>()
+                    * anim::BYTES_PER_VOXEL
+                    / (1024 * 1024);
                 ui.label(format!(
                     "box {}×{}×{} — {} MB/frame",
                     self.dims[0], self.dims[1], self.dims[2], mb

@@ -74,14 +74,18 @@ mod tests {
     #[test]
     fn playback_bake_dims_fits_and_keeps_aspect() {
         let b = 512 * 1024 * 1024;
-        // 8*256³*4 == 512MiB exactly — an exact fit counts as fitting (`<=`), so this stays at
-        // source res rather than needlessly halving to 128.
-        assert_eq!(playback_bake_dims([256, 256, 256], 8, b), [256, 256, 256]);
+        // 8*256³*8 == 1GiB > 512MiB — doesn't fit at source res; halves to 128:
+        // 8*128³*8 == 128MiB <= 512MiB, so it stops there.
+        assert_eq!(playback_bake_dims([256, 256, 256], 8, b), [128, 128, 128]);
         assert_eq!(playback_bake_dims([64, 64, 256], 1, b), [64, 64, 256]); // fits as-is
         let d = playback_bake_dims([256, 256, 256], u32::MAX, b);
         assert_eq!(d, [32, 32, 32]); // floor 32
+
+        // Aspect starts 4:1 (256/64) but the 32-floor catches x/y one halving step before z
+        // finishes catching up (32,32,128 -> 32,32,64), so the reduced ratio is 2:1, not 4:1.
         let d = playback_bake_dims([64, 64, 256], 1000, b);
-        assert_eq!(d[2] / d[0], 4); // aspect ratio preserved
+        assert_eq!(d, [32, 32, 64]);
+        assert_eq!(d[2] / d[0], 2);
     }
 
     #[test]
@@ -112,7 +116,7 @@ mod tests {
 
     #[test]
     fn max_loop_frames_fits_floor_res() {
-        assert_eq!(max_loop_frames(4 * 1024 * 1024 * 1024), 4096); // 4 GB / 1 MiB
+        assert_eq!(max_loop_frames(4 * 1024 * 1024 * 1024), 2048); // 4 GB / 2 MiB
         assert_eq!(max_loop_frames(1), 1); // floor at 1
     }
 
@@ -178,6 +182,12 @@ pub fn max_frames(res: u32, budget_bytes: u64) -> u32 {
 /// `shaders/occupancy.wgsl`'s inner scan loop — keep the two in sync.
 pub const MACRO: u32 = 8;
 
+/// Bytes per voxel of the volume/baked-frame textures: RGBA16F (4 channels × 2 bytes), since the
+/// HDR-color cycle's Task 1 moved `render::volume`/`render::frame_cache`'s textures off
+/// `Rgba8Unorm` (4 bytes). Occupancy (r32float) and the ramp LUT (still `Rgba8Unorm`, a 0..1
+/// color table) are unaffected and don't use this constant.
+pub const BYTES_PER_VOXEL: u64 = 8;
+
 /// Per-axis aspect ratio for a `dims` volume: each axis divided by the SHORTEST axis, so the
 /// shortest maps to `1.0` and the longer axes grow proportionally — min-normalized, so growing
 /// one axis (e.g. making a box taller) never shrinks the others; keeps a non-cubic volume's
@@ -211,7 +221,7 @@ pub fn playback_bake_res(source_res: u32, n: u32, budget_bytes: u64) -> u32 {
 
 /// Generalizes `playback_bake_res` to non-cubic volumes: halves ALL three axes together (by the
 /// same power of two, so a source's aspect ratio survives the reduction) starting from
-/// `source_dims`, until the dense cache (`n` frames × `product(dims)` × 4 bytes rgba8) fits
+/// `source_dims`, until the dense cache (`n` frames × `product(dims)` × `BYTES_PER_VOXEL`) fits
 /// `budget_bytes` (an exact fit counts — `<=`, matching `playback_bake_res`), floored per axis at
 /// 32 (never below — and, since it only ever halves down from `source_dims`, never above it
 /// either). If even the 32-per-axis floor doesn't fit the budget, returns the floor anyway — a
@@ -221,7 +231,7 @@ pub fn playback_bake_dims(source_dims: [u32; 3], n: u32, budget_bytes: u64) -> [
     let mut dims = source_dims;
     loop {
         let product = dims[0] as u64 * dims[1] as u64 * dims[2] as u64;
-        if n * product * 4 <= budget_bytes {
+        if n * product * BYTES_PER_VOXEL <= budget_bytes {
             return dims;
         }
         let halved = dims.map(|d| (d / 2).max(32.min(d)));
@@ -233,11 +243,12 @@ pub fn playback_bake_dims(source_dims: [u32; 3], n: u32, budget_bytes: u64) -> [
 }
 
 /// Conservative upper bound on baked frame count — the ceiling `app.rs` clamps N (fps × loop) to,
-/// sized off a 64³ rgba8 per-frame footprint so it's safe regardless of the actual bake dims:
-/// `playback_bake_dims` is what fits the real per-frame VRAM (reducing dims as needed), this just
-/// keeps N itself from growing unbounded before that reduction ever runs. Floored at 1.
+/// sized off a 64³ `BYTES_PER_VOXEL` per-frame footprint so it's safe regardless of the actual
+/// bake dims: `playback_bake_dims` is what fits the real per-frame VRAM (reducing dims as
+/// needed), this just keeps N itself from growing unbounded before that reduction ever runs.
+/// Floored at 1.
 pub fn max_loop_frames(budget_bytes: u64) -> u32 {
-    let per = (64u64).pow(3) * 4; // 1 MiB
+    let per = (64u64).pow(3) * BYTES_PER_VOXEL; // 2 MiB
     (budget_bytes / per).max(1) as u32
 }
 

@@ -1,4 +1,4 @@
-// Dense GPU frame cache for cycle-4 loop playback: N `bake_dims`-sized rgba8unorm D3 textures
+// Dense GPU frame cache for cycle-4 loop playback: N `bake_dims`-sized rgba16float D3 textures
 // (plus each frame's own occupancy overlay), each baked by the EXISTING generation compute
 // (`VolumeGen::generate_into`) at a fixed loop phase. Fully GPU-resident — no CPU readback, no
 // buffer map.
@@ -16,7 +16,7 @@ use crate::render::volume::VolumeGen;
 pub const FRAME_CACHE_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// N baked loop frames + their views, plus each frame's own occupancy overlay. All frame
-/// textures are `bake_dims`-sized rgba8unorm with `STORAGE_BINDING | TEXTURE_BINDING` (written by
+/// textures are `bake_dims`-sized rgba16float with `STORAGE_BINDING | TEXTURE_BINDING` (written by
 /// the compute, then sampled by the raymarch); occupancy textures are
 /// `macro_dims(bake_dims[i], MACRO)` per axis r32float (see `render::occupancy`).
 #[derive(Default)]
@@ -168,7 +168,7 @@ impl FrameCache {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: wgpu::TextureFormat::Rgba16Float,
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });

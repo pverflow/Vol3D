@@ -44,7 +44,7 @@ impl VolumeGen {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        format: wgpu::TextureFormat::Rgba16Float,
                         view_dimension: wgpu::TextureViewDimension::D3,
                     },
                     count: None,
@@ -176,7 +176,7 @@ impl VolumeGen {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: wgpu::TextureFormat::Rgba16Float,
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -308,7 +308,7 @@ impl VolumeGen {
     /// `layers`/`params`/`lut_atlas` (a `256 x lut_rows` RGBA8 atlas, one row per layer's color
     /// ramp — see `ramp::build_ramp_lut_atlas`), resizing the layers storage buffer / LUT texture
     /// only when `layers.len()` / `lut_rows` actually changed, rebuilds the compute bind group
-    /// against `target_view`, then dispatches. `target_view` must be a `dims`-sized rgba8unorm D3
+    /// against `target_view`, then dispatches. `target_view` must be a `dims`-sized rgba16float D3
     /// `STORAGE_BINDING` view. No CPU readback — used for both the live volume and the FrameCache.
     #[allow(clippy::too_many_arguments)]
     pub fn generate_into(
