@@ -128,6 +128,22 @@ pub fn should_regen(now: f64, last_edit: f64, dirty: bool) -> bool {
     dirty && (now - last_edit) >= REGEN_DEBOUNCE
 }
 
+/// True the frame a regen (bake or live) is about to dispatch — the moment `dims` becomes the
+/// shape actually being (re)generated. Mirrors `app.rs`'s two regen-dispatch branches: the bake
+/// path (`playing && cache_stale && frame_count > 0`) and the live path (`!playing &&
+/// pending_regen`, which covers both the debounced-edit regen and the pause-snap regen — both
+/// just set `pending_regen` and funnel through the same branch). Lets the caller snapshot
+/// `dims` into a `committed_dims` right as this fires, so e.g. the camera can frame the box
+/// that's about to exist instead of the pending UI target a few frames ahead of it.
+pub fn regen_dispatches(
+    playing: bool,
+    cache_stale: bool,
+    frame_count: u32,
+    pending_regen: bool,
+) -> bool {
+    (playing && cache_stale && frame_count > 0) || (!playing && pending_regen)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +264,14 @@ mod tests {
         assert!(!should_regen(1.00, 1.00, true)); // no time elapsed
         assert!(should_regen(1.20, 1.00, true)); // 200ms > 120ms
         assert!(!should_regen(1.20, 1.00, false)); // not dirty
+    }
+
+    #[test]
+    fn regen_dispatches_bake_or_live_paths() {
+        assert!(regen_dispatches(true, true, 8, false)); // bake path
+        assert!(!regen_dispatches(true, false, 8, false)); // playing, cache fresh -> no bake
+        assert!(!regen_dispatches(true, true, 0, false)); // playing, no frames yet -> no bake
+        assert!(regen_dispatches(false, false, 0, true)); // live path (debounce fired or pause snap)
+        assert!(!regen_dispatches(false, false, 0, false)); // idle: neither fires
     }
 }

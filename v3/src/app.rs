@@ -6,7 +6,9 @@ use crate::layer::{self, BlendMode, DistortionType, GenParams, LayerDesc, NoiseT
 use crate::ramp::{self, ColorRamp};
 use crate::render::raymarch::RaymarchCallback;
 use crate::theme::Theme;
-use crate::ui_logic::{add_layer, delete_layer, duplicate_layer, move_down, move_up, should_regen};
+use crate::ui_logic::{
+    add_layer, delete_layer, duplicate_layer, move_down, move_up, regen_dispatches, should_regen,
+};
 
 /// Fixed LUT width `ramp::build_ramp_lut_atlas` bakes rows at (one texel per 8-bit density
 /// value) — matches `render::volume::VolumeGen`'s LUT texture width.
@@ -160,6 +162,12 @@ pub struct Vol3dApp {
     /// selectors. Defaults to `[128,128,128]` — today's cubic 128, unchanged until the user picks
     /// non-cubic values.
     pub dims: [u32; 3],
+    /// Snapshot of `dims` taken the instant a regen (bake or live) actually dispatches
+    /// (`ui_logic::regen_dispatches`) — i.e. the shape the bound volume is becoming, not `dims`
+    /// itself, which a UI edit can update immediately, ~120ms ahead of the debounced regen that
+    /// actually rebuilds the box. The camera's `box_aspect` derives from this, not `dims`, so a
+    /// dims change reframes the camera in the same frame the box itself changes shape — no pop.
+    pub committed_dims: [u32; 3],
     /// Folded into every layer's `seed` at pack time (matches v2's `u_seed = layer.seed +
     /// globalSeed`). Not part of `GenParams` (cycle 4 dropped that field — it was dead there).
     pub global_seed: f32,
@@ -249,6 +257,7 @@ impl Default for Vol3dApp {
             layers,
             selected: 0,
             dims: [128, 128, 128],
+            committed_dims: [128, 128, 128],
             global_seed: 0.0,
             dirty: true,
             last_edit_time: 0.0,
@@ -1352,13 +1361,28 @@ impl eframe::App for Vol3dApp {
                 ui.ctx().request_repaint();
             }
 
+            // Snapshot `dims` into `committed_dims` the instant a regen (bake or live) actually
+            // dispatches — see field doc. `self.playing`/`cache_stale`/`frame_count`/
+            // `pending_regen` are all already settled above (pause-snap/debounce), so this can
+            // run before `need_bake`/the live-regen branch recompute the same predicate below.
+            if regen_dispatches(
+                self.playing,
+                self.cache_stale,
+                self.frame_count,
+                self.pending_regen,
+            ) {
+                self.committed_dims = self.dims;
+            }
+
             let aspect = rect.width() / rect.height().max(1.0);
             // `cam.macro_dims`/the shader-facing `box_aspect_*` scalar fields are left
             // 0.0/1.0 by `basis` — `RaymarchCallback::prepare` overwrites those from the BOUND
-            // volume's actual dims (not `self.dims`, which may be mid-debounce). The box-shape
-            // fed into `basis` here for camera framing (center/fit) is `self.dims`-derived
-            // instead — a one-frame mismatch during debounce is harmless for camera position.
-            let box_aspect = anim::aspect_from_dims(self.dims);
+            // volume's actual dims. The box-shape fed into `basis` here for camera framing
+            // (center/fit) is `committed_dims`-derived instead: `dims` updates immediately on a
+            // UI edit, ~120ms ahead of the debounced regen that actually rebuilds the box, which
+            // would otherwise pop the camera to the new aspect a frame before the box itself
+            // catches up.
+            let box_aspect = anim::aspect_from_dims(self.committed_dims);
             let cam = self.cam.basis(aspect, 128.0, box_aspect);
 
             // Bake the dense cache when playing with a stale cache (Play press, or re-bake after
