@@ -3,6 +3,7 @@ use crate::anim_timeline::Timeline;
 use crate::camera::OrbitCamera;
 use crate::gradient::gradient_editor;
 use crate::layer::{self, BlendMode, DistortionType, GenParams, LayerDesc, NoiseType, ParamField};
+use crate::persistence;
 use crate::ramp::{self, ColorRamp};
 use crate::render::raymarch::RaymarchCallback;
 use crate::theme::Theme;
@@ -305,6 +306,11 @@ impl Vol3dApp {
         let mut app = Self::default();
         app.recompute_frame_count();
         crate::theme::apply(&cc.egui_ctx, app.theme);
+        // Auto-load whatever scene was last saved as default; a missing/corrupt save (`None`)
+        // just leaves the demo scene from `Self::default()` in place — no panic, no blank scene.
+        if let Some(s) = Self::load_default_scene() {
+            app.apply_scene(s);
+        }
         app
     }
 
@@ -326,6 +332,74 @@ impl Vol3dApp {
         // Every layer/dims/seed edit routes through here, so this one line invalidates the
         // dense playback cache for all of them (evolutions/frame_count set it at their controls).
         self.cache_stale = true;
+    }
+
+    /// Snapshot everything `SceneFile` persists out of the live `self` — the inverse of
+    /// `apply_scene`. `self.timeline.to_entries()` borrows `&self.timeline` and returns owned
+    /// data before the struct literal below touches any other `self` field, so there's no
+    /// borrow conflict despite reading most of `self` in one expression.
+    fn to_scene(&self) -> persistence::SceneFile {
+        persistence::SceneFile {
+            version: 1,
+            layers: self.layers.clone(),
+            next_layer_id: self.next_layer_id,
+            dims: self.dims,
+            global_seed: self.global_seed,
+            loop_seconds: self.loop_seconds,
+            evolutions: self.evolutions,
+            fps: self.fps,
+            interp: self.interp,
+            tracks: self.timeline.to_entries(),
+            camera: persistence::CamState {
+                yaw: self.cam.yaw,
+                pitch: self.cam.pitch,
+                distance: self.cam.distance,
+            },
+        }
+    }
+
+    /// Overwrite the live scene with `s` — the inverse of `to_scene`. Refuses an empty-layers
+    /// scene (guards against a corrupt/hand-edited save nuking the demo down to nothing); forces
+    /// a regen + rebake afterward since every bake input just changed under the renderer.
+    fn apply_scene(&mut self, s: persistence::SceneFile) {
+        if s.layers.is_empty() {
+            return;
+        }
+        let max_existing_id = s.layers.iter().map(|l| l.id + 1).max().unwrap_or(0);
+        self.layers = s.layers;
+        self.dims = s.dims;
+        self.global_seed = s.global_seed;
+        self.loop_seconds = s.loop_seconds;
+        self.evolutions = s.evolutions;
+        self.fps = s.fps;
+        self.interp = s.interp;
+        self.timeline = Timeline::from_entries(s.tracks);
+        self.cam.yaw = s.camera.yaw;
+        self.cam.pitch = s.camera.pitch;
+        self.cam.distance = s.camera.distance;
+        // Never reuse an id: floor next_layer_id at one past the highest id actually in the
+        // loaded layers, in case a hand-edited/older save's `next_layer_id` undershoots it.
+        self.next_layer_id = s.next_layer_id.max(max_existing_id);
+        self.recompute_frame_count();
+        self.cache_stale = true;
+        self.dirty = true;
+    }
+
+    /// Serialize the current scene and hand it to `persistence::save_scene` (localStorage on
+    /// web, `~/.vol3d/scene.json` natively). Silently no-ops on a serialize/write failure — this
+    /// is a "save as default" convenience, not a critical path worth surfacing an error for.
+    fn save_current_scene(&self) {
+        if let Ok(js) = serde_json::to_string(&self.to_scene()) {
+            persistence::save_scene(&js);
+        }
+    }
+
+    /// Load + deserialize whatever scene was last saved as default, if any. `None` covers both
+    /// "nothing saved yet" and "saved data is corrupt" — `new` (the only caller) treats both the
+    /// same: keep whatever scene `Self::default()` already built.
+    fn load_default_scene() -> Option<persistence::SceneFile> {
+        let js = persistence::load_scene()?;
+        serde_json::from_str(&js).ok()
     }
 
     /// Pack the *visible* layers of `layers` into GPU form: `Vec<GpuLayer>` + the `256xN` ramp
@@ -1305,6 +1379,34 @@ impl eframe::App for Vol3dApp {
                         };
                         crate::theme::apply(ui.ctx(), self.theme);
                     }
+
+                    // Reset: same demo scene `Default::default()` builds (fresh sequential ids,
+                    // the constructor's default globals, no tracks) — applied via `apply_scene`
+                    // so it also forces the regen + rebake a scene swap needs.
+                    if ui.button("↺ Reset").clicked() {
+                        let mut layers = layer::demo_scene();
+                        for (i, l) in layers.iter_mut().enumerate() {
+                            l.id = i as u64;
+                        }
+                        let next_layer_id = layers.len() as u64;
+                        self.apply_scene(persistence::SceneFile {
+                            version: 1,
+                            layers,
+                            next_layer_id,
+                            dims: [128, 128, 128],
+                            global_seed: 0.0,
+                            loop_seconds: 4.0,
+                            evolutions: 0.0,
+                            fps: 30,
+                            interp: false,
+                            tracks: Vec::new(),
+                            camera: persistence::CamState::default(),
+                        });
+                    }
+                    if ui.button("💾 Save as default").clicked() {
+                        self.save_current_scene();
+                    }
+
                     ui.label(format!(
                         "{:.1} ms  ({:.0} fps)",
                         self.frame_ms_ema,
@@ -1533,5 +1635,87 @@ impl eframe::App for Vol3dApp {
             ui.painter()
                 .add(egui_wgpu::Callback::new_paint_callback(rect, cb));
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Closes the coverage gap `persistence.rs`'s task-1 round-trip test left open (it only
+    /// checked `dims`/`layers.len()` with empty `tracks`): a `SceneFile` with non-empty tracks,
+    /// asserting every scalar field AND the timeline's `hash()` (not just track count) survive a
+    /// JSON round-trip.
+    #[test]
+    fn scenefile_full_roundtrip_with_tracks() {
+        let mut tl = Timeline::default();
+        tl.upsert(2, ParamField::Opacity, 0.0, 0.1);
+        tl.upsert(2, ParamField::Opacity, 1.0, 0.9);
+        tl.upsert(5, ParamField::ScaleX, 0.3, 2.0);
+        let tracks_hash = tl.hash();
+
+        let s = persistence::SceneFile {
+            version: 1,
+            layers: layer::demo_scene(),
+            next_layer_id: 6,
+            dims: [64, 32, 256],
+            global_seed: 1.25,
+            loop_seconds: 7.5,
+            evolutions: 3.0,
+            fps: 24,
+            interp: true,
+            tracks: tl.to_entries(),
+            camera: persistence::CamState {
+                yaw: 0.42,
+                pitch: -0.17,
+                distance: 5.5,
+            },
+        };
+
+        let js = serde_json::to_string(&s).unwrap();
+        let back: persistence::SceneFile = serde_json::from_str(&js).unwrap();
+
+        assert_eq!(back.version, s.version);
+        assert_eq!(back.layers.len(), s.layers.len());
+        assert_eq!(back.next_layer_id, s.next_layer_id);
+        assert_eq!(back.dims, s.dims);
+        assert_eq!(back.global_seed, s.global_seed);
+        assert_eq!(back.loop_seconds, s.loop_seconds);
+        assert_eq!(back.evolutions, s.evolutions);
+        assert_eq!(back.fps, s.fps);
+        assert_eq!(back.interp, s.interp);
+        assert_eq!(back.camera.yaw, s.camera.yaw);
+        assert_eq!(back.camera.pitch, s.camera.pitch);
+        assert_eq!(back.camera.distance, s.camera.distance);
+        assert!(!back.tracks.is_empty());
+        assert_eq!(Timeline::from_entries(back.tracks).hash(), tracks_hash);
+    }
+
+    /// The two behaviors `apply_scene` adds beyond a plain field-copy: refusing an empty-layers
+    /// scene (leaves whatever was already live untouched) and flooring `next_layer_id` at one
+    /// past the highest id actually present in the loaded layers — never trusting a possibly
+    /// understated/stale `next_layer_id` from the save file, so a later `add_layer` can't mint an
+    /// id that collides with one already on screen.
+    #[test]
+    fn apply_scene_guards_empty_and_floors_next_id() {
+        let mut app = Vol3dApp::default();
+        let before = app.layers.clone();
+
+        app.apply_scene(persistence::SceneFile {
+            layers: Vec::new(),
+            ..Default::default()
+        });
+        assert_eq!(app.layers.len(), before.len()); // empty scene ignored, demo kept
+
+        let mut layers = layer::demo_scene();
+        layers.truncate(1);
+        layers[0].id = 41;
+        app.apply_scene(persistence::SceneFile {
+            layers,
+            next_layer_id: 0, // deliberately understated vs. the id actually in `layers`
+            ..Default::default()
+        });
+        assert_eq!(app.layers.len(), 1);
+        assert_eq!(app.next_layer_id, 42); // floored at max(existing id) + 1, not the saved 0
     }
 }
