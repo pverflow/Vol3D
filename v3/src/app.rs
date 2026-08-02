@@ -258,6 +258,11 @@ pub struct Vol3dApp {
     /// `duplicate_layer`). Only ever increases — ids are never reused, so a deleted layer's
     /// timeline tracks can't collide with a later layer.
     next_layer_id: u64,
+    /// The keyframe dot the timeline panel highlights, keyed the same way a `Track` is
+    /// (`layer_id`, field, phase) — a phase rather than an index since `Track::keys` has no
+    /// stable index across inserts/removes. `None` = nothing selected. Painted only this task
+    /// (Task 2); Task 3 wires click-to-select / drag-retime / delete against it.
+    pub selected_key: Option<(u64, layer::ParamField, f32)>,
 }
 
 impl Default for Vol3dApp {
@@ -297,6 +302,7 @@ impl Default for Vol3dApp {
             wire_flash_start: -1e9,
             timeline: Timeline::default(),
             next_layer_id,
+            selected_key: None,
         }
     }
 }
@@ -1319,6 +1325,135 @@ impl Vol3dApp {
             };
             ui.label(status);
         });
+
+        self.timeline_panel(ui);
+    }
+
+    /// Visual timeline: a seconds ruler, one lane per animated `(layer_id, field)` track with a
+    /// keyframe dot per key, and a playhead line — display only (Task 2 of the timeline-SP2
+    /// cycle; click/drag/delete land in Task 3). Called at the tail of `animation_panel`, below
+    /// the Phase slider.
+    fn timeline_panel(&mut self, ui: &mut egui::Ui) {
+        // Owned snapshot (`to_entries` clones out of `&self.timeline`) — painting below reads
+        // `self.layers`/`self.phase`/`self.selected_key` too, so nothing here aliases `&mut self`.
+        let entries = self.timeline.to_entries();
+        if entries.is_empty() {
+            ui.weak("no keyframes — click ◆ next to a value to animate it");
+            return;
+        }
+
+        // Left gutter width (track-label column), shared by the ruler and every lane so a key's
+        // dot lines up under its ruler tick. `phase_to_x` takes the row's own rect (rather than
+        // closing over one shared rect) so the ruler (outside the `ScrollArea`) and each lane
+        // (inside it, whose width shrinks slightly once a vertical scrollbar appears) each map
+        // through their own width — Task 3's inverse (`x_to_phase`) should mirror this shape.
+        const LABEL_W: f32 = 90.0;
+        const RULER_H: f32 = 16.0;
+        const LANE_H: f32 = 18.0;
+        let phase_to_x = |p: f32, r: egui::Rect| r.left() + LABEL_W + p * (r.width() - LABEL_W);
+
+        let weak = ui.visuals().weak_text_color();
+        let text_color = ui.visuals().text_color();
+        let accent = ui.visuals().selection.bg_fill;
+        let font = egui::TextStyle::Small.resolve(ui.style());
+
+        // Ruler: baseline + 0s / mid / end labels.
+        let (ruler_rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), RULER_H),
+            egui::Sense::hover(),
+        );
+        let painter = ui.painter();
+        painter.hline(
+            (ruler_rect.left() + LABEL_W)..=ruler_rect.right(),
+            ruler_rect.center().y,
+            egui::Stroke::new(1.0, weak),
+        );
+        painter.text(
+            egui::pos2(phase_to_x(0.0, ruler_rect), ruler_rect.top()),
+            egui::Align2::LEFT_TOP,
+            "0s",
+            font.clone(),
+            weak,
+        );
+        painter.text(
+            egui::pos2(phase_to_x(0.5, ruler_rect), ruler_rect.top()),
+            egui::Align2::CENTER_TOP,
+            format!("{:.1}s", self.loop_seconds * 0.5),
+            font.clone(),
+            weak,
+        );
+        painter.text(
+            egui::pos2(phase_to_x(1.0, ruler_rect), ruler_rect.top()),
+            egui::Align2::RIGHT_TOP,
+            format!("{:.1}s", self.loop_seconds),
+            font.clone(),
+            weak,
+        );
+        let ruler_playhead_x = phase_to_x(self.phase, ruler_rect);
+        painter.line_segment(
+            [
+                egui::pos2(ruler_playhead_x, ruler_rect.top()),
+                egui::pos2(ruler_playhead_x, ruler_rect.bottom()),
+            ],
+            egui::Stroke::new(1.5, accent),
+        );
+
+        egui::ScrollArea::vertical()
+            .max_height(160.0)
+            .show(ui, |ui| {
+                for entry in &entries {
+                    let (row, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), LANE_H),
+                        egui::Sense::hover(),
+                    );
+                    let lane_y = row.center().y;
+                    let painter = ui.painter();
+
+                    let layer_idx = self
+                        .layers
+                        .iter()
+                        .position(|l| l.id == entry.layer_id)
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "?".to_string());
+                    painter.text(
+                        egui::pos2(row.left(), lane_y),
+                        egui::Align2::LEFT_CENTER,
+                        format!("L{}·{}", layer_idx, entry.field.label()),
+                        font.clone(),
+                        text_color,
+                    );
+                    painter.hline(
+                        (row.left() + LABEL_W)..=row.right(),
+                        lane_y,
+                        egui::Stroke::new(1.0, weak),
+                    );
+
+                    for key in &entry.keys {
+                        let x = phase_to_x(key.phase, row);
+                        let selected =
+                            self.selected_key == Some((entry.layer_id, entry.field, key.phase));
+                        let dot_color = if selected { accent } else { text_color };
+                        let radius = if selected { 5.0 } else { 3.0 };
+                        painter.circle_filled(egui::pos2(x, lane_y), radius, dot_color);
+                        if selected {
+                            painter.circle_stroke(
+                                egui::pos2(x, lane_y),
+                                radius + 2.5,
+                                egui::Stroke::new(1.5, accent),
+                            );
+                        }
+                    }
+
+                    let playhead_x = phase_to_x(self.phase, row);
+                    painter.line_segment(
+                        [
+                            egui::pos2(playhead_x, row.top()),
+                            egui::pos2(playhead_x, row.bottom()),
+                        ],
+                        egui::Stroke::new(1.5, accent),
+                    );
+                }
+            });
     }
 }
 
