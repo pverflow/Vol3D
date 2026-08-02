@@ -166,8 +166,12 @@ pub struct GpuLayer {
     pub drot2: [f32; 4],         // 256 (warp-space rotation column 2)
     pub warp_noise: u32,         // 272
     pub distortion_octaves: u32, // 276
-    pub _pad_di0: f32,           // 280
-    pub _pad_di1: f32,           // 284..288
+    // distortion-offset cycle task 1 (append-only, 0..280 unchanged; the two
+    // former `_pad_di0/1` scalars are now live fields, plus one more appended):
+    pub distortion_offset_x: f32, // 280 (was _pad_di0)
+    pub distortion_offset_y: f32, // 284 (was _pad_di1)
+    pub distortion_offset_z: f32, // 288
+    pub _pad_do: [f32; 3],        // 292..304 (pad to 16-byte multiple)
 }
 
 /// Ergonomic Rust-side layer description (ported field-for-field from v2's
@@ -220,6 +224,12 @@ pub struct LayerDesc {
     pub warp_noise: NoiseType,
     /// Octave count for `DistortionType::Turbulence`'s fbm-like warp loop.
     pub distortion_octaves: u32,
+    /// Scrolls the warp-field sampling position for `DomainWarp`/`Curl`/
+    /// `Turbulence` (added to `q` before it's fed to `warp_field`) —
+    /// keyframable so the warp pattern can drift over time. Does NOT affect
+    /// the returned distorted position, only where the warp noise is
+    /// sampled from (distortion-offset cycle task 1).
+    pub distortion_offset: [f32; 3],
     pub ramp: ColorRamp,
     /// UI-only visibility toggle (cycle 3): invisible layers are skipped at
     /// pack time (`app.rs`), contributing neither shape nor color. Not part
@@ -263,6 +273,7 @@ impl Default for LayerDesc {
             distortion_rotation: [0.0, 0.0, 0.0],
             warp_noise: NoiseType::Perlin,
             distortion_octaves: 4,
+            distortion_offset: [0.0, 0.0, 0.0],
             ramp: ColorRamp::default(), // disabled, no stops
             visible: true,
         }
@@ -302,10 +313,13 @@ pub enum ParamField {
     DistortionRotX,
     DistortionRotY,
     DistortionRotZ,
+    DistortionOffsetX,
+    DistortionOffsetY,
+    DistortionOffsetZ,
 }
 
 impl ParamField {
-    pub const ALL: [ParamField; 26] = [
+    pub const ALL: [ParamField; 29] = [
         ParamField::Opacity,
         ParamField::ScaleX,
         ParamField::ScaleY,
@@ -332,6 +346,9 @@ impl ParamField {
         ParamField::DistortionRotX,
         ParamField::DistortionRotY,
         ParamField::DistortionRotZ,
+        ParamField::DistortionOffsetX,
+        ParamField::DistortionOffsetY,
+        ParamField::DistortionOffsetZ,
     ];
 
     pub fn label(self) -> &'static str {
@@ -363,13 +380,16 @@ impl ParamField {
             DistortionRotX => "Distortion Rot X",
             DistortionRotY => "Distortion Rot Y",
             DistortionRotZ => "Distortion Rot Z",
+            DistortionOffsetX => "Distortion Offset X",
+            DistortionOffsetY => "Distortion Offset Y",
+            DistortionOffsetZ => "Distortion Offset Z",
         }
     }
 
     /// Decode a `ParamField as u8` discriminant back into its variant (the
     /// inverse used by `Timeline::evaluate_into` to turn a track's `u8` key
     /// back into something `get_param`/`set_param` accept). `None` for any
-    /// value outside the 26 valid discriminants.
+    /// value outside the 29 valid discriminants.
     pub fn from_u8(v: u8) -> Option<ParamField> {
         Self::ALL.into_iter().find(|&f| f as u8 == v)
     }
@@ -405,6 +425,9 @@ impl LayerDesc {
             DistortionRotX => self.distortion_rotation[0],
             DistortionRotY => self.distortion_rotation[1],
             DistortionRotZ => self.distortion_rotation[2],
+            DistortionOffsetX => self.distortion_offset[0],
+            DistortionOffsetY => self.distortion_offset[1],
+            DistortionOffsetZ => self.distortion_offset[2],
         }
     }
 
@@ -437,6 +460,9 @@ impl LayerDesc {
             DistortionRotX => self.distortion_rotation[0] = v,
             DistortionRotY => self.distortion_rotation[1] = v,
             DistortionRotZ => self.distortion_rotation[2] = v,
+            DistortionOffsetX => self.distortion_offset[0] = v,
+            DistortionOffsetY => self.distortion_offset[1] = v,
+            DistortionOffsetZ => self.distortion_offset[2] = v,
         }
     }
 }
@@ -493,8 +519,10 @@ pub fn pack_layer(l: &LayerDesc) -> GpuLayer {
         drot2,
         warp_noise: l.warp_noise as u32,
         distortion_octaves: l.distortion_octaves,
-        _pad_di0: 0.0,
-        _pad_di1: 0.0,
+        distortion_offset_x: l.distortion_offset[0],
+        distortion_offset_y: l.distortion_offset[1],
+        distortion_offset_z: l.distortion_offset[2],
+        _pad_do: [0.0; 3],
     }
 }
 
@@ -609,7 +637,7 @@ mod tests {
     #[test]
     fn gpu_layer_std430_layout() {
         use std::mem::{offset_of, size_of};
-        assert_eq!(size_of::<GpuLayer>(), 288); // multiple of 16
+        assert_eq!(size_of::<GpuLayer>(), 304); // multiple of 16
         assert_eq!(offset_of!(GpuLayer, rot0), 0);
         assert_eq!(offset_of!(GpuLayer, scale), 48);
         assert_eq!(offset_of!(GpuLayer, offset), 64);
@@ -627,6 +655,9 @@ mod tests {
         assert_eq!(offset_of!(GpuLayer, drot2), 256);
         assert_eq!(offset_of!(GpuLayer, warp_noise), 272);
         assert_eq!(offset_of!(GpuLayer, distortion_octaves), 276);
+        assert_eq!(offset_of!(GpuLayer, distortion_offset_x), 280);
+        assert_eq!(offset_of!(GpuLayer, distortion_offset_y), 284);
+        assert_eq!(offset_of!(GpuLayer, distortion_offset_z), 288);
     }
 
     #[test]

@@ -737,8 +737,14 @@ struct GpuLayer {
   drot2: vec4<f32>,          // 256 (warp-space rotation column 2)
   warp_noise: u32,           // 272
   distortion_octaves: u32,   // 276
-  _pad_di0: f32,             // 280
-  _pad_di1: f32,             // 284..288
+  // distortion-offset cycle task 1 (append-only, 0..280 unchanged; the two
+  // former _pad_di0/1 scalars are now live fields, plus one more appended):
+  distortion_offset_x: f32,  // 280 (was _pad_di0)
+  distortion_offset_y: f32,  // 284 (was _pad_di1)
+  distortion_offset_z: f32,  // 288
+  _pad_do0: f32,             // 292
+  _pad_do1: f32,             // 296
+  _pad_do2: f32,             // 300..304 (pad to 16-byte multiple)
 };
 
 struct GenParams {
@@ -837,13 +843,17 @@ fn apply_distortion(L: GpuLayer, p: vec3<f32>) -> vec3<f32> {
   }
   let drot = mat3x3<f32>(L.drot0.xyz, L.drot1.xyz, L.drot2.xyz);
   var q = drot * p;
+  // Scrolls where the warp field is *sampled from* (keyframable) without
+  // altering the returned distorted position — an offset of [0,0,0] is a
+  // no-op (distortion-offset cycle task 1).
+  let ofs = vec3<f32>(L.distortion_offset_x, L.distortion_offset_y, L.distortion_offset_z);
   switch (L.distortion_type) {
     case 1u: {
       // domain_warp.glsl L9-18.
       if (L.distortion_strength < 0.001) {
         return p;
       }
-      let wp = q * L.distortion_frequency;
+      let wp = (q + ofs) * L.distortion_frequency;
       let nx = warp_field(L, wp + vec3<f32>(0.0, 1.7, 9.2));
       let ny = warp_field(L, wp + vec3<f32>(8.3, 2.8, 4.1));
       let nz = warp_field(L, wp + vec3<f32>(4.0, 3.1, 6.7));
@@ -856,12 +866,12 @@ fn apply_distortion(L: GpuLayer, p: vec3<f32>) -> vec3<f32> {
         return p;
       }
       let eps: f32 = 0.01;
-      let n1 = warp_field(L, q + vec3<f32>(eps, 0.0, 0.0));
-      let n2 = warp_field(L, q - vec3<f32>(eps, 0.0, 0.0));
-      let n3 = warp_field(L, q + vec3<f32>(0.0, eps, 0.0));
-      let n4 = warp_field(L, q - vec3<f32>(0.0, eps, 0.0));
-      let n5 = warp_field(L, q + vec3<f32>(0.0, 0.0, eps));
-      let n6 = warp_field(L, q - vec3<f32>(0.0, 0.0, eps));
+      let n1 = warp_field(L, q + ofs + vec3<f32>(eps, 0.0, 0.0));
+      let n2 = warp_field(L, q + ofs - vec3<f32>(eps, 0.0, 0.0));
+      let n3 = warp_field(L, q + ofs + vec3<f32>(0.0, eps, 0.0));
+      let n4 = warp_field(L, q + ofs - vec3<f32>(0.0, eps, 0.0));
+      let n5 = warp_field(L, q + ofs + vec3<f32>(0.0, 0.0, eps));
+      let n6 = warp_field(L, q + ofs - vec3<f32>(0.0, 0.0, eps));
       let inv2eps = 1.0 / (2.0 * eps);
       let curl = vec3<f32>(
         (n4 - n3 - n6 + n5) * inv2eps,
@@ -908,7 +918,7 @@ fn apply_distortion(L: GpuLayer, p: vec3<f32>) -> vec3<f32> {
         if (o >= octaves) {
           break;
         }
-        let wp = q * freq;
+        let wp = (q + ofs) * freq;
         off = off + (vec3<f32>(
           warp_field(L, wp + vec3<f32>(0.0, 1.7, 9.2)),
           warp_field(L, wp + vec3<f32>(8.3, 2.8, 4.1)),
