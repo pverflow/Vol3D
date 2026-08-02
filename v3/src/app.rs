@@ -1021,6 +1021,18 @@ impl Vol3dApp {
                                     }
                                 });
                                 ui.end_row();
+
+                                ui.label("Loop offset");
+                                if ui
+                                    .checkbox(&mut self.layers[i].warp_loop, "")
+                                    .on_hover_text(
+                                        "Offset 0→1 = one seamless loop (tileable field)",
+                                    )
+                                    .changed()
+                                {
+                                    self.mark_dirty(ui.ctx());
+                                }
+                                ui.end_row();
                             }
                         }
                     });
