@@ -40,8 +40,9 @@ impl FrameCache {
 
     /// The resolution the baked frames actually ARE (may be smaller than the source/live
     /// resolution — `bake` reduces it via `anim::playback_bake_res` so the full N-frame loop
-    /// fits the VRAM budget). `RaymarchCallback::prepare` derives playback's `macro_dim` from
-    /// this so the skip grid matches the bound (reduced-res) occupancy texture.
+    /// fits the VRAM budget). `RaymarchCallback::prepare` derives playback's `macro_dims` from
+    /// this (treated as cubic — a STOPGAP until Task 3 adds a per-axis `bake_dims()`) so the
+    /// skip grid matches the bound (reduced-res) occupancy texture.
     pub fn bake_res(&self) -> u32 {
         self.bake_res
     }

@@ -1,12 +1,14 @@
 // Orbit camera + the uniform buffer layout consumed by `shaders/raymarch.wgsl`'s `Cam` struct.
 //
 // WGSL alignment note: in the `uniform` address space, `vec3<f32>` has align 16 (not 12), so the
-// struct's own alignment is 16 and its *size* rounds up to the next multiple of 16. This `Cam`
-// struct's last field ends at byte 76, so WGSL pads the struct to 80 bytes. Rust doesn't do that
-// implicit rounding (every field here is align-4, so `#[repr(C)]` alone stops at 76) — the trailing
-// `_p4` pad below exists purely to match that WGSL-side rounding so `size_of::<CamUniform>()` (80)
-// equals what the shader's bind group layout expects. Without it wgpu would validate-error on
-// binding the buffer ("size 76 is less than minimum 80").
+// struct's own alignment is 16 and its *size* rounds up to the next multiple of 16. The tail below
+// (from `steps` on) is all scalar `f32` fields — deliberately, so none of them re-triggers the
+// vec3-in-uniform padding rule (a `[f32;3]`/`vec3<f32>` field there would demand 16-byte alignment
+// again). Rust doesn't do WGSL's implicit struct-size rounding (every field here is align-4, so
+// `#[repr(C)]` alone stops at the last field's end) — the trailing `_pad` below exists purely to
+// match that WGSL-side rounding so `size_of::<CamUniform>()` equals what the shader's bind group
+// layout expects. Without it wgpu would validate-error on binding the buffer ("size N is less than
+// minimum M").
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CamUniform {
@@ -20,17 +22,33 @@ pub struct CamUniform {
     pub aspect: f32,
     pub tan_half_fov: f32,
     pub steps: f32,
-    /// = `anim::macro_dims(res, MACRO) as f32`; the raymarch reads it to size occupancy
-    /// macrocells for empty-space skipping. Reuses the former `_p3` pad slot (size stays 80).
-    /// `basis` leaves it 0.0 — `app.rs` sets it after building the uniform (needs `res`).
-    pub macro_dim: f32,
+    /// = `anim::macro_dims(dims[axis], MACRO) as f32` per axis; the raymarch reads these to size
+    /// occupancy macrocells for empty-space skipping (now per-axis: a non-cubic volume's macrocell
+    /// counts differ per axis). `basis` leaves these 0.0 — `RaymarchCallback::prepare` sets them
+    /// after building the uniform (needs the bound volume's dims).
+    pub macro_dims_x: f32,
+    pub macro_dims_y: f32,
+    pub macro_dims_z: f32,
     /// Interpolation fraction in `[0,1)` between the two bound baked frames (bindings 0/3 = frame
     /// `i`, bindings 5/6 = frame `i+1`); the raymarch does `mix(sample_a, sample_b, frac)` per
-    /// step. Reuses the former `_p4` tail-pad slot (byte 76; struct size stays 80). `0.0` for the
-    /// live/paused path (both slots bound to the same volume) → `mix(a,a,0)=a`, byte-identical to
-    /// the single-frame result. `basis` leaves it 0.0; `RaymarchCallback::prepare` sets it from
-    /// `bind_playback`'s returned frac when playing.
+    /// step. `0.0` for the live/paused path (both slots bound to the same volume) →
+    /// `mix(a,a,0)=a`, byte-identical to the single-frame result. `basis` leaves it 0.0;
+    /// `RaymarchCallback::prepare` sets it from `bind_playback`'s returned frac when playing.
     pub frac: f32,
+    /// = `anim::aspect_from_dims(dims)`; each axis's size relative to the largest (max axis = 1.0,
+    /// see Task 1). The raymarch scales the unit-box intersect and the volume/occupancy sample
+    /// coordinate by this so a non-cubic volume renders as a box of the right proportions instead
+    /// of being squashed into a cube. `basis` sets this `[1,1,1]` (cubic — no-op).
+    pub box_aspect_x: f32,
+    pub box_aspect_y: f32,
+    pub box_aspect_z: f32,
+    /// Pads the struct to WGSL's std140 struct-size rounding (next multiple of 16; the struct's
+    /// own alignment, from its vec3 members). The tail from `tan_half_fov` through `box_aspect_z`
+    /// is 9 scalar f32s (36 bytes) past the first 64 bytes, landing at 100 — 3 trailing f32s (12
+    /// bytes) bring it to 112. See the module doc comment above.
+    pub _pad0: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
 }
 
 pub struct OrbitCamera {
@@ -75,8 +93,16 @@ impl OrbitCamera {
             aspect,
             tan_half_fov: (0.5f32).tan(),
             steps,
-            macro_dim: 0.0,
+            macro_dims_x: 0.0,
+            macro_dims_y: 0.0,
+            macro_dims_z: 0.0,
             frac: 0.0,
+            box_aspect_x: 1.0,
+            box_aspect_y: 1.0,
+            box_aspect_z: 1.0,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
         }
     }
 }
@@ -115,9 +141,10 @@ mod tests {
 
     #[test]
     fn cam_uniform_size_matches_wgsl_std140_padding() {
-        // shaders/raymarch.wgsl's `Cam` struct: 3 vec3+pad fields (16 bytes each = 48) + up
-        // (vec3, 12 bytes) + 4 trailing f32s (16 bytes) = 76 bytes, then WGSL rounds the struct
-        // size up to a multiple of its own alignment (16, from the vec3 members) = 80 bytes.
-        assert_eq!(std::mem::size_of::<CamUniform>(), 80);
+        // shaders/raymarch.wgsl's `Cam` struct: 3 vec3+pad fields (16 bytes each = 48) + up+aspect
+        // (16 bytes) = 64 bytes, then 9 trailing scalar f32s (tan_half_fov, steps, macro_dims_x/y/z,
+        // frac, box_aspect_x/y/z = 36 bytes) = 100 bytes, then WGSL rounds the struct size up to a
+        // multiple of its own alignment (16, from the vec3 members) = 112 bytes.
+        assert_eq!(std::mem::size_of::<CamUniform>(), 112);
     }
 }

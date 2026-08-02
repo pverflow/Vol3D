@@ -297,8 +297,9 @@ impl VolumeGen {
     }
 
     /// Per-axis dims the volume/occupancy textures currently ARE (not the UI's pending target).
-    /// The raymarch derives `macro_dim` from this so the skip grid always matches the bound
-    /// occupancy texture, even during the res-change debounce before `generate` rebuilds.
+    /// The raymarch derives `macro_dims`/`box_aspect` from this so the skip grid and aspect box
+    /// always match the bound occupancy texture, even during the res-change debounce before
+    /// `generate` rebuilds.
     pub fn dims(&self) -> [u32; 3] {
         self.dims
     }

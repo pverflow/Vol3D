@@ -1323,8 +1323,9 @@ impl eframe::App for Vol3dApp {
             }
 
             let aspect = rect.width() / rect.height().max(1.0);
-            // `cam.macro_dim` is left 0.0 here; `RaymarchCallback::prepare` sets it from the
-            // BOUND volume's actual res (not `self.resolution`, which may be mid-debounce).
+            // `cam.macro_dims`/`box_aspect` are left 0.0/1.0 here; `RaymarchCallback::prepare`
+            // sets them from the BOUND volume's actual dims (not `self.resolution`, which may be
+            // mid-debounce).
             let cam = self.cam.basis(aspect, 128.0);
 
             // Bake the dense cache when playing with a stale cache (Play press, or re-bake after

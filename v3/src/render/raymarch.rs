@@ -328,24 +328,29 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
         } else {
             None
         };
-        // Derive `macro_dim` from the resolution the BOUND occupancy texture actually has this
-        // frame, not the UI's pending target — otherwise a res *decrease* flips `macro_dim`
-        // before `generate` rebuilds the texture (~120ms debounce), and the skip grid mismatches
-        // the still-wider occupancy, jumping over dense cells (holes). While playing (the only
-        // time `playback_phase` is `Some`, per `app.rs`'s `use_cache`) the bound occupancy is the
-        // frame cache's own (per-frame, baked at `bake_res` — Task 3), usually smaller than the
-        // live volume's `res()`; live and paused (always full-res, see Task 3's pause snap) bind
-        // the live volume's occupancy, so `res()` is the right resolution there.
+        // Derive `macro_dims`/`box_aspect` from the dims the BOUND occupancy texture actually has
+        // this frame, not the UI's pending target — otherwise a res *decrease* flips them before
+        // `generate` rebuilds the texture (~120ms debounce), and the skip grid mismatches the
+        // still-wider occupancy, jumping over dense cells (holes). While playing (the only time
+        // `playback_phase` is `Some`, per `app.rs`'s `use_cache`) the bound occupancy is the frame
+        // cache's own (per-frame, baked at `bake_res` — Task 3), usually smaller than the live
+        // volume's `dims()`; live and paused (always full-res, see Task 3's pause snap) bind the
+        // live volume's occupancy, so `dims()` is the right dims there.
         let mut cam = self.cam;
-        let macro_res = if self.playback_phase.is_some() && !r.frame_cache.is_empty() {
-            r.frame_cache.bake_res()
+        let dims = if self.playback_phase.is_some() && !r.frame_cache.is_empty() {
+            // STOPGAP: `frame_cache` bakes cubically this cycle (Task 3 adds a per-axis
+            // `bake_dims()`); until then, treat the bake resolution as cubic here too.
+            [r.frame_cache.bake_res(); 3]
         } else {
-            // TEMPORARY: `dims()` is now per-axis (Task 1) but the live volume is still cubic
-            // this cycle (`self.resolution`, Task 4 makes it a real per-axis field) — `dims()[0]`
-            // is exact for the cubic case.
-            r.volume.dims()[0]
+            r.volume.dims()
         };
-        cam.macro_dim = crate::anim::macro_dims(macro_res, crate::anim::MACRO) as f32;
+        cam.macro_dims_x = crate::anim::macro_dims(dims[0], crate::anim::MACRO) as f32;
+        cam.macro_dims_y = crate::anim::macro_dims(dims[1], crate::anim::MACRO) as f32;
+        cam.macro_dims_z = crate::anim::macro_dims(dims[2], crate::anim::MACRO) as f32;
+        let asp = crate::anim::aspect_from_dims(dims);
+        cam.box_aspect_x = asp[0];
+        cam.box_aspect_y = asp[1];
+        cam.box_aspect_z = asp[2];
         // Interpolation fraction between the two bound frames; `None` (live/paused, or empty cache)
         // → 0.0, so `mix(a,b,0)=a` keeps the single-frame path byte-identical.
         cam.frac = playback_frac.unwrap_or(0.0);
