@@ -29,6 +29,9 @@ const NOISE_TYPES: [NoiseType; 13] = [
     NoiseType::SdfPlume,
 ];
 
+/// Per-axis box dimension choices offered by the top bar's X/Y/Z selectors (power-of-2, 32-512).
+const DIM_CHOICES: [u32; 5] = [32, 64, 128, 256, 512];
+
 /// Worley-mode choices (F1/F2/F2-F1 -> `worley_mode` 0/1/2, matches v2's
 /// `WorleyMode` enum order, `src/types/noise.ts`), offered by the Properties
 /// panel's Worley Mode combo when `noise_type == Worley`.
@@ -153,8 +156,10 @@ pub struct Vol3dApp {
     /// Index into `layers` the Properties panel edits. `ui_logic`'s ops keep this in
     /// `[0, layers.len())` (layers is never emptied — `delete_layer` refuses at `len == 1`).
     pub selected: usize,
-    /// Volume resolution (64 / 128 / 256), picked in the Layers panel.
-    pub resolution: u32,
+    /// Per-axis volume dims (32 / 64 / 128 / 256 / 512 each), picked via the top bar's X/Y/Z
+    /// selectors. Defaults to `[128,128,128]` — today's cubic 128, unchanged until the user picks
+    /// non-cubic values.
+    pub dims: [u32; 3],
     /// Folded into every layer's `seed` at pack time (matches v2's `u_seed = layer.seed +
     /// globalSeed`). Not part of `GenParams` (cycle 4 dropped that field — it was dead there).
     pub global_seed: f32,
@@ -214,8 +219,8 @@ pub struct Vol3dApp {
     /// bake, so toggling it does NOT set `cache_stale`.
     pub interp: bool,
     /// True whenever the baked cache no longer matches the current bake inputs (layers /
-    /// resolution / seed / evolutions / fps / loop_seconds). Set by `mark_dirty` (covers layers,
-    /// res, seed) and by the evolutions/fps/loop_seconds controls; cleared once a bake is issued
+    /// dims / seed / evolutions / fps / loop_seconds). Set by `mark_dirty` (covers layers,
+    /// dims, seed) and by the evolutions/fps/loop_seconds controls; cleared once a bake is issued
     /// while playing. Starts `true` (nothing baked yet).
     pub cache_stale: bool,
     /// `self.playing` as of the previous frame. Compared each frame to edge-detect a play→pause
@@ -243,7 +248,7 @@ impl Default for Vol3dApp {
         Self {
             layers,
             selected: 0,
-            resolution: 128,
+            dims: [128, 128, 128],
             global_seed: 0.0,
             dirty: true,
             last_edit_time: 0.0,
@@ -298,7 +303,7 @@ impl Vol3dApp {
     fn mark_dirty(&mut self, ctx: &egui::Context) {
         self.dirty = true;
         self.last_edit_time = ctx.input(|i| i.time);
-        // Every layer/resolution/seed edit routes through here, so this one line invalidates the
+        // Every layer/dims/seed edit routes through here, so this one line invalidates the
         // dense playback cache for all of them (evolutions/frame_count set it at their controls).
         self.cache_stale = true;
     }
@@ -335,10 +340,12 @@ impl Vol3dApp {
     fn pack_for_gpu(&self) -> (Vec<layer::GpuLayer>, Vec<u8>, u32, GenParams) {
         let (packed, lut_atlas, lut_rows) = self.pack_scene(&self.layers);
 
-        // TEMPORARY: cubic-only dims (`self.resolution`, Task 4 replaces this with a real
-        // per-axis field) — `aspect_from_dims` on `[r,r,r]` is always `[1,1,1]`, so generation
-        // stays byte-identical to the pre-dims cubic path.
-        let dims = [self.resolution; 3];
+        // `self.dims` is a real per-axis field (Task 4); `aspect_from_dims` derives the true
+        // aspect ratio from it, so a non-cubic pick now reaches `GenParams` correctly. The
+        // downstream GPU bridge (`RaymarchCallback::res: u32`, still cubic-only) is a separate
+        // follow-up — until it's widened to a real per-axis field, the live volume texture itself
+        // stays sized off `self.dims[0]` regardless of the other two axes.
+        let dims = self.dims;
         let aspect = anim::aspect_from_dims(dims);
         let gen_params = GenParams {
             dim_x: dims[0],
@@ -1153,12 +1160,11 @@ impl Vol3dApp {
             // Glance readout: `frame_count` is the *derived* (fps*loop, clamped) bake input, so
             // no live renderer access is needed here — `playback_bake_dims` is the same pure
             // reduction `FrameCache::bake` applies, so this predicts its dims exactly.
-            // TEMPORARY: source dims are still cubic (`[self.resolution;3]`) until Task 4.
             let status = if self.cache_stale {
                 "cache: stale".to_string()
             } else {
                 let bake_dims = anim::playback_bake_dims(
-                    [self.resolution; 3],
+                    self.dims,
                     self.frame_count,
                     crate::render::frame_cache::FRAME_CACHE_BUDGET_BYTES,
                 );
@@ -1166,9 +1172,11 @@ impl Vol3dApp {
                 let gb = self.frame_count as f64 * product * 4.0 / (1u64 << 30) as f64;
                 let eff_fps = self.frame_count as f32 / self.loop_seconds.max(1e-3);
                 format!(
-                    "baked {} @ {}³  ({:.1} GB)  {:.0} fps  {}",
+                    "baked {} @ {}×{}×{}  ({:.1} GB)  {:.0} fps  {}",
                     self.frame_count,
-                    bake_dims[0], // cubic-only until Task 4 — all three axes are equal here
+                    bake_dims[0],
+                    bake_dims[1],
+                    bake_dims[2],
                     gb,
                     eff_fps,
                     if self.interp { "smooth" } else { "steps" }
@@ -1196,7 +1204,7 @@ impl eframe::App for Vol3dApp {
         };
         ui.ctx().request_repaint();
 
-        // Top bar: title, resolution + seed (moved out of `layers_panel`), theme toggle, and the
+        // Top bar: title, dims + seed (moved out of `layers_panel`), theme toggle, and the
         // fps/ms readout (label only — the EMA above is what actually computes it). Sits inside
         // the root `Ui` like the side/central panels below. `TopBottomPanel` doesn't exist in
         // installed egui 0.35 — like `SidePanel`, it was unified into `egui::Panel` (+
@@ -1208,17 +1216,40 @@ impl eframe::App for Vol3dApp {
                 ui.heading("Vol3D");
                 ui.separator();
 
-                let prev_res = self.resolution;
-                egui::ComboBox::from_label("Resolution")
-                    .selected_text(format!("{}³", self.resolution))
+                ui.label("Box (X/Y/Z)");
+                let prev_dims = self.dims;
+                egui::ComboBox::from_label("X")
+                    .selected_text(format!("{}", self.dims[0]))
                     .show_ui(ui, |ui| {
-                        for r in [64u32, 128, 256] {
-                            ui.selectable_value(&mut self.resolution, r, format!("{}³", r));
+                        for d in DIM_CHOICES {
+                            ui.selectable_value(&mut self.dims[0], d, format!("{d}"));
                         }
                     });
-                if self.resolution != prev_res {
+                egui::ComboBox::from_label("Y")
+                    .selected_text(format!("{}", self.dims[1]))
+                    .show_ui(ui, |ui| {
+                        for d in DIM_CHOICES {
+                            ui.selectable_value(&mut self.dims[1], d, format!("{d}"));
+                        }
+                    });
+                egui::ComboBox::from_label("Z")
+                    .selected_text(format!("{}", self.dims[2]))
+                    .show_ui(ui, |ui| {
+                        for d in DIM_CHOICES {
+                            ui.selectable_value(&mut self.dims[2], d, format!("{d}"));
+                        }
+                    });
+                if self.dims != prev_dims {
+                    self.cache_stale = true;
                     self.mark_dirty(ui.ctx());
                 }
+
+                let mb = self.dims.iter().map(|&d| d as u64).product::<u64>() * 4 / (1024 * 1024);
+                ui.label(format!(
+                    "box {}×{}×{} — {} MB/frame",
+                    self.dims[0], self.dims[1], self.dims[2], mb
+                ));
+                ui.separator();
 
                 if ui
                     .add(
@@ -1325,7 +1356,7 @@ impl eframe::App for Vol3dApp {
 
             let aspect = rect.width() / rect.height().max(1.0);
             // `cam.macro_dims`/`box_aspect` are left 0.0/1.0 here; `RaymarchCallback::prepare`
-            // sets them from the BOUND volume's actual dims (not `self.resolution`, which may be
+            // sets them from the BOUND volume's actual dims (not `self.dims`, which may be
             // mid-debounce).
             let cam = self.cam.basis(aspect, 128.0);
 
@@ -1341,8 +1372,9 @@ impl eframe::App for Vol3dApp {
             // frame is always full-res, never the bake's reduced resolution (cycle-5 contract).
             let use_cache = self.playing && self.frame_count > 0;
 
-            // TEMPORARY: cubic-only dims (see `pack_for_gpu`'s comment; Task 4 makes this real).
-            let empty_dims = [self.resolution; 3];
+            // Empty/idle `GenParams` (used when neither baking nor live-regenerating this frame):
+            // dims/aspect derive from `self.dims` directly (per-axis, Task 4).
+            let empty_dims = self.dims;
             let empty_aspect = anim::aspect_from_dims(empty_dims);
             let empty_params = GenParams {
                 dim_x: empty_dims[0],
@@ -1373,11 +1405,10 @@ impl eframe::App for Vol3dApp {
                                 .0
                         })
                         .collect();
-                    // TEMPORARY: cubic-only source dims (see `pack_for_gpu`'s comment; Task 4
-                    // makes this real). `FrameCache::bake` reduces these further via
+                    // Source dims for the bake — `FrameCache::bake` reduces these further via
                     // `anim::playback_bake_dims` and overrides dim_*/aspect_* per its own
                     // (possibly smaller) `bake_dims`.
-                    let source_dims = [self.resolution; 3];
+                    let source_dims = self.dims;
                     let source_aspect = anim::aspect_from_dims(source_dims);
                     let gp = GenParams {
                         dim_x: source_dims[0],
@@ -1428,7 +1459,10 @@ impl eframe::App for Vol3dApp {
 
             let cb = RaymarchCallback {
                 cam,
-                res: self.resolution,
+                // `RaymarchCallback::res` is still a cubic `u32` scalar (a separate follow-up
+                // widens it to a real per-axis field, mirroring `self.dims`); `self.dims[0]`
+                // keeps today's default (`[128,128,128]`) behavior byte-identical.
+                res: self.dims[0],
                 layers,
                 gen_params,
                 lut_atlas,
