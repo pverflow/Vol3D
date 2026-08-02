@@ -46,10 +46,11 @@ impl FrameCache {
         self.bake_res
     }
 
-    /// (Re)allocate N frame + occupancy textures and bake each at phase `i/n` via the existing
-    /// generation compute. `source_res` is the live/UI resolution; the actual bake resolution
-    /// (`bake_res`) is reduced (`anim::playback_bake_res`) so the full `n_requested`-frame loop
-    /// fits `FRAME_CACHE_BUDGET_BYTES` — it fits by construction, so `n` is `n_requested`
+    /// (Re)allocate N frame + occupancy textures and bake each frame `i` from `frames[i]`
+    /// (`evaluate_scene_at(i/n)`, already packed to `GpuLayer`s by the caller) at phase `i/n` via
+    /// the existing generation compute. `source_res` is the live/UI resolution; the actual bake
+    /// resolution (`bake_res`) is reduced (`anim::playback_bake_res`) so the full `frames.len()`
+    /// loop fits `FRAME_CACHE_BUDGET_BYTES` — it fits by construction, so `n` is `frames.len()`
     /// unchanged (just floored at 1). All work is GPU-resident — `generate_into` writes directly
     /// into `views[i]`/`occ_views[i]`, no readback/map.
     #[allow(clippy::too_many_arguments)]
@@ -59,14 +60,16 @@ impl FrameCache {
         queue: &wgpu::Queue,
         gen: &mut VolumeGen,
         source_res: u32,
-        n_requested: u32,
-        layers: &[GpuLayer],
+        frames: &[Vec<GpuLayer>],
         base_params: GenParams,
         lut_atlas: &[u8],
         lut_rows: u32,
     ) {
-        let bake_res = playback_bake_res(source_res, n_requested, FRAME_CACHE_BUDGET_BYTES);
-        let n = n_requested.max(1);
+        // `frames.len()` is `app.rs`'s `frame_count`, clamped `>= 1` at its slider (`ui_logic`) —
+        // `.max(1)` here just mirrors the old `n_requested` guard rather than trusting that.
+        let n = frames.len() as u32;
+        let bake_res = playback_bake_res(source_res, n, FRAME_CACHE_BUDGET_BYTES);
+        let n = n.max(1);
 
         // Reallocate every bake: `bake_res`/N may have changed and old textures must be dropped
         // so their VRAM is freed before the new set is bound.
@@ -88,17 +91,23 @@ impl FrameCache {
         let mb = (n as u64 * (bake_res as u64).pow(3) * 4) as f64 / (1024.0 * 1024.0);
         log::info!("FrameCache: baked {n} frames @ {bake_res}³ = {mb:.1} MB VRAM");
 
-        for i in 0..n as usize {
+        for (i, ((view, occ_view), frame_layers)) in self
+            .views
+            .iter()
+            .zip(self.occ_views.iter())
+            .zip(frames.iter())
+            .enumerate()
+        {
             let mut p = base_params;
             p.res = bake_res;
             p.anim_phase = i as f32 / n as f32;
             gen.generate_into(
                 device,
                 queue,
-                &self.views[i],
-                Some(&self.occ_views[i]),
+                view,
+                Some(occ_view),
                 bake_res,
-                layers,
+                frame_layers,
                 &p,
                 lut_atlas,
                 lut_rows,

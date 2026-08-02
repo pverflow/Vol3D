@@ -66,12 +66,19 @@ mod tests {
 
     #[test]
     fn is_stale_detects_edits() {
-        let a = BakeKey::new(&[], 128, 1.0, 8);
+        let a = BakeKey::new(&[], 128, 1.0, 8, 111);
         let b = a.clone();
         assert!(!is_stale(&Some(a.clone()), &b));
-        let c = BakeKey::new(&[], 256, 1.0, 8);
+        let c = BakeKey::new(&[], 256, 1.0, 8, 111);
         assert!(is_stale(&Some(a), &c));
         assert!(is_stale(&None, &c)); // never baked = stale
+    }
+
+    #[test]
+    fn is_stale_detects_timeline_edits() {
+        let a = BakeKey::new(&[], 128, 0.0, 8, 111);
+        let b = BakeKey::new(&[], 128, 0.0, 8, 222);
+        assert!(is_stale(&Some(a), &b)); // timeline edit invalidates
     }
 
     #[test]
@@ -170,20 +177,26 @@ pub struct BakeKey {
     res: u32,
     evolutions_bits: u32,
     n: u32,
+    timeline_hash: u64,
 }
 
 impl BakeKey {
-    /// `layers` is the packed `GpuLayer` slice about to be (or already) baked; `res`/`n` are
-    /// the volume resolution and frame count, `evolutions` the animation's noise-cycle count.
+    /// `layers` is the packed `GpuLayer` slice about to be (or already) baked (frame 0's, for a
+    /// per-frame bake — see `app.rs`); `res`/`n` are the volume resolution and frame count,
+    /// `evolutions` the animation's noise-cycle count, `timeline_hash` the keyframe
+    /// `Timeline::hash()` — comparing frame 0's layers alone can't detect an edit to a keyframe
+    /// elsewhere in the loop (frame 0 unchanged, frame 5 not), so the timeline's own fingerprint
+    /// is folded in separately.
     /// `evolutions` is compared bit-for-bit (`to_bits`) rather than as `f32` directly, since
     /// `f32` isn't `Eq` — fine here because the value comes from a `DragValue`/const, not from
     /// an accumulated float that could differ by rounding.
-    pub fn new(layers: &[GpuLayer], res: u32, evolutions: f32, n: u32) -> Self {
+    pub fn new(layers: &[GpuLayer], res: u32, evolutions: f32, n: u32, timeline_hash: u64) -> Self {
         Self {
             layers_hash: fnv1a(bytemuck::cast_slice(layers)),
             res,
             evolutions_bits: evolutions.to_bits(),
             n,
+            timeline_hash,
         }
     }
 }

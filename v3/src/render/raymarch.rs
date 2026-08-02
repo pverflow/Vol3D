@@ -261,17 +261,20 @@ impl Raymarch {
 pub struct RaymarchCallback {
     pub cam: CamUniform,
     pub res: u32,
+    /// Live-regen payload (used when `bake_key` is `None`); empty during a bake.
     pub layers: Vec<GpuLayer>,
     pub gen_params: GenParams,
     pub lut_atlas: Vec<u8>,
     pub lut_rows: u32,
     pub pending_regen: bool,
     /// Cycle-4 playback (Task 4). `Some` => bake the dense cache this frame via `ensure_baked`
-    /// using the fields above (`layers`/`gen_params`/`lut_*` carry the bake payload, not live
-    /// regen data, in that case). `None` => the live path (`ensure_generated`) runs as before.
+    /// using `bake_frames`/`gen_params`/`lut_*` (`layers` is unused, left empty, in that case).
+    /// `None` => the live path (`ensure_generated`) runs as before.
     pub bake_key: Option<BakeKey>,
-    /// Frames to bake when `bake_key` is `Some` (ignored otherwise).
-    pub frame_count: u32,
+    /// Per-frame packed layers to bake when `bake_key` is `Some` — `bake_frames[i]` is
+    /// `evaluate_scene_at(i/n)` packed to `GpuLayer`s (Task 3); `n` is `bake_frames.len()`.
+    /// Ignored (and left empty) otherwise.
+    pub bake_frames: Vec<Vec<GpuLayer>>,
     /// `Some(phase)` => bind the baked frame nearest `phase` as the raymarch volume instead of
     /// the live volume (playing, or paused-with-valid-cache scrub). `None` => live volume.
     pub playback_phase: Option<f32>,
@@ -299,8 +302,7 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
                 queue,
                 key.clone(),
                 self.res,
-                self.frame_count,
-                &self.layers,
+                &self.bake_frames,
                 self.gen_params,
                 &self.lut_atlas,
                 self.lut_rows,

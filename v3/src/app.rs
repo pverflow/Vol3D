@@ -263,14 +263,15 @@ impl Vol3dApp {
         self.cache_stale = true;
     }
 
-    /// Pack the *visible* layers into GPU form: `Vec<GpuLayer>` + the `256xN` ramp LUT atlas +
-    /// `GenParams`. Invisible layers are dropped from both the layer list and the ramp atlas
-    /// (same filter, same order) before packing — they contribute neither shape nor color, and
+    /// Pack the *visible* layers of `layers` into GPU form: `Vec<GpuLayer>` + the `256xN` ramp
+    /// LUT atlas. Invisible layers are dropped from both the layer list and the ramp atlas (same
+    /// filter, same order) before packing — they contribute neither shape nor color, and
     /// `shaders/generate.wgsl` indexes the ramp atlas row-by-row against the layer's position in
-    /// the (filtered) list, so the two must stay in lockstep.
-    fn pack_for_gpu(&self) -> (Vec<layer::GpuLayer>, Vec<u8>, u32, GenParams) {
-        let mut packed: Vec<layer::GpuLayer> = self
-            .layers
+    /// the (filtered) list, so the two must stay in lockstep. Takes an explicit `layers` slice
+    /// (rather than always reading `self.layers`) so the per-frame bake path (Task 3) can pack an
+    /// `evaluate_scene_at` snapshot without mutating `self`.
+    fn pack_scene(&self, layers: &[LayerDesc]) -> (Vec<layer::GpuLayer>, Vec<u8>, u32) {
+        let mut packed: Vec<layer::GpuLayer> = layers
             .iter()
             .filter(|l| l.visible)
             .map(layer::pack_layer)
@@ -279,14 +280,20 @@ impl Vol3dApp {
             g.seed += self.global_seed; // v2: u_seed = layer.seed + globalSeed
         }
 
-        let ramps: Vec<ColorRamp> = self
-            .layers
+        let ramps: Vec<ColorRamp> = layers
             .iter()
             .filter(|l| l.visible)
             .map(|l| l.ramp.clone())
             .collect();
         let lut_atlas = ramp::build_ramp_lut_atlas(&ramps, LUT_WIDTH);
         let lut_rows = ramps.len() as u32;
+
+        (packed, lut_atlas, lut_rows)
+    }
+
+    /// Pack the live `self.layers` into GPU form (see `pack_scene`) plus `GenParams`.
+    fn pack_for_gpu(&self) -> (Vec<layer::GpuLayer>, Vec<u8>, u32, GenParams) {
+        let (packed, lut_atlas, lut_rows) = self.pack_scene(&self.layers);
 
         let gen_params = GenParams {
             res: self.resolution,
@@ -304,11 +311,9 @@ impl Vol3dApp {
 
     /// Clone `self.layers` and apply every timeline track at `phase`, without mutating the app's
     /// actual layer state. Used where a caller wants "what would the scene look like at this
-    /// phase" without committing to it (e.g. a future bake preview) — `sync_playhead` is the
-    /// mutating counterpart that also updates `self.phase` and the live sliders.
-    // ponytail: no call site yet — Task 3's bake path is the intended caller; allow(dead_code)
-    // until then rather than a premature call just to silence the lint.
-    #[allow(dead_code)]
+    /// phase" without committing to it — the per-frame bake path (`ui()`'s `need_bake` branch)
+    /// calls this once per baked frame; `sync_playhead` is the mutating counterpart that also
+    /// updates `self.phase` and the live sliders.
     fn evaluate_scene_at(&self, phase: f32) -> Vec<LayerDesc> {
         let mut ls = self.layers.clone();
         self.timeline.evaluate_into(&mut ls, phase);
@@ -1102,29 +1107,58 @@ impl eframe::App for Vol3dApp {
                 anim_phase: 0.0,
                 anim_evolutions: self.evolutions,
             };
-            let (layers, lut_atlas, lut_rows, gen_params, bake_key, pending_regen) = if need_bake {
-                let (packed, lut, rows, _) = self.pack_for_gpu();
-                let gp = GenParams {
-                    res: self.resolution,
-                    layer_count: packed.len() as u32,
-                    anim_phase: 0.0, // bake sets per-frame phase in FrameCache::bake
-                    anim_evolutions: self.evolutions,
+            let (layers, bake_frames, lut_atlas, lut_rows, gen_params, bake_key, pending_regen) =
+                if need_bake {
+                    // Bake each cached frame from the timeline-evaluated scene at that frame's
+                    // phase, not just the live (unanimated) layer stack — this is what actually
+                    // makes playback show the keyframed animation. The LUT/ramp atlas stays a
+                    // single static pack of `self.layers`: SP1 doesn't animate colors, only
+                    // `ParamField` numerics, so every frame's ramp is identical.
+                    let n = self.frame_count;
+                    let (_, lut, rows) = self.pack_scene(&self.layers);
+                    let frames: Vec<Vec<layer::GpuLayer>> = (0..n)
+                        .map(|i| {
+                            self.pack_scene(&self.evaluate_scene_at(i as f32 / n as f32))
+                                .0
+                        })
+                        .collect();
+                    let gp = GenParams {
+                        res: self.resolution,
+                        layer_count: frames[0].len() as u32,
+                        anim_phase: 0.0, // bake sets per-frame phase in FrameCache::bake
+                        anim_evolutions: self.evolutions,
+                    };
+                    // Frame 0's packed layers stand in for the whole bake in the key (matching
+                    // `pack_for_gpu`'s single-snapshot fingerprint elsewhere); `timeline_hash`
+                    // covers edits to keyframes elsewhere in the loop that frame 0 alone can't see.
+                    let key = anim::BakeKey::new(
+                        &frames[0],
+                        self.resolution,
+                        self.evolutions,
+                        n,
+                        self.timeline.hash(),
+                    );
+                    self.cache_stale = false;
+                    (Vec::new(), frames, lut, rows, gp, Some(key), false)
+                } else if !self.playing && self.pending_regen {
+                    // Live regen path — fires from the debounced edit path (unchanged) AND from the
+                    // pause snap above (`pending_regen` armed directly, no debounce, at `self.phase`).
+                    // While playing we skip it (the cache is what's shown); a debounce that fires
+                    // mid-playback is dropped and re-armed on the next edit-while-paused, which never
+                    // displays a stale live volume in practice.
+                    let (packed, lut, rows, gp) = self.pack_for_gpu();
+                    (packed, Vec::new(), lut, rows, gp, None, true)
+                } else {
+                    (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        0,
+                        empty_params,
+                        None,
+                        false,
+                    )
                 };
-                let key =
-                    anim::BakeKey::new(&packed, self.resolution, self.evolutions, self.frame_count);
-                self.cache_stale = false;
-                (packed, lut, rows, gp, Some(key), false)
-            } else if !self.playing && self.pending_regen {
-                // Live regen path — fires from the debounced edit path (unchanged) AND from the
-                // pause snap above (`pending_regen` armed directly, no debounce, at `self.phase`).
-                // While playing we skip it (the cache is what's shown); a debounce that fires
-                // mid-playback is dropped and re-armed on the next edit-while-paused, which never
-                // displays a stale live volume in practice.
-                let (packed, lut, rows, gp) = self.pack_for_gpu();
-                (packed, lut, rows, gp, None, true)
-            } else {
-                (Vec::new(), Vec::new(), 0, empty_params, None, false)
-            };
             self.pending_regen = false;
 
             let cb = RaymarchCallback {
@@ -1136,7 +1170,7 @@ impl eframe::App for Vol3dApp {
                 lut_rows,
                 pending_regen,
                 bake_key,
-                frame_count: self.frame_count,
+                bake_frames,
                 playback_phase: if use_cache { Some(self.phase) } else { None },
                 interp: self.interp,
             };
