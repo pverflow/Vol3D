@@ -91,6 +91,52 @@ The box renders with its true aspect using **min-normalized scaling** — all vo
 `[128, 128, 128]` is cubic. Verify it looks identical to any previously saved scene using the old cubic-128 resolution.
 
 
+## Bounding-Box Wireframe
+
+When working with the volume box, a **bounding-box wireframe** helps visualize dimensions:
+- **Hover the viewport** → the volume's bounding-box wireframe appears as soft cyan lines, fading in/out smoothly.
+- **Change a Box dimension** → the wireframe **flashes visibly for ~2 seconds then fades**, so you can see what changed.
+- The wireframe **matches the actual box shape** (tall for `[64,64,256]`, cube for `[128,128,128]`). When you're not hovering and haven't just changed a dimension, the wireframe is invisible; the render looks exactly like before.
+
+### Run paths
+
+**Native:**
+```bash
+cd v3 && cargo run
+```
+
+**Web (WebGPU):**
+```bash
+cd v3 && trunk serve        # (cargo install trunk, once)
+```
+
+### What to report back
+
+1. **Hovering the viewport shows the box wireframe and hides on leave?**
+   - Hover the viewport. You should see the volume's bounding-box wireframe appear as soft cyan lines.
+   - Move your mouse away from the viewport. The wireframe should fade out and disappear.
+   - Report: Does hovering show the wireframe, and leaving hide it?
+
+2. **Changing a Box dimension flashes the wireframe for ~2 s then fades?**
+   - Adjust one of the **Box X / Y / Z** dimensions.
+   - The wireframe should flash visibly, then fade over approximately 2 seconds.
+   - Change a different dimension and observe the same behavior.
+   - Report: Does changing a Box dimension flash the wireframe then fade?
+
+3. **The wireframe matches the box shape (tall vs cube)?**
+   - Set the box to **[64, 64, 256]** (4× taller).
+   - The wireframe should render as a **tall rectangular box**.
+   - Set the box to **[128, 128, 128]** (cube).
+   - The wireframe should render as a **cube**.
+   - Report: Does the wireframe match the box dimensions (tall box vs cube)?
+
+4. **With no hover and no recent dimension change, the view looks exactly like before (no wireframe)?**
+   - Pause or sit idle (don't hover, don't change dimensions).
+   - The viewport should render with **no wireframe visible**.
+   - The output should be **visually identical** to before the feature was added.
+   - Report: Does the view with no hover / no recent change look exactly the same as before?
+
+
 ## Keyframe Animation (SP1)
 
 Animate any numeric parameter across the timeline with frame-accurate keyframing.
