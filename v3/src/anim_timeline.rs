@@ -1,0 +1,199 @@
+// Keyframe timeline data model (cycle 4 timeline task 1): pure, no GPU, no UI.
+// A `Timeline` holds one `Track` per animated `(layer_id, ParamField)` pair;
+// `evaluate_into` samples every track at a phase and writes the result back
+// onto the matching `LayerDesc` via `set_param`. Layers are keyed by
+// `LayerDesc::id` (not their `Vec` index) so tracks survive reordering.
+#![allow(dead_code)]
+
+use crate::anim::fnv1a;
+use crate::layer::{LayerDesc, ParamField};
+use std::collections::BTreeMap;
+
+/// A single animated value at a point in the loop's `[0, 1)` phase.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Keyframe {
+    pub phase: f32,
+    pub value: f32,
+}
+
+/// Keyframes for one animated field, always kept sorted by `phase`.
+#[derive(Clone, Debug, Default)]
+pub struct Track {
+    keys: Vec<Keyframe>,
+}
+
+impl Track {
+    /// Linear-interpolate the value at `phase`; holds the first/last key's
+    /// value outside the keyed range, and returns `0.0` if there are no keys.
+    pub fn sample(&self, phase: f32) -> f32 {
+        let ks = &self.keys;
+        if ks.is_empty() {
+            return 0.0;
+        }
+        if phase <= ks[0].phase {
+            return ks[0].value;
+        }
+        let last = ks.len() - 1;
+        if phase >= ks[last].phase {
+            return ks[last].value;
+        }
+        for w in ks.windows(2) {
+            if phase <= w[1].phase {
+                let span = (w[1].phase - w[0].phase).max(1e-8);
+                let t = ((phase - w[0].phase) / span).clamp(0.0, 1.0);
+                return w[0].value + (w[1].value - w[0].value) * t;
+            }
+        }
+        ks[last].value
+    }
+
+    /// Replace the key within `1e-5` of `phase`, if any, else insert a new
+    /// one — keeping `keys` sorted by phase either way.
+    pub fn upsert(&mut self, phase: f32, value: f32) {
+        if let Some(existing) = self
+            .keys
+            .iter_mut()
+            .find(|k| (k.phase - phase).abs() < 1e-5)
+        {
+            existing.value = value;
+            return;
+        }
+        let idx = self.keys.partition_point(|k| k.phase < phase);
+        self.keys.insert(idx, Keyframe { phase, value });
+    }
+
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
+/// All animated `(layer_id, field)` tracks for a scene. `BTreeMap` keeps
+/// iteration order deterministic (by `id` then `field as u8`), which
+/// `evaluate_into`/`hash` both rely on.
+#[derive(Clone, Debug, Default)]
+pub struct Timeline {
+    tracks: BTreeMap<(u64, u8), Track>,
+}
+
+impl Timeline {
+    pub fn upsert(&mut self, id: u64, f: ParamField, phase: f32, value: f32) {
+        self.tracks
+            .entry((id, f as u8))
+            .or_default()
+            .upsert(phase, value);
+    }
+
+    pub fn remove(&mut self, id: u64, f: ParamField) {
+        self.tracks.remove(&(id, f as u8));
+    }
+
+    pub fn is_animated(&self, id: u64, f: ParamField) -> bool {
+        self.tracks
+            .get(&(id, f as u8))
+            .is_some_and(|t| !t.is_empty())
+    }
+
+    pub fn track_len(&self, id: u64, f: ParamField) -> usize {
+        self.tracks.get(&(id, f as u8)).map_or(0, Track::len)
+    }
+
+    /// Drop every track belonging to a deleted layer (e.g. on layer delete).
+    pub fn remove_layer(&mut self, id: u64) {
+        self.tracks.retain(|k, _| k.0 != id);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tracks.is_empty()
+    }
+
+    /// Sample every track at `phase` and write the result onto whichever
+    /// `layers` entry has a matching `id`. Tracks whose layer was deleted (no
+    /// `id` match) or whose `u8` doesn't decode to a `ParamField` are
+    /// silently skipped — this method never panics on a stale timeline.
+    pub fn evaluate_into(&self, layers: &mut [LayerDesc], phase: f32) {
+        for (&(id, field_u8), track) in &self.tracks {
+            let Some(field) = ParamField::from_u8(field_u8) else {
+                continue;
+            };
+            if let Some(layer) = layers.iter_mut().find(|l| l.id == id) {
+                layer.set_param(field, track.sample(phase));
+            }
+        }
+    }
+
+    /// FNV-1a fingerprint over every track's keys, in `BTreeMap` (id, field)
+    /// order — so it's insertion-order independent and changes whenever any
+    /// track's keyframes change (used to invalidate a bake cache).
+    pub fn hash(&self) -> u64 {
+        let mut bytes = Vec::new();
+        for (&(id, field_u8), track) in &self.tracks {
+            bytes.extend_from_slice(&id.to_le_bytes());
+            bytes.push(field_u8);
+            for k in &track.keys {
+                bytes.extend_from_slice(&k.phase.to_bits().to_le_bytes());
+                bytes.extend_from_slice(&k.value.to_bits().to_le_bytes());
+            }
+        }
+        fnv1a(&bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn track_sample() {
+        let mut t = Track::default();
+        assert_eq!(t.sample(0.5), 0.0); // empty
+        t.upsert(0.0, 1.0);
+        assert_eq!(t.sample(0.3), 1.0); // single-key hold
+        t.upsert(1.0, 3.0);
+        assert!((t.sample(0.5) - 2.0).abs() < 1e-6); // linear mid
+        assert_eq!(t.sample(-0.2), 1.0); // hold before
+        assert_eq!(t.sample(1.5), 3.0); // hold after
+        t.upsert(0.5, 5.0);
+        assert_eq!(t.len(), 3); // insert keeps sorted
+        t.upsert(0.5, 9.0);
+        assert_eq!(t.len(), 3); // upsert replaces
+        assert_eq!(t.sample(0.5), 9.0);
+    }
+
+    #[test]
+    fn timeline_eval_and_hash() {
+        let mut tl = Timeline::default();
+        let mut layers = vec![LayerDesc {
+            id: 7,
+            ..Default::default()
+        }];
+        tl.upsert(7, ParamField::Opacity, 0.0, 0.2);
+        tl.upsert(7, ParamField::Opacity, 1.0, 0.8);
+        let h0 = tl.hash();
+        tl.evaluate_into(&mut layers, 0.5);
+        assert!((layers[0].opacity - 0.5).abs() < 1e-6); // interpolated
+        assert!(tl.is_animated(7, ParamField::Opacity));
+        tl.upsert(7, ParamField::Opacity, 0.5, 0.9);
+        assert_ne!(h0, tl.hash()); // hash tracks edits
+        tl.remove_layer(7);
+        assert!(!tl.is_animated(7, ParamField::Opacity));
+    }
+
+    #[test]
+    fn hash_is_stable_regardless_of_insertion_order() {
+        let mut a = Timeline::default();
+        a.upsert(3, ParamField::ScaleX, 0.0, 1.0);
+        a.upsert(1, ParamField::Opacity, 0.5, 0.5);
+        a.upsert(1, ParamField::Opacity, 0.0, 0.1);
+
+        let mut b = Timeline::default();
+        b.upsert(1, ParamField::Opacity, 0.0, 0.1);
+        b.upsert(1, ParamField::Opacity, 0.5, 0.5);
+        b.upsert(3, ParamField::ScaleX, 0.0, 1.0);
+
+        assert_eq!(a.hash(), b.hash());
+    }
+}

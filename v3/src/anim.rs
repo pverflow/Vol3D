@@ -189,8 +189,9 @@ impl BakeKey {
 }
 
 /// FNV-1a over raw bytes — simple, dependency-free, plenty for a cache-invalidation
-/// fingerprint (not used anywhere security-sensitive).
-fn fnv1a(bytes: &[u8]) -> u64 {
+/// fingerprint (not used anywhere security-sensitive). `pub(crate)`: also used by
+/// `anim_timeline::Timeline::hash` (same fingerprint role, different payload).
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x100000001b3;
     bytes

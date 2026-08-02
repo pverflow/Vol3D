@@ -175,6 +175,12 @@ pub struct GpuLayer {
 /// **degrees** (as v2 stores it); `pack_layer` converts to radians.
 #[derive(Clone, Debug)]
 pub struct LayerDesc {
+    /// Stable identity for this layer, independent of its position in the
+    /// `Vec<LayerDesc>` (which reorders on drag/delete). Used by the
+    /// animation timeline (`anim_timeline.rs`) to key tracks to a layer that
+    /// survives reordering. Default `0` — unset until the owning UI assigns
+    /// a unique id.
+    pub id: u64,
     pub noise_type: NoiseType,
     pub fbm_base: NoiseType,
     pub octaves: u32,
@@ -224,6 +230,7 @@ pub struct LayerDesc {
 impl Default for LayerDesc {
     fn default() -> Self {
         Self {
+            id: 0,
             noise_type: NoiseType::Value,
             fbm_base: NoiseType::Perlin,
             octaves: 4,
@@ -258,6 +265,178 @@ impl Default for LayerDesc {
             distortion_octaves: 4,
             ramp: ColorRamp::default(), // disabled, no stops
             visible: true,
+        }
+    }
+}
+
+/// A single scalar, animatable `LayerDesc` field. Keyed by the animation
+/// timeline (`anim_timeline::Timeline`, cycle 4 timeline task) — `#[repr(u8)]`
+/// so a `(layer_id, field as u8)` pair is a cheap, `Copy`, `BTreeMap`-orderable
+/// track key.
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum ParamField {
+    Opacity,
+    ScaleX,
+    ScaleY,
+    ScaleZ,
+    OffsetX,
+    OffsetY,
+    OffsetZ,
+    RotationX,
+    RotationY,
+    RotationZ,
+    Amplitude,
+    InMin,
+    InMax,
+    OutMin,
+    OutMax,
+    SdfRadius,
+    SdfSoftness,
+    SdfHeight,
+    Persistence,
+    Lacunarity,
+    DistortionStrength,
+    DistortionFrequency,
+    DistortionSwirl,
+    DistortionRotX,
+    DistortionRotY,
+    DistortionRotZ,
+}
+
+impl ParamField {
+    pub const ALL: [ParamField; 26] = [
+        ParamField::Opacity,
+        ParamField::ScaleX,
+        ParamField::ScaleY,
+        ParamField::ScaleZ,
+        ParamField::OffsetX,
+        ParamField::OffsetY,
+        ParamField::OffsetZ,
+        ParamField::RotationX,
+        ParamField::RotationY,
+        ParamField::RotationZ,
+        ParamField::Amplitude,
+        ParamField::InMin,
+        ParamField::InMax,
+        ParamField::OutMin,
+        ParamField::OutMax,
+        ParamField::SdfRadius,
+        ParamField::SdfSoftness,
+        ParamField::SdfHeight,
+        ParamField::Persistence,
+        ParamField::Lacunarity,
+        ParamField::DistortionStrength,
+        ParamField::DistortionFrequency,
+        ParamField::DistortionSwirl,
+        ParamField::DistortionRotX,
+        ParamField::DistortionRotY,
+        ParamField::DistortionRotZ,
+    ];
+
+    pub fn label(self) -> &'static str {
+        use ParamField::*;
+        match self {
+            Opacity => "Opacity",
+            ScaleX => "Scale X",
+            ScaleY => "Scale Y",
+            ScaleZ => "Scale Z",
+            OffsetX => "Offset X",
+            OffsetY => "Offset Y",
+            OffsetZ => "Offset Z",
+            RotationX => "Rotation X",
+            RotationY => "Rotation Y",
+            RotationZ => "Rotation Z",
+            Amplitude => "Amplitude",
+            InMin => "In Min",
+            InMax => "In Max",
+            OutMin => "Out Min",
+            OutMax => "Out Max",
+            SdfRadius => "SDF Radius",
+            SdfSoftness => "SDF Softness",
+            SdfHeight => "SDF Height",
+            Persistence => "Persistence",
+            Lacunarity => "Lacunarity",
+            DistortionStrength => "Distortion Strength",
+            DistortionFrequency => "Distortion Frequency",
+            DistortionSwirl => "Distortion Swirl",
+            DistortionRotX => "Distortion Rot X",
+            DistortionRotY => "Distortion Rot Y",
+            DistortionRotZ => "Distortion Rot Z",
+        }
+    }
+
+    /// Decode a `ParamField as u8` discriminant back into its variant (the
+    /// inverse used by `Timeline::evaluate_into` to turn a track's `u8` key
+    /// back into something `get_param`/`set_param` accept). `None` for any
+    /// value outside the 26 valid discriminants.
+    pub fn from_u8(v: u8) -> Option<ParamField> {
+        Self::ALL.into_iter().find(|&f| f as u8 == v)
+    }
+}
+
+impl LayerDesc {
+    pub fn get_param(&self, f: ParamField) -> f32 {
+        use ParamField::*;
+        match f {
+            Opacity => self.opacity,
+            Amplitude => self.amplitude,
+            ScaleX => self.scale[0],
+            ScaleY => self.scale[1],
+            ScaleZ => self.scale[2],
+            OffsetX => self.offset[0],
+            OffsetY => self.offset[1],
+            OffsetZ => self.offset[2],
+            RotationX => self.rotation_deg[0],
+            RotationY => self.rotation_deg[1],
+            RotationZ => self.rotation_deg[2],
+            InMin => self.in_min,
+            InMax => self.in_max,
+            OutMin => self.out_min,
+            OutMax => self.out_max,
+            SdfRadius => self.sdf_radius,
+            SdfSoftness => self.sdf_softness,
+            SdfHeight => self.sdf_height,
+            Persistence => self.persistence,
+            Lacunarity => self.lacunarity,
+            DistortionStrength => self.distortion_strength,
+            DistortionFrequency => self.distortion_frequency,
+            DistortionSwirl => self.distortion_swirl,
+            DistortionRotX => self.distortion_rotation[0],
+            DistortionRotY => self.distortion_rotation[1],
+            DistortionRotZ => self.distortion_rotation[2],
+        }
+    }
+
+    pub fn set_param(&mut self, f: ParamField, v: f32) {
+        use ParamField::*;
+        match f {
+            Opacity => self.opacity = v,
+            Amplitude => self.amplitude = v,
+            ScaleX => self.scale[0] = v,
+            ScaleY => self.scale[1] = v,
+            ScaleZ => self.scale[2] = v,
+            OffsetX => self.offset[0] = v,
+            OffsetY => self.offset[1] = v,
+            OffsetZ => self.offset[2] = v,
+            RotationX => self.rotation_deg[0] = v,
+            RotationY => self.rotation_deg[1] = v,
+            RotationZ => self.rotation_deg[2] = v,
+            InMin => self.in_min = v,
+            InMax => self.in_max = v,
+            OutMin => self.out_min = v,
+            OutMax => self.out_max = v,
+            SdfRadius => self.sdf_radius = v,
+            SdfSoftness => self.sdf_softness = v,
+            SdfHeight => self.sdf_height = v,
+            Persistence => self.persistence = v,
+            Lacunarity => self.lacunarity = v,
+            DistortionStrength => self.distortion_strength = v,
+            DistortionFrequency => self.distortion_frequency = v,
+            DistortionSwirl => self.distortion_swirl = v,
+            DistortionRotX => self.distortion_rotation[0] = v,
+            DistortionRotY => self.distortion_rotation[1] = v,
+            DistortionRotZ => self.distortion_rotation[2] = v,
         }
     }
 }
@@ -523,6 +702,15 @@ mod tests {
             NoiseType::White,
         ] {
             assert!(!t.is_sdf(), "{t:?} should not be an SDF source");
+        }
+    }
+
+    #[test]
+    fn param_get_set_roundtrip() {
+        let mut l = LayerDesc::default();
+        for f in ParamField::ALL {
+            l.set_param(f, 0.375);
+            assert_eq!(l.get_param(f), 0.375, "{f:?}");
         }
     }
 
