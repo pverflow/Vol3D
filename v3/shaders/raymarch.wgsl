@@ -9,6 +9,7 @@ struct Cam {
   macro_dims_x: f32, macro_dims_y: f32, macro_dims_z: f32,
   frac: f32,
   box_aspect_x: f32, box_aspect_y: f32, box_aspect_z: f32,
+  wire_alpha: f32,
 };
 @group(0) @binding(2) var<uniform> C: Cam;
 // Occupancy overlay (Task 1): r32float max-density per 8³ macrocell. Non-filterable, so a
@@ -35,6 +36,22 @@ fn intersect_aabb(ro: vec3<f32>, rd: vec3<f32>, bmin: vec3<f32>, bmax: vec3<f32>
   let tnear = max(max(tn3.x, tn3.y), tn3.z);
   let tfar = min(min(tf3.x, tf3.y), tf3.z);
   return vec2<f32>(tnear, tfar);
+}
+
+// world point -> screen (same space as `screen = uv*2-1`; x scaled by aspect*tan, y by tan). z = cam-depth.
+fn wb_project(P: vec3<f32>) -> vec3<f32> {
+  let v = P - C.eye;
+  let z = dot(v, C.fwd);
+  let inv = 1.0 / max(z, 1e-4);
+  return vec3<f32>(dot(v, C.right) * inv / (C.aspect * C.tan_half_fov),
+                   dot(v, C.up)    * inv /  C.tan_half_fov, z);
+}
+// aspect-weighted 2D point-to-segment distance (x weighted by aspect so thickness is ~uniform).
+fn wb_seg_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, aw: f32) -> f32 {
+  let pw = vec2<f32>(p.x*aw, p.y); let aa = vec2<f32>(a.x*aw, a.y); let bb = vec2<f32>(b.x*aw, b.y);
+  let pa = pw - aa; let ba = bb - aa;
+  let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
+  return length(pa - ba * h);
 }
 
 struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
@@ -102,5 +119,25 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     if (trans < 0.01) { break; }
     t = t + dt;
   }
-  return vec4<f32>(pow(acc, vec3<f32>(0.4545)), 1.0);
+  var col = pow(acc, vec3<f32>(0.4545));
+  if (C.wire_alpha > 0.0) {
+    let asp = vec3<f32>(C.box_aspect_x, C.box_aspect_y, C.box_aspect_z);
+    var corners = array<vec3<f32>, 8>(
+      vec3<f32>(0.0,0.0,0.0), vec3<f32>(asp.x,0.0,0.0), vec3<f32>(0.0,asp.y,0.0), vec3<f32>(asp.x,asp.y,0.0),
+      vec3<f32>(0.0,0.0,asp.z), vec3<f32>(asp.x,0.0,asp.z), vec3<f32>(0.0,asp.y,asp.z), vec3<f32>(asp.x,asp.y,asp.z));
+    var edges = array<vec2<u32>, 12>(
+      vec2<u32>(0u,1u), vec2<u32>(2u,3u), vec2<u32>(4u,5u), vec2<u32>(6u,7u),   // x-dir
+      vec2<u32>(0u,2u), vec2<u32>(1u,3u), vec2<u32>(4u,6u), vec2<u32>(5u,7u),   // y-dir
+      vec2<u32>(0u,4u), vec2<u32>(1u,5u), vec2<u32>(2u,6u), vec2<u32>(3u,7u));  // z-dir
+    var cov = 0.0;
+    for (var e = 0u; e < 12u; e = e + 1u) {
+      let a = wb_project(corners[edges[e].x]);
+      let b = wb_project(corners[edges[e].y]);
+      if (a.z <= 1e-4 || b.z <= 1e-4) { continue; }
+      let d = wb_seg_dist(screen, a.xy, b.xy, C.aspect);
+      cov = max(cov, 1.0 - smoothstep(0.004 - 0.0025, 0.004 + 0.0025, d));
+    }
+    col = mix(col, vec3<f32>(0.55, 0.78, 1.0), cov * C.wire_alpha);
+  }
+  return vec4<f32>(col, 1.0);
 }

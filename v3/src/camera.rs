@@ -43,11 +43,16 @@ pub struct CamUniform {
     pub box_aspect_x: f32,
     pub box_aspect_y: f32,
     pub box_aspect_z: f32,
+    /// Opacity of the box-wireframe overlay drawn over the raymarch result (Task 1 of the
+    /// bounding-box-wireframe cycle); `0.0` = fully off, and the overlay code in `fs` is entirely
+    /// guarded behind `C.wire_alpha > 0.0` so the off-path is byte-identical to before this field
+    /// existed. Occupies the slot at offset 100 that used to be padding — see the module doc
+    /// comment above for why the tail lands there.
+    pub wire_alpha: f32,
     /// Pads the struct to WGSL's std140 struct-size rounding (next multiple of 16; the struct's
-    /// own alignment, from its vec3 members). The tail from `tan_half_fov` through `box_aspect_z`
-    /// is 9 scalar f32s (36 bytes) past the first 64 bytes, landing at 100 — 3 trailing f32s (12
+    /// own alignment, from its vec3 members). The tail from `tan_half_fov` through `wire_alpha`
+    /// is 10 scalar f32s (40 bytes) past the first 64 bytes, landing at 104 — 2 trailing f32s (8
     /// bytes) bring it to 112. See the module doc comment above.
-    pub _pad0: f32,
     pub _pad1: f32,
     pub _pad2: f32,
 }
@@ -119,7 +124,7 @@ impl OrbitCamera {
             box_aspect_x: 1.0,
             box_aspect_y: 1.0,
             box_aspect_z: 1.0,
-            _pad0: 0.0,
+            wire_alpha: 0.0,
             _pad1: 0.0,
             _pad2: 0.0,
         }
@@ -169,9 +174,9 @@ mod tests {
     #[test]
     fn cam_uniform_size_matches_wgsl_std140_padding() {
         // shaders/raymarch.wgsl's `Cam` struct: 3 vec3+pad fields (16 bytes each = 48) + up+aspect
-        // (16 bytes) = 64 bytes, then 9 trailing scalar f32s (tan_half_fov, steps, macro_dims_x/y/z,
-        // frac, box_aspect_x/y/z = 36 bytes) = 100 bytes, then WGSL rounds the struct size up to a
-        // multiple of its own alignment (16, from the vec3 members) = 112 bytes.
+        // (16 bytes) = 64 bytes, then 10 trailing scalar f32s (tan_half_fov, steps, macro_dims_x/y/z,
+        // frac, box_aspect_x/y/z, wire_alpha = 40 bytes) = 104 bytes, then WGSL rounds the struct
+        // size up to a multiple of its own alignment (16, from the vec3 members) = 112 bytes.
         assert_eq!(std::mem::size_of::<CamUniform>(), 112);
     }
 }
