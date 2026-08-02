@@ -76,7 +76,9 @@ pub enum BlendMode {
 /// Domain-distortion applied to a layer's sample position before noise
 /// evaluation (`generate.wgsl`'s `apply_distortion` switch). Mirrors v2's
 /// `DistortionType` (`src/types/layer.ts`); GLSL sources ported verbatim:
-/// `src/shaders/distortion/{domain_warp,curl,swirl,polar}.glsl`.
+/// `src/shaders/distortion/{domain_warp,curl,swirl,polar}.glsl`. `Turbulence`
+/// (cycle 4 distortion-improvements task 1) is new: a multi-octave warp
+/// accumulated from `warp_field`, not a v2 port.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DistortionType {
@@ -85,6 +87,7 @@ pub enum DistortionType {
     Curl = 2,
     Swirl = 3,
     Polar = 4,
+    Turbulence = 5,
 }
 
 /// Build a column-major mat3 from Euler XYZ rotation **in radians**
@@ -157,6 +160,14 @@ pub struct GpuLayer {
     pub distortion_frequency: f32,
     pub distortion_swirl: f32,
     pub _pad_distort: f32, // 208
+    // distortion-improvements cycle 4 task 1 (append-only, 0..224 unchanged):
+    pub drot0: [f32; 4],         // 224 (warp-space rotation column 0)
+    pub drot1: [f32; 4],         // 240 (warp-space rotation column 1)
+    pub drot2: [f32; 4],         // 256 (warp-space rotation column 2)
+    pub warp_noise: u32,         // 272
+    pub distortion_octaves: u32, // 276
+    pub _pad_di0: f32,           // 280
+    pub _pad_di1: f32,           // 284..288
 }
 
 /// Ergonomic Rust-side layer description (ported field-for-field from v2's
@@ -193,6 +204,16 @@ pub struct LayerDesc {
     pub distortion_strength: f32,
     pub distortion_frequency: f32,
     pub distortion_swirl: f32,
+    /// Euler XYZ (degrees) rotation applied to the warp domain only — lets
+    /// the distortion be oriented independently of the layer's own
+    /// `rotation_deg` (cycle 4 distortion-improvements task 1).
+    pub distortion_rotation: [f32; 3],
+    /// Noise field the distortion warp reads from (`generate.wgsl`'s
+    /// `warp_field`), NOT the layer's own `noise_type` — fixes distortion
+    /// having no effect on flat SDF fields (cycle 4 task 1).
+    pub warp_noise: NoiseType,
+    /// Octave count for `DistortionType::Turbulence`'s fbm-like warp loop.
+    pub distortion_octaves: u32,
     pub ramp: ColorRamp,
     /// UI-only visibility toggle (cycle 3): invisible layers are skipped at
     /// pack time (`app.rs`), contributing neither shape nor color. Not part
@@ -232,6 +253,9 @@ impl Default for LayerDesc {
             distortion_strength: 0.3, // v2 defaultLayer() distortion.strength
             distortion_frequency: 2.0, // v2 defaultLayer() distortion.warpFrequency
             distortion_swirl: 1.0,    // v2 defaultLayer() distortion.swirlAmount
+            distortion_rotation: [0.0, 0.0, 0.0],
+            warp_noise: NoiseType::Perlin,
+            distortion_octaves: 4,
             ramp: ColorRamp::default(), // disabled, no stops
             visible: true,
         }
@@ -246,6 +270,11 @@ pub fn pack_layer(l: &LayerDesc) -> GpuLayer {
         l.rotation_deg[0].to_radians(),
         l.rotation_deg[1].to_radians(),
         l.rotation_deg[2].to_radians(),
+    );
+    let [drot0, drot1, drot2] = mat3_from_euler(
+        l.distortion_rotation[0].to_radians(),
+        l.distortion_rotation[1].to_radians(),
+        l.distortion_rotation[2].to_radians(),
     );
     GpuLayer {
         rot0,
@@ -280,6 +309,13 @@ pub fn pack_layer(l: &LayerDesc) -> GpuLayer {
         distortion_frequency: l.distortion_frequency,
         distortion_swirl: l.distortion_swirl,
         _pad_distort: 0.0,
+        drot0,
+        drot1,
+        drot2,
+        warp_noise: l.warp_noise as u32,
+        distortion_octaves: l.distortion_octaves,
+        _pad_di0: 0.0,
+        _pad_di1: 0.0,
     }
 }
 
@@ -394,7 +430,7 @@ mod tests {
     #[test]
     fn gpu_layer_std430_layout() {
         use std::mem::{offset_of, size_of};
-        assert_eq!(size_of::<GpuLayer>(), 224); // multiple of 16
+        assert_eq!(size_of::<GpuLayer>(), 288); // multiple of 16
         assert_eq!(offset_of!(GpuLayer, rot0), 0);
         assert_eq!(offset_of!(GpuLayer, scale), 48);
         assert_eq!(offset_of!(GpuLayer, offset), 64);
@@ -407,6 +443,11 @@ mod tests {
         assert_eq!(offset_of!(GpuLayer, distortion_frequency), 212);
         assert_eq!(offset_of!(GpuLayer, distortion_swirl), 216);
         assert_eq!(offset_of!(GpuLayer, _pad_distort), 220);
+        assert_eq!(offset_of!(GpuLayer, drot0), 224);
+        assert_eq!(offset_of!(GpuLayer, drot1), 240);
+        assert_eq!(offset_of!(GpuLayer, drot2), 256);
+        assert_eq!(offset_of!(GpuLayer, warp_noise), 272);
+        assert_eq!(offset_of!(GpuLayer, distortion_octaves), 276);
     }
 
     #[test]
@@ -457,6 +498,7 @@ mod tests {
         assert_eq!(DistortionType::Curl as u32, 2);
         assert_eq!(DistortionType::Swirl as u32, 3);
         assert_eq!(DistortionType::Polar as u32, 4);
+        assert_eq!(DistortionType::Turbulence as u32, 5);
     }
 
     #[test]

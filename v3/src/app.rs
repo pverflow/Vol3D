@@ -89,6 +89,7 @@ fn distortion_type_label(t: DistortionType) -> &'static str {
         DistortionType::Curl => "Curl",
         DistortionType::Swirl => "Swirl",
         DistortionType::Polar => "Polar",
+        DistortionType::Turbulence => "Turbulence",
     }
 }
 

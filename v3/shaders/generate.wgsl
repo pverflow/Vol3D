@@ -691,7 +691,7 @@ fn apply_blend(mode: i32, base: f32, layer: f32) -> f32 {
 }
 
 // ---------------------------------------------------------------------
-// GpuLayer: mirrors v3/src/layer.rs `GpuLayer` (#[repr(C)], size 208, see
+// GpuLayer: mirrors v3/src/layer.rs `GpuLayer` (#[repr(C)], size 288, see
 // `gpu_layer_std430_layout` test there) field-for-field. All-vec4/f32/u32
 // fields pack tightly with natural 4-byte scalar alignment, so this
 // struct's storage-buffer layout matches the Rust byte layout with no
@@ -731,6 +731,14 @@ struct GpuLayer {
   distortion_frequency: f32, // 212
   distortion_swirl: f32,     // 216
   _pad_distort: f32,         // 220..224
+  // distortion-improvements cycle 4 task 1 (append-only, 0..224 unchanged):
+  drot0: vec4<f32>,          // 224 (warp-space rotation column 0)
+  drot1: vec4<f32>,          // 240 (warp-space rotation column 1)
+  drot2: vec4<f32>,          // 256 (warp-space rotation column 2)
+  warp_noise: u32,           // 272
+  distortion_octaves: u32,   // 276
+  _pad_di0: f32,             // 280
+  _pad_di1: f32,             // 284..288
 };
 
 struct GenParams {
@@ -796,40 +804,51 @@ fn animated_domain_offset(seed: f32, anim_phase: f32, anim_evolutions: f32) -> v
   return (axis_a * cos(angle) + axis_b * sin(angle)) * ANIM_RADIUS;
 }
 
-// Distortion: src/shaders/distortion/{domain_warp,curl,swirl,polar}.glsl.
+// Distortion: src/shaders/distortion/{domain_warp,curl,swirl,polar}.glsl,
+// plus Turbulence (new, cycle 4 distortion-improvements task 1 — not a v2
+// port).
 //
-// v2's shader assembler picks the layer's own `noiseEval` as `_baseNoiseEval`
-// for domain_warp/curl, EXCEPT when the layer's noise type is FBM: there,
-// `_baseNoiseEval` is aliased to the FBM's base noise (a single octave),
-// not the full FBM sum (ShaderCompiler.ts `buildLayerGenShader` — the FBM
-// base snippet is renamed to `_baseNoiseEval` and `fbm.glsl` becomes
-// `noiseEval`). `base_noise_eval` reproduces that split explicitly since
-// WGSL has no textual function aliasing/renaming.
-fn base_noise_eval(L: GpuLayer, p: vec3<f32>) -> f32 {
-  if (L.noise_type == 3u) {
-    return eval_base_noise(L.fbm_base, p, L.seed);
-  }
-  return eval_noise(L, p);
+// Root-fix (task 1): v2's shader assembler picked the layer's own
+// `noiseEval` as the warp source for domain_warp/curl, which for an SDF
+// layer (e.g. a cone) is a flat 0/1 field with ~zero gradient -> ~zero
+// displacement, i.e. "distortion does nothing on SDF shapes". `warp_field`
+// below always reads a real noise field (`L.warp_noise`, independent of the
+// layer's own `noise_type`) so every distortion type has a usable gradient
+// regardless of what the layer itself renders.
+fn warp_field(L: GpuLayer, p: vec3<f32>) -> f32 {
+  return eval_base_noise(L.warp_noise, p, L.seed);
 }
 
-// apply_distortion(L, p): dispatches on L.distortion_type. 0=None (identity,
-// v2's IDENTITY_DISTORTION), 1=DomainWarp, 2=Curl, 3=Swirl, 4=Polar — each
-// case a verbatim port of its GLSL source (uniforms u_warpStrength/
-// u_warpFrequency/u_swirlAmount -> L.distortion_strength/
-// distortion_frequency/distortion_swirl).
+// apply_distortion(L, p): dispatches on L.distortion_type. 0=None is an
+// identity no-op (v2's IDENTITY_DISTORTION) returned before any rotation
+// math runs. For the active types (1=DomainWarp, 2=Curl, 3=Swirl, 4=Polar,
+// 5=Turbulence) the sample point is first rotated into "warp space" by
+// `L.drot{0,1,2}` (the packed `distortion_rotation`, independent of the
+// layer's own rotation) so the distortion can be oriented on its own axis;
+// the effect (a verbatim port of its GLSL source for 1-4, uniforms
+// u_warpStrength/u_warpFrequency/u_swirlAmount -> L.distortion_strength/
+// distortion_frequency/distortion_swirl) runs on the rotated point `q`, then
+// the result is rotated back by `transpose(drot)` (drot is orthonormal, so
+// its transpose is its inverse) before returning.
 fn apply_distortion(L: GpuLayer, p: vec3<f32>) -> vec3<f32> {
+  if (L.distortion_type == 0u) {
+    // None: v2's IDENTITY_DISTORTION (`applyDistortion(p) { return p; }`).
+    return p;
+  }
+  let drot = mat3x3<f32>(L.drot0.xyz, L.drot1.xyz, L.drot2.xyz);
+  var q = drot * p;
   switch (L.distortion_type) {
     case 1u: {
       // domain_warp.glsl L9-18.
       if (L.distortion_strength < 0.001) {
         return p;
       }
-      let wp = p * L.distortion_frequency;
-      let nx = base_noise_eval(L, wp + vec3<f32>(0.0, 1.7, 9.2));
-      let ny = base_noise_eval(L, wp + vec3<f32>(8.3, 2.8, 4.1));
-      let nz = base_noise_eval(L, wp + vec3<f32>(4.0, 3.1, 6.7));
+      let wp = q * L.distortion_frequency;
+      let nx = warp_field(L, wp + vec3<f32>(0.0, 1.7, 9.2));
+      let ny = warp_field(L, wp + vec3<f32>(8.3, 2.8, 4.1));
+      let nz = warp_field(L, wp + vec3<f32>(4.0, 3.1, 6.7));
       let warp = (vec3<f32>(nx, ny, nz) - vec3<f32>(0.5)) * 2.0 * L.distortion_strength;
-      return p + warp;
+      q = q + warp;
     }
     case 2u: {
       // curl.glsl L6-24.
@@ -837,45 +856,75 @@ fn apply_distortion(L: GpuLayer, p: vec3<f32>) -> vec3<f32> {
         return p;
       }
       let eps: f32 = 0.01;
-      let n1 = base_noise_eval(L, p + vec3<f32>(eps, 0.0, 0.0));
-      let n2 = base_noise_eval(L, p - vec3<f32>(eps, 0.0, 0.0));
-      let n3 = base_noise_eval(L, p + vec3<f32>(0.0, eps, 0.0));
-      let n4 = base_noise_eval(L, p - vec3<f32>(0.0, eps, 0.0));
-      let n5 = base_noise_eval(L, p + vec3<f32>(0.0, 0.0, eps));
-      let n6 = base_noise_eval(L, p - vec3<f32>(0.0, 0.0, eps));
+      let n1 = warp_field(L, q + vec3<f32>(eps, 0.0, 0.0));
+      let n2 = warp_field(L, q - vec3<f32>(eps, 0.0, 0.0));
+      let n3 = warp_field(L, q + vec3<f32>(0.0, eps, 0.0));
+      let n4 = warp_field(L, q - vec3<f32>(0.0, eps, 0.0));
+      let n5 = warp_field(L, q + vec3<f32>(0.0, 0.0, eps));
+      let n6 = warp_field(L, q - vec3<f32>(0.0, 0.0, eps));
       let inv2eps = 1.0 / (2.0 * eps);
       let curl = vec3<f32>(
         (n4 - n3 - n6 + n5) * inv2eps,
         (n5 - n6 - n2 + n1) * inv2eps,
         (n2 - n1 - n3 + n4) * inv2eps
       );
-      return p + curl * L.distortion_strength;
+      q = q + curl * L.distortion_strength;
     }
     case 3u: {
       // swirl.glsl L7-13.
-      let angle = p.y * L.distortion_swirl * L.distortion_strength * 6.28318;
+      let angle = q.y * L.distortion_swirl * L.distortion_strength * 6.28318;
       let cos_a = cos(angle);
       let sin_a = sin(angle);
-      let x = p.x * cos_a - p.z * sin_a;
-      let z = p.x * sin_a + p.z * cos_a;
-      return vec3<f32>(x, p.y, z);
+      let x = q.x * cos_a - q.z * sin_a;
+      let z = q.x * sin_a + q.z * cos_a;
+      q = vec3<f32>(x, q.y, z);
     }
     case 4u: {
       // polar.glsl L7-14.
       if (L.distortion_strength < 0.001) {
         return p;
       }
-      let centered = p.xy - vec2<f32>(0.5);
+      let centered = q.xy - vec2<f32>(0.5);
       let radius = length(centered) * 2.0;
       let angle = atan2(centered.y, centered.x) / 6.28318 + 0.5;
-      let polar = vec3<f32>(angle, radius, p.z);
-      return mix(p, polar, L.distortion_strength);
+      let polar = vec3<f32>(angle, radius, q.z);
+      q = mix(q, polar, L.distortion_strength);
+    }
+    case 5u: {
+      // Turbulence: multi-octave warp_field accumulation (fbm-like warp,
+      // new for task 1 — not a v2 port). Each octave samples warp_field at
+      // 3 offset points (same offsets as domain_warp) to build a
+      // pseudo-curl displacement vector, doubling frequency and halving
+      // amplitude per octave (mirrors noise_fbm's persistence/lacunarity
+      // shape but fixed at 2.0/0.5 since there's no per-layer control here).
+      if (L.distortion_strength < 0.001) {
+        return p;
+      }
+      var freq = L.distortion_frequency;
+      var amp = 1.0;
+      var off = vec3<f32>(0.0, 0.0, 0.0);
+      let octaves = clamp(L.distortion_octaves, 1u, 8u);
+      for (var o: u32 = 0u; o < 8u; o = o + 1u) {
+        if (o >= octaves) {
+          break;
+        }
+        let wp = q * freq;
+        off = off + (vec3<f32>(
+          warp_field(L, wp + vec3<f32>(0.0, 1.7, 9.2)),
+          warp_field(L, wp + vec3<f32>(8.3, 2.8, 4.1)),
+          warp_field(L, wp + vec3<f32>(4.0, 3.1, 6.7))
+        ) - vec3<f32>(0.5)) * 2.0 * amp;
+        freq = freq * 2.0;
+        amp = amp * 0.5;
+      }
+      q = q + off * L.distortion_strength;
     }
     default: {
-      // 0=None: v2's IDENTITY_DISTORTION (`applyDistortion(p) { return p; }`).
-      return p;
+      // Unreachable (distortion_type == 0u already returned above); kept so
+      // the switch is exhaustive over u32.
     }
   }
+  return transpose(drot) * q;
 }
 
 // layer_gen.frag.glsl L44-67 (sampleNoiseAtVolumePos) — fix round 1. Per-
