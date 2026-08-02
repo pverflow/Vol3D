@@ -1151,23 +1151,24 @@ impl Vol3dApp {
             ui.separator();
 
             // Glance readout: `frame_count` is the *derived* (fps*loop, clamped) bake input, so
-            // no live renderer access is needed here — `playback_bake_res` is the same pure
-            // reduction `FrameCache::bake` applies, so this predicts its resolution exactly.
+            // no live renderer access is needed here — `playback_bake_dims` is the same pure
+            // reduction `FrameCache::bake` applies, so this predicts its dims exactly.
+            // TEMPORARY: source dims are still cubic (`[self.resolution;3]`) until Task 4.
             let status = if self.cache_stale {
                 "cache: stale".to_string()
             } else {
-                let bake_res = anim::playback_bake_res(
-                    self.resolution,
+                let bake_dims = anim::playback_bake_dims(
+                    [self.resolution; 3],
                     self.frame_count,
                     crate::render::frame_cache::FRAME_CACHE_BUDGET_BYTES,
                 );
-                let gb =
-                    self.frame_count as f64 * (bake_res as f64).powi(3) * 4.0 / (1u64 << 30) as f64;
+                let product = bake_dims[0] as f64 * bake_dims[1] as f64 * bake_dims[2] as f64;
+                let gb = self.frame_count as f64 * product * 4.0 / (1u64 << 30) as f64;
                 let eff_fps = self.frame_count as f32 / self.loop_seconds.max(1e-3);
                 format!(
                     "baked {} @ {}³  ({:.1} GB)  {:.0} fps  {}",
                     self.frame_count,
-                    bake_res,
+                    bake_dims[0], // cubic-only until Task 4 — all three axes are equal here
                     gb,
                     eff_fps,
                     if self.interp { "smooth" } else { "steps" }
@@ -1271,7 +1272,7 @@ impl eframe::App for Vol3dApp {
         // Pause snap: the instant playback stops (edge-triggered on `was_playing`, so this fires
         // exactly once per pause), force one full-res live regen at the phase we stopped on —
         // bypassing the edit debounce, since this isn't an edit, it's a resolution snap from the
-        // (possibly reduced) bake_res cache back to full res. `pack_for_gpu`'s `anim_phase` is
+        // (possibly reduced) bake_dims cache back to full res. `pack_for_gpu`'s `anim_phase` is
         // `self.phase` (above), so the regen lands on the right frame. Deliberately does NOT call
         // `mark_dirty`/touch `cache_stale`: the bake is still valid, only the live volume (what's
         // shown once paused) needs refreshing, and invalidating the cache here would force a
@@ -1333,7 +1334,7 @@ impl eframe::App for Vol3dApp {
             // this CPU-side `cache_stale` flag just avoids re-packing/re-hashing every frame once
             // the cache is fresh.
             let need_bake = self.playing && self.cache_stale && self.frame_count > 0;
-            // Sample the cached (reduced-res, `FrameCache::bake_res`) frame only while actually
+            // Sample the cached (reduced-res, `FrameCache::bake_dims`) frame only while actually
             // playing. The moment playback stops, this drops to `false` — the pause-snap regen
             // above (`was_playing`/`pending_regen`) re-renders the live volume at full res and
             // this leaves the raymarch bound to it (no `bind_playback` override), so a paused
@@ -1372,19 +1373,20 @@ impl eframe::App for Vol3dApp {
                                 .0
                         })
                         .collect();
-                    // TEMPORARY: cubic-only dims (see `pack_for_gpu`'s comment; Task 4 makes this
-                    // real; `FrameCache::bake` further overrides dim_*/aspect_* per its own
-                    // (possibly reduced) `bake_res`).
-                    let bake_dims = [self.resolution; 3];
-                    let bake_aspect = anim::aspect_from_dims(bake_dims);
+                    // TEMPORARY: cubic-only source dims (see `pack_for_gpu`'s comment; Task 4
+                    // makes this real). `FrameCache::bake` reduces these further via
+                    // `anim::playback_bake_dims` and overrides dim_*/aspect_* per its own
+                    // (possibly smaller) `bake_dims`.
+                    let source_dims = [self.resolution; 3];
+                    let source_aspect = anim::aspect_from_dims(source_dims);
                     let gp = GenParams {
-                        dim_x: bake_dims[0],
-                        dim_y: bake_dims[1],
-                        dim_z: bake_dims[2],
+                        dim_x: source_dims[0],
+                        dim_y: source_dims[1],
+                        dim_z: source_dims[2],
                         layer_count: frames[0].len() as u32,
-                        aspect_x: bake_aspect[0],
-                        aspect_y: bake_aspect[1],
-                        aspect_z: bake_aspect[2],
+                        aspect_x: source_aspect[0],
+                        aspect_y: source_aspect[1],
+                        aspect_z: source_aspect[2],
                         anim_phase: 0.0, // bake sets per-frame phase in FrameCache::bake
                         anim_evolutions: self.evolutions,
                         _pad0: 0.0,
@@ -1396,7 +1398,7 @@ impl eframe::App for Vol3dApp {
                     // covers edits to keyframes elsewhere in the loop that frame 0 alone can't see.
                     let key = anim::BakeKey::new(
                         &frames[0],
-                        self.resolution,
+                        source_dims,
                         self.evolutions,
                         n,
                         self.timeline.hash(),

@@ -297,11 +297,14 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
         if let Some(key) = &self.bake_key {
             // Playback bake path: fills the dense cache (only if stale — `ensure_baked` guards
             // with `is_stale`). The live volume is left untouched.
+            // `self.res` is still the cubic scalar `Vol3dApp::resolution` (Task 4 replaces it with
+            // a real per-axis dims field) — widened to `[res;3]` here at the boundary into
+            // `ensure_baked`'s now-per-axis `source_dims`.
             r.ensure_baked(
                 device,
                 queue,
                 key.clone(),
-                self.res,
+                [self.res; 3],
                 &self.bake_frames,
                 self.gen_params,
                 &self.lut_atlas,
@@ -333,14 +336,12 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
         // `generate` rebuilds the texture (~120ms debounce), and the skip grid mismatches the
         // still-wider occupancy, jumping over dense cells (holes). While playing (the only time
         // `playback_phase` is `Some`, per `app.rs`'s `use_cache`) the bound occupancy is the frame
-        // cache's own (per-frame, baked at `bake_res` — Task 3), usually smaller than the live
+        // cache's own (per-frame, baked at `bake_dims` — Task 3), usually smaller than the live
         // volume's `dims()`; live and paused (always full-res, see Task 3's pause snap) bind the
         // live volume's occupancy, so `dims()` is the right dims there.
         let mut cam = self.cam;
         let dims = if self.playback_phase.is_some() && !r.frame_cache.is_empty() {
-            // STOPGAP: `frame_cache` bakes cubically this cycle (Task 3 adds a per-axis
-            // `bake_dims()`); until then, treat the bake resolution as cubic here too.
-            [r.frame_cache.bake_res(); 3]
+            r.frame_cache.bake_dims()
         } else {
             r.volume.dims()
         };

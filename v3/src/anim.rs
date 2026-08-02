@@ -72,20 +72,40 @@ mod tests {
     }
 
     #[test]
+    fn playback_bake_dims_fits_and_keeps_aspect() {
+        let b = 512 * 1024 * 1024;
+        assert_eq!(playback_bake_dims([256, 256, 256], 8, b), [128, 128, 128]); // 8*128³*4=64MB
+        assert_eq!(playback_bake_dims([64, 64, 256], 1, b), [64, 64, 256]); // fits as-is
+        let d = playback_bake_dims([256, 256, 256], u32::MAX, b);
+        assert_eq!(d, [32, 32, 32]); // floor 32
+        let d = playback_bake_dims([64, 64, 256], 1000, b);
+        assert_eq!(d[2] / d[0], 4); // aspect ratio preserved
+    }
+
+    #[test]
     fn is_stale_detects_edits() {
-        let a = BakeKey::new(&[], 128, 1.0, 8, 111);
+        let a = BakeKey::new(&[], [128, 128, 128], 1.0, 8, 111);
         let b = a.clone();
         assert!(!is_stale(&Some(a.clone()), &b));
-        let c = BakeKey::new(&[], 256, 1.0, 8, 111);
+        let c = BakeKey::new(&[], [256, 256, 256], 1.0, 8, 111);
         assert!(is_stale(&Some(a), &c));
         assert!(is_stale(&None, &c)); // never baked = stale
     }
 
     #[test]
     fn is_stale_detects_timeline_edits() {
-        let a = BakeKey::new(&[], 128, 0.0, 8, 111);
-        let b = BakeKey::new(&[], 128, 0.0, 8, 222);
+        let a = BakeKey::new(&[], [128, 128, 128], 0.0, 8, 111);
+        let b = BakeKey::new(&[], [128, 128, 128], 0.0, 8, 222);
         assert!(is_stale(&Some(a), &b)); // timeline edit invalidates
+    }
+
+    #[test]
+    fn is_stale_detects_dims_only_edits() {
+        // Same layers/evolutions/n/timeline — only the per-axis `dims` differs (e.g. a non-cubic
+        // volume whose z axis changed while x/y didn't) — must still register as stale.
+        let a = BakeKey::new(&[], [128, 128, 128], 0.0, 8, 111);
+        let b = BakeKey::new(&[], [128, 128, 64], 0.0, 8, 111);
+        assert!(is_stale(&Some(a), &b));
     }
 
     #[test]
@@ -177,6 +197,28 @@ pub fn playback_bake_res(source_res: u32, n: u32, budget_bytes: u64) -> u32 {
     64
 }
 
+/// Generalizes `playback_bake_res` to non-cubic volumes: halves ALL three axes together (by the
+/// same power of two, so a source's aspect ratio survives the reduction) starting from
+/// `source_dims`, until the dense cache (`n` frames × `product(dims)` × 4 bytes rgba8) strictly
+/// fits `budget_bytes`, floored per axis at 32 (never below — and, since it only ever halves
+/// down from `source_dims`, never above it either). If even the 32-per-axis floor doesn't fit the
+/// budget, returns the floor anyway — a coarse cache beats none.
+pub fn playback_bake_dims(source_dims: [u32; 3], n: u32, budget_bytes: u64) -> [u32; 3] {
+    let n = n.max(1) as u64;
+    let mut dims = source_dims;
+    loop {
+        let product = dims[0] as u64 * dims[1] as u64 * dims[2] as u64;
+        if n * product * 4 < budget_bytes {
+            return dims;
+        }
+        let halved = dims.map(|d| (d / 2).max(32.min(d)));
+        if halved == dims {
+            return dims; // floor reached (or source already <= 32) — coarsest we can go
+        }
+        dims = halved;
+    }
+}
+
 /// Max baked frames whose floor-res (64³ rgba8) dense cache still fits `budget_bytes` —
 /// the ceiling `app.rs` clamps N (fps × loop) to, so `playback_bake_res`'s 64³ floor never
 /// exceeds VRAM. Floored at 1.
@@ -190,7 +232,7 @@ pub fn max_loop_frames(budget_bytes: u64) -> u32 {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BakeKey {
     layers_hash: u64,
-    res: u32,
+    dims: [u32; 3],
     evolutions_bits: u32,
     n: u32,
     timeline_hash: u64,
@@ -198,7 +240,7 @@ pub struct BakeKey {
 
 impl BakeKey {
     /// `layers` is the packed `GpuLayer` slice about to be (or already) baked (frame 0's, for a
-    /// per-frame bake — see `app.rs`); `res`/`n` are the volume resolution and frame count,
+    /// per-frame bake — see `app.rs`); `dims`/`n` are the source volume dims and frame count,
     /// `evolutions` the animation's noise-cycle count, `timeline_hash` the keyframe
     /// `Timeline::hash()` — comparing frame 0's layers alone can't detect an edit to a keyframe
     /// elsewhere in the loop (frame 0 unchanged, frame 5 not), so the timeline's own fingerprint
@@ -206,10 +248,16 @@ impl BakeKey {
     /// `evolutions` is compared bit-for-bit (`to_bits`) rather than as `f32` directly, since
     /// `f32` isn't `Eq` — fine here because the value comes from a `DragValue`/const, not from
     /// an accumulated float that could differ by rounding.
-    pub fn new(layers: &[GpuLayer], res: u32, evolutions: f32, n: u32, timeline_hash: u64) -> Self {
+    pub fn new(
+        layers: &[GpuLayer],
+        dims: [u32; 3],
+        evolutions: f32,
+        n: u32,
+        timeline_hash: u64,
+    ) -> Self {
         Self {
             layers_hash: fnv1a(bytemuck::cast_slice(layers)),
-            res,
+            dims,
             evolutions_bits: evolutions.to_bits(),
             n,
             timeline_hash,
