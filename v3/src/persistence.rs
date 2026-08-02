@@ -70,6 +70,55 @@ impl Default for SceneFile {
     }
 }
 
+/// Web: persist to `localStorage` under a fixed key. Native: persist to a
+/// file under `$HOME/.vol3d/` (falling back to the cwd if `HOME` is unset).
+/// Same two-function signature on both targets so callers (task 3) don't
+/// need `cfg` of their own.
+const STORAGE_KEY: &str = "vol3d_scene_v1";
+
+#[cfg(target_arch = "wasm32")]
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok()?
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn save_scene(json: &str) -> bool {
+    storage()
+        .map(|s| s.set_item(STORAGE_KEY, json).is_ok())
+        .unwrap_or(false)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn load_scene() -> Option<String> {
+    storage()?.get_item(STORAGE_KEY).ok()?
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn scene_path() -> std::path::PathBuf {
+    match std::env::var("HOME") {
+        Ok(home) => std::path::Path::new(&home)
+            .join(".vol3d")
+            .join("scene.json"),
+        Err(_) => std::path::PathBuf::from("./vol3d_scene.json"),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_scene(json: &str) -> bool {
+    let path = scene_path();
+    if let Some(dir) = path.parent() {
+        if std::fs::create_dir_all(dir).is_err() {
+            return false;
+        }
+    }
+    std::fs::write(path, json).is_ok()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_scene() -> Option<String> {
+    std::fs::read_to_string(scene_path()).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
