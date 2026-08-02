@@ -115,6 +115,15 @@ mod tests {
         assert_eq!(max_loop_frames(4 * 1024 * 1024 * 1024), 4096); // 4 GB / 1 MiB
         assert_eq!(max_loop_frames(1), 1); // floor at 1
     }
+
+    #[test]
+    fn flash_envelope_shape() {
+        assert_eq!(flash_envelope(-5.0, 2.0, 1.0), 0.0); // before start (never flashed)
+        assert_eq!(flash_envelope(0.0, 2.0, 1.0), 1.0); // hold
+        assert_eq!(flash_envelope(1.9, 2.0, 1.0), 1.0);
+        assert!((flash_envelope(2.5, 2.0, 1.0) - 0.5).abs() < 1e-6); // mid-fade
+        assert_eq!(flash_envelope(3.1, 2.0, 1.0), 0.0); // after
+    }
 }
 
 use crate::layer::GpuLayer;
@@ -279,6 +288,20 @@ pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     bytes
         .iter()
         .fold(OFFSET, |h, &b| (h ^ b as u64).wrapping_mul(PRIME))
+}
+
+/// Flash-and-fade envelope for the box-wireframe "just resized" cue: `1.0` while `elapsed <
+/// hold` (freshly triggered), linear `1.0 -> 0.0` over `[hold, hold+fade]`, and `0.0` outside
+/// that range — including `elapsed < 0`, so a never-triggered start (`wire_flash_start` init'd
+/// to `-1e9`) reads as fully faded rather than negative-elapsed nonsense.
+pub fn flash_envelope(elapsed: f64, hold: f64, fade: f64) -> f32 {
+    if elapsed < 0.0 || elapsed >= hold + fade {
+        0.0
+    } else if elapsed < hold {
+        1.0
+    } else {
+        (1.0 - (elapsed - hold) / fade.max(1e-9)) as f32
+    }
 }
 
 /// A cache is stale if it was never baked (`None`) or if `current`'s inputs differ from what

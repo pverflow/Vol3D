@@ -235,6 +235,15 @@ pub struct Vol3dApp {
     /// transition (pause snap: force one full-res live regen at `self.phase`, see `ui()`'s tail).
     was_playing: bool,
 
+    /// Smoothed (EMA, 0.18 per frame) 0..1 "is the viewport hovered" signal driving the
+    /// bounding-box wireframe's steady-state opacity (see `ui()`'s central-panel cam build).
+    wire_hover: f32,
+    /// `ctx.input(|i| i.time)` at the most recent box-dims change; feeds `anim::flash_envelope`
+    /// to flash-and-fade the wireframe on resize. Init `-1e9` so `flash_envelope` reads a huge
+    /// negative elapsed on the very first frame (before any dims edit) and returns `0.0`, not a
+    /// bogus flash.
+    wire_flash_start: f64,
+
     // --- timeline (keyframe animation, Task 2 wiring) ---
     /// Keyframe tracks keyed by `LayerDesc::id`. Empty until Task 4 adds keyframe-editing UI;
     /// `evaluate_scene_at`/`sync_playhead` are no-ops against an empty timeline.
@@ -277,6 +286,8 @@ impl Default for Vol3dApp {
             interp: false,
             cache_stale: true,
             was_playing: false,
+            wire_hover: 0.0,
+            wire_flash_start: -1e9,
             timeline: Timeline::default(),
             next_layer_id,
         }
@@ -1249,6 +1260,7 @@ impl eframe::App for Vol3dApp {
                 if self.dims != prev_dims {
                     self.cache_stale = true;
                     self.mark_dirty(ui.ctx());
+                    self.wire_flash_start = ui.ctx().input(|i| i.time);
                 }
 
                 let mb = self.dims.iter().map(|&d| d as u64).product::<u64>() * 4 / (1024 * 1024);
@@ -1383,7 +1395,18 @@ impl eframe::App for Vol3dApp {
             // would otherwise pop the camera to the new aspect a frame before the box itself
             // catches up.
             let box_aspect = anim::aspect_from_dims(self.committed_dims);
-            let cam = self.cam.basis(aspect, 128.0, box_aspect);
+            let mut cam = self.cam.basis(aspect, 128.0, box_aspect);
+            // Bounding-box wireframe opacity: an EMA-smoothed hover glow (settles at 0.55) maxed
+            // against a flash-and-fade spike (1.0 -> 0.0 over 2s hold + 1s fade) that
+            // `wire_flash_start` re-triggers on every box-dims change — so resizing the box
+            // always flashes the wireframe even if the pointer isn't over the viewport, while
+            // hovering alone still shows it. `.max` (not additive) keeps it clamped without a
+            // second clamp op before the final one below.
+            let target_hover = if response.hovered() { 1.0 } else { 0.0 };
+            self.wire_hover += (target_hover - self.wire_hover) * 0.18;
+            let now = ui.ctx().input(|i| i.time);
+            let flash = anim::flash_envelope(now - self.wire_flash_start, 2.0, 1.0);
+            cam.wire_alpha = (self.wire_hover * 0.55).max(flash).clamp(0.0, 1.0);
 
             // Bake the dense cache when playing with a stale cache (Play press, or re-bake after
             // an edit while playing). `ensure_baked`'s `is_stale` is the real single-fire guard;
