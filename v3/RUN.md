@@ -56,6 +56,7 @@ Per-layer **Distortion** section in the Properties panel (v2 parity + v3 improve
 - **Strength** (0–2) — scales the distortion magnitude (shown when type ≠ None)
 - **Warp Noise** (shown when type ∈ {Domain Warp, Curl, Turbulence}): noise type that drives the warp (Value, Perlin, Simplex, Worley, Voronoi, White). **Critical for SDF shapes** (e.g., cone, box) which have flat underlying fields; choosing a Warp Noise enables domain displacement. For procedural noise layers, using their own field; for SDFs, Warp Noise provides the distortion source.
 - **Distortion Rotation X/Y/Z** (degrees, shown when type ≠ None) — orients the distortion field on any axis. **Swirl** (normally Y-axis twist) and **Polar** (normally radial on XZ plane) can now act on any orientation.
+- **Warp Offset X/Y/Z** (range −10..10, shown when type ∈ {Domain Warp, Curl, Turbulence}) — shifts where the warp field is sampled, scrolling or advecting the distortion field. **Keyframable** (has the ◆ stopwatch). Key use: keyframe **Warp Offset Z** (or X/Y) from 0 to a few units over the loop to make a **Turbulence-distorted flame drift like wind** while looping smoothly. Offset 0 = no change (default; existing scenes unaffected).
 - **Warp Freq** (0.5–10) — domain frequency for **Domain Warp** only
 - **Swirl Amt** (−5..5) — twist amount for **Swirl** only
 - **Octaves** (1–8, shown when type = **Turbulence**) — fractal depth; higher octaves add finer detail to the turbulence field
@@ -159,7 +160,26 @@ Verify the new generation primitives work correctly:
    - Adjust **Octaves** from 1 to 8. Does higher Octaves add progressively finer turbulent detail?
    - Report: Does Turbulence look like flowing turbulence, and does Octaves add visible detail?
 
-9. **Distortion type=None remains a no-op; existing scenes unchanged?**
+9. **Changing Warp Offset scrolls the turbulent detail?**
+   - Create a noise layer with **Simplex** or **Perlin**.
+   - Set distortion **Type** to **Turbulence**, **Strength** = 1.0.
+   - Adjust **Warp Offset Z** (or X/Y) from 0 to 5–10. Does the turbulent field visibly scroll or shift?
+   - Report: Does changing Warp Offset cause the warp field detail to shift/advect?
+
+10. **Keyframing Warp Offset makes the pattern drift (wind motion)?**
+    - Create a **Turbulence**-distorted noise layer (e.g., **Simplex** + Turbulence Type).
+    - Enable animation on **Warp Offset Z** at **Phase** = 0.0 (value = 0.0).
+    - At **Phase** = 1.0, set **Warp Offset Z** to 3–5 (creates a second keyframe).
+    - Press **Play**. The turbulent pattern should smoothly drift over the loop (like wind blowing the flame sideways or along the Z axis).
+    - Report: Does keyframing Warp Offset produce drifting/wind motion? Does the flame remain loopable (with hand-authored seamless wrapping via keyframes)?
+
+11. **Warp Offset = 0 + existing scenes unchanged?**
+    - Verify **Warp Offset X/Y/Z** all default to **0.0** (or very close).
+    - Load or recreate a scene using **Domain Warp**, **Curl**, or **Turbulence** distortion with Warp Offset untouched (left at 0).
+    - Compare the output to before this release. Should look identical.
+    - Report: Does Warp Offset = 0 produce no visible change, and do existing scenes remain unaffected?
+
+12. **Distortion type=None remains a no-op; existing scenes unchanged?**
    - Verify distortion **Type** = **None** is a true no-op (layer appearance unchanged).
    - Load or recreate an older v3 scene. Should look identical (all layers default to type=None).
    - Report: Does type=None remain a true no-op, and do existing scenes remain unaffected?
@@ -172,7 +192,7 @@ Verify the new generation primitives work correctly:
 
 Verify keyframing and animation composition work correctly:
 
-10. **Keyframing a parameter animates smoothly across the loop on Play?**
+13. **Keyframing a parameter animates smoothly across the loop on Play?**
     - Create a layer with any noise type (e.g., **Simplex**).
     - Enable animation on **Opacity** by clicking ◇ (becomes ◆) at **Phase** = 0.0. Keep the value at 1.0.
     - Scrub **Phase** to 0.5. Set **Opacity** to 0.2. A second keyframe should be created.
@@ -180,7 +200,7 @@ Verify keyframing and animation composition work correctly:
     - Press **Play**. The layer's opacity should smoothly interpolate: 1.0 → 0.2 → 1.0 across the loop.
     - Report: Does the opacity animate smoothly and linearly across the keyframes?
 
-11. **Multiple animated parameters compose?**
+14. **Multiple animated parameters compose?**
     - On the same layer, enable animation on **Offset X** (click ◇ at **Phase** = 0.0, value = 0.0).
     - At **Phase** = 0.5, set **Offset X** to 2.0 (creates a second keyframe).
     - At **Phase** = 1.0, set **Offset X** back to 0.0 (creates a third keyframe).
@@ -188,14 +208,14 @@ Verify keyframing and animation composition work correctly:
     - Press **Play**. Both **Offset X** and **Opacity** should animate at the same time.
     - Report: Do both parameters animate simultaneously? Does the layer move and fade as expected?
 
-12. **Scrubbing Phase shows interpolated values live?**
+15. **Scrubbing Phase shows interpolated values live?**
     - With the animated layer from (11) above, pause playback (or start paused).
     - Drag the **Phase** slider from 0.0 to 1.0.
     - Watch the **Offset X** and **Opacity** sliders in the Properties panel.
     - The values should update smoothly as you scrub (not snap). The viewport should also render the interpolated scene in real time.
     - Report: Do the sliders and viewport update smoothly as you scrub Phase?
 
-13. **Evolutions defaults to 0 (off) and re-enabling it works?**
+16. **Evolutions defaults to 0 (off) and re-enabling it works?**
     - Create a new scene or reset the existing one.
     - Check the **Evolutions** slider. It should start at **0.0** (or very close to 0).
     - Add a layer with **Simplex** noise. It should render without the domain-swirl distortion (clean noise field).
@@ -203,13 +223,13 @@ Verify keyframing and animation composition work correctly:
     - Lower **Evolutions** back to 0. The swirl should disappear.
     - Report: Does Evolutions start at 0, and does raising/lowering it toggle the domain swirl on/off?
 
-14. **Un-keyframed scenes look the same as before (aside from Evolutions off)?**
+17. **Un-keyframed scenes look the same as before (aside from Evolutions off)?**
     - Load or recreate a scene using only non-animated parameters and **Evolutions** = 0.
     - Compare the output to a similar scene from an earlier v3 run (without keyframe animation).
     - They should look identical, except that **Evolutions** is no longer auto-applied.
     - Report: Do un-keyframed scenes render the same way, with no unexpected changes (other than Evolutions defaulting to 0)?
 
-15. **Toggling ◆ off removes the animation?**
+18. **Toggling ◆ off removes the animation?**
     - Create an animated layer (e.g., **Opacity** keyframed from 1.0 → 0.2 → 1.0 as in item 10).
     - Press **Play**. Verify the animation works.
     - Click the ◆ toggle next to **Opacity** to turn it off (becomes ◇).
