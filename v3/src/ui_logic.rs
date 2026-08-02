@@ -12,20 +12,31 @@
 use crate::layer::LayerDesc;
 use crate::ramp::{sample_stops, RampStop};
 
-/// Push a default layer and select it. Returns the new `selected` index.
-pub fn add_layer(layers: &mut Vec<LayerDesc>, _selected: usize) -> usize {
-    layers.push(LayerDesc::default());
+/// Push a default layer and select it. Stamps a fresh `id` from `next_id`
+/// (post-incrementing it) so the new layer never collides with an existing
+/// one. Returns the new `selected` index.
+pub fn add_layer(layers: &mut Vec<LayerDesc>, _selected: usize, next_id: &mut u64) -> usize {
+    let id = *next_id;
+    *next_id += 1;
+    layers.push(LayerDesc {
+        id,
+        ..Default::default()
+    });
     layers.len() - 1
 }
 
 /// Clone the selected layer, insert the copy right after it, and select the
-/// copy. Returns the new `selected` index.
-pub fn duplicate_layer(layers: &mut Vec<LayerDesc>, selected: usize) -> usize {
+/// copy. The copy gets a fresh `id` from `next_id` (post-incrementing it) so
+/// it doesn't collide with the original's timeline tracks. Returns the new
+/// `selected` index.
+pub fn duplicate_layer(layers: &mut Vec<LayerDesc>, selected: usize, next_id: &mut u64) -> usize {
     if layers.is_empty() {
         return 0;
     }
     let idx = selected.min(layers.len() - 1);
-    let copy = layers[idx].clone();
+    let mut copy = layers[idx].clone();
+    copy.id = *next_id;
+    *next_id += 1;
     layers.insert(idx + 1, copy);
     idx + 1
 }
@@ -146,14 +157,31 @@ mod tests {
     #[test]
     fn add_then_delete_keeps_selection_valid() {
         let mut ls = vec![LayerDesc::default()];
-        let s = add_layer(&mut ls, 0); // 2 layers, select new
+        let mut next_id = 1;
+        let s = add_layer(&mut ls, 0, &mut next_id); // 2 layers, select new
         assert_eq!(ls.len(), 2);
         assert_eq!(s, 1);
+        assert_eq!(ls[1].id, 1);
+        assert_eq!(next_id, 2);
         let s = delete_layer(&mut ls, s); // back to 1
         assert_eq!(ls.len(), 1);
         assert!(s < ls.len());
         let _s = delete_layer(&mut ls, s); // refuse to empty
         assert_eq!(ls.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_layer_stamps_a_fresh_id() {
+        let mut ls = vec![LayerDesc {
+            id: 5,
+            ..Default::default()
+        }];
+        let mut next_id = 10;
+        let s = duplicate_layer(&mut ls, 0, &mut next_id);
+        assert_eq!(ls.len(), 2);
+        assert_eq!(ls[0].id, 5); // original untouched
+        assert_eq!(ls[s].id, 10); // copy gets a fresh id, not a clone of 5
+        assert_eq!(next_id, 11);
     }
 
     #[test]

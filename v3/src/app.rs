@@ -1,4 +1,5 @@
 use crate::anim;
+use crate::anim_timeline::Timeline;
 use crate::camera::OrbitCamera;
 use crate::gradient::gradient_editor;
 use crate::layer::{self, BlendMode, DistortionType, GenParams, LayerDesc, NoiseType};
@@ -180,11 +181,24 @@ pub struct Vol3dApp {
     /// `self.playing` as of the previous frame. Compared each frame to edge-detect a play→pause
     /// transition (pause snap: force one full-res live regen at `self.phase`, see `ui()`'s tail).
     was_playing: bool,
+
+    // --- timeline (keyframe animation, Task 2 wiring) ---
+    /// Keyframe tracks keyed by `LayerDesc::id`. Empty until Task 4 adds keyframe-editing UI;
+    /// `evaluate_scene_at`/`sync_playhead` are no-ops against an empty timeline.
+    pub timeline: Timeline,
+    /// Next id to stamp onto a newly added/duplicated layer (`ui_logic::add_layer`/
+    /// `duplicate_layer`). Only ever increases — ids are never reused, so a deleted layer's
+    /// timeline tracks can't collide with a later layer.
+    next_layer_id: u64,
 }
 
 impl Default for Vol3dApp {
     fn default() -> Self {
-        let layers = layer::demo_scene();
+        let mut layers = layer::demo_scene();
+        for (i, l) in layers.iter_mut().enumerate() {
+            l.id = i as u64;
+        }
+        let next_layer_id = layers.len() as u64;
         let last_layers_len = layers.len();
         Self {
             layers,
@@ -203,12 +217,14 @@ impl Default for Vol3dApp {
             playing: false,
             phase: 0.0,
             loop_seconds: 4.0,
-            evolutions: 1.0,
+            evolutions: 0.0,
             fps: 30,
             frame_count: 24,
             interp: false,
             cache_stale: true,
             was_playing: false,
+            timeline: Timeline::default(),
+            next_layer_id,
         }
     }
 }
@@ -280,10 +296,31 @@ impl Vol3dApp {
             // not always frame 0. Harmless elsewhere — a live regen from ordinary edits shows
             // whatever `self.phase` currently is (0.0 until the user has ever played/scrubbed).
             anim_phase: self.phase,
-            anim_evolutions: 1.0,
+            anim_evolutions: self.evolutions,
         };
 
         (packed, lut_atlas, lut_rows, gen_params)
+    }
+
+    /// Clone `self.layers` and apply every timeline track at `phase`, without mutating the app's
+    /// actual layer state. Used where a caller wants "what would the scene look like at this
+    /// phase" without committing to it (e.g. a future bake preview) — `sync_playhead` is the
+    /// mutating counterpart that also updates `self.phase` and the live sliders.
+    // ponytail: no call site yet — Task 3's bake path is the intended caller; allow(dead_code)
+    // until then rather than a premature call just to silence the lint.
+    #[allow(dead_code)]
+    fn evaluate_scene_at(&self, phase: f32) -> Vec<LayerDesc> {
+        let mut ls = self.layers.clone();
+        self.timeline.evaluate_into(&mut ls, phase);
+        ls
+    }
+
+    /// Move the playhead to `phase` and re-evaluate every timeline track onto `self.layers` in
+    /// place, so the Properties panel's sliders reflect the animated values at the new phase
+    /// (not just whatever was last authored). A no-op write against an empty timeline.
+    fn sync_playhead(&mut self, phase: f32) {
+        self.phase = phase;
+        self.timeline.evaluate_into(&mut self.layers, phase);
     }
 
     fn layers_panel(&mut self, ui: &mut egui::Ui) {
@@ -326,11 +363,12 @@ impl Vol3dApp {
 
         ui.horizontal(|ui| {
             if ui.button("Add").clicked() {
-                self.selected = add_layer(&mut self.layers, self.selected);
+                self.selected = add_layer(&mut self.layers, self.selected, &mut self.next_layer_id);
                 self.mark_dirty(ui.ctx());
             }
             if ui.button("Duplicate").clicked() {
-                self.selected = duplicate_layer(&mut self.layers, self.selected);
+                self.selected =
+                    duplicate_layer(&mut self.layers, self.selected, &mut self.next_layer_id);
                 self.mark_dirty(ui.ctx());
             }
             let danger = self.theme.palette().danger;
@@ -338,7 +376,9 @@ impl Vol3dApp {
                 .button(egui::RichText::new("Delete").color(danger))
                 .clicked()
             {
+                let removed_id = self.layers[self.selected].id;
                 self.selected = delete_layer(&mut self.layers, self.selected);
+                self.timeline.remove_layer(removed_id);
                 self.mark_dirty(ui.ctx());
             }
             if ui.button("Up").clicked() {
@@ -856,7 +896,15 @@ impl Vol3dApp {
             ui.separator();
 
             ui.label("Phase");
-            ui.add(egui::Slider::new(&mut self.phase, 0.0..=1.0));
+            if ui
+                .add(egui::Slider::new(&mut self.phase, 0.0..=1.0))
+                .changed()
+            {
+                // Scrubbing moves the playhead: re-evaluate every timeline track onto `self.layers`
+                // at the new phase (so the Properties sliders track it) and regen the live volume.
+                self.sync_playhead(self.phase);
+                self.mark_dirty(ui.ctx());
+            }
             ui.separator();
 
             // Glance readout: `frame_count` is the *derived* (fps*loop, clamped) bake input, so
@@ -969,6 +1017,12 @@ impl eframe::App for Vol3dApp {
         if self.playing {
             let dt = ui.ctx().input(|i| i.stable_dt);
             self.phase = anim::advance_phase(self.phase, dt, self.loop_seconds);
+            // Keep the visible sliders tracking playback: re-evaluate every timeline track onto
+            // `self.layers` at the new phase. Skipped when there are no tracks at all, so an
+            // untimelined scene (the common case today) doesn't pay a needless per-frame pass.
+            if !self.timeline.is_empty() {
+                self.timeline.evaluate_into(&mut self.layers, self.phase);
+            }
         }
 
         // Pause snap: the instant playback stops (edge-triggered on `was_playing`, so this fires
@@ -1046,7 +1100,7 @@ impl eframe::App for Vol3dApp {
                 res: self.resolution,
                 layer_count: 0,
                 anim_phase: 0.0,
-                anim_evolutions: 1.0,
+                anim_evolutions: self.evolutions,
             };
             let (layers, lut_atlas, lut_rows, gen_params, bake_key, pending_regen) = if need_bake {
                 let (packed, lut, rows, _) = self.pack_for_gpu();
