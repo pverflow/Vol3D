@@ -69,6 +69,30 @@ impl Track {
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
+
+    /// The value of the key at `phase` (within `1e-4`), if one exists —
+    /// unlike `sample`, this does not interpolate between keys.
+    pub fn value_at_key(&self, phase: f32) -> Option<f32> {
+        self.keys
+            .iter()
+            .find(|k| (k.phase - phase).abs() < 1e-4)
+            .map(|k| k.value)
+    }
+
+    /// Remove the key at `phase` (within `1e-4`), if any. Returns whether a
+    /// key was removed.
+    pub fn remove_at(&mut self, phase: f32) -> bool {
+        if let Some(i) = self
+            .keys
+            .iter()
+            .position(|k| (k.phase - phase).abs() < 1e-4)
+        {
+            self.keys.remove(i);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// All animated `(layer_id, field)` tracks for a scene. `BTreeMap` keeps
@@ -114,6 +138,31 @@ impl Timeline {
     /// Drop every track belonging to a deleted layer (e.g. on layer delete).
     pub fn remove_layer(&mut self, id: u64) {
         self.tracks.retain(|k, _| k.0 != id);
+    }
+
+    /// Remove the keyframe at `phase` from `(id, f)`'s track, dropping the
+    /// track entirely if that was its last key. No-op if there's no track or
+    /// no key at `phase`.
+    pub fn remove_key(&mut self, id: u64, f: ParamField, phase: f32) {
+        let key = (id, f as u8);
+        if let Some(t) = self.tracks.get_mut(&key) {
+            t.remove_at(phase);
+            if t.is_empty() {
+                self.tracks.remove(&key);
+            }
+        }
+    }
+
+    /// Retime the keyframe at `from` to `to` (clamped to `[0, 1]`), preserving
+    /// its value. No-op if there's no track or no key at `from`.
+    pub fn move_key(&mut self, id: u64, f: ParamField, from: f32, to: f32) {
+        let key = (id, f as u8);
+        if let Some(t) = self.tracks.get_mut(&key) {
+            if let Some(v) = t.value_at_key(from) {
+                t.remove_at(from);
+                t.upsert(to.clamp(0.0, 1.0), v);
+            }
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -234,6 +283,39 @@ mod tests {
         b.upsert(3, ParamField::ScaleX, 0.0, 1.0);
 
         assert_eq!(a.hash(), b.hash());
+    }
+
+    #[test]
+    fn track_value_at_key_and_remove_at() {
+        let mut t = Track::default();
+        t.upsert(0.0, 1.0);
+        t.upsert(0.5, 2.0);
+        t.upsert(1.0, 3.0);
+        assert_eq!(t.value_at_key(0.5), Some(2.0));
+        assert!(t.remove_at(0.5));
+        assert_eq!(t.len(), 2);
+        assert_eq!(t.value_at_key(0.5), None);
+        assert!(!t.remove_at(0.9));
+    }
+
+    #[test]
+    fn timeline_move_key_and_remove_key() {
+        let mut tl = Timeline::default();
+        tl.upsert(7, ParamField::Opacity, 0.2, 0.5);
+        tl.upsert(7, ParamField::Opacity, 0.8, 0.9);
+        let h0 = tl.hash();
+
+        tl.move_key(7, ParamField::Opacity, 0.2, 0.4);
+        assert!(tl.is_animated(7, ParamField::Opacity));
+        assert_eq!(tl.track_len(7, ParamField::Opacity), 2);
+        let t = tl.tracks.get(&(7, ParamField::Opacity as u8)).unwrap();
+        assert_eq!(t.value_at_key(0.2), None);
+        assert_eq!(t.value_at_key(0.4), Some(0.5));
+        assert_ne!(h0, tl.hash()); // hash tracks a move
+
+        tl.remove_key(7, ParamField::Opacity, 0.4);
+        tl.remove_key(7, ParamField::Opacity, 0.8);
+        assert!(!tl.is_animated(7, ParamField::Opacity));
     }
 
     #[test]
