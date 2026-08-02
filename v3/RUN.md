@@ -235,11 +235,77 @@ Verify the timeline panel and keyframe editing work correctly:
    - The timeline panel should appear **empty** (no lanes, just the ruler and playhead).
    - Report: Does the timeline scroll when many lanes are present, and does an empty scene show no lanes?
 
-### Next: SP3 (Value Curves & Vertical Editing)
+## Value & Interpolation (SP3)
 
-**SP2 is horizontal-retime only** (drag dots left/right to adjust timing). Coming in **SP3**:
-- **Per-keyframe value editing:** Drag keyframes **vertically** to adjust their values directly on the timeline.
-- **Interpolation curves:** Bezier / hold / step modes per keyframe for non-linear interpolation.
+Edit keyframe values and set per-keyframe **interpolation modes** (how a keyframe eases into the next key).
+
+### Per-Keyframe Value & Interpolation Editing
+
+When you **select a keyframe** (click its dot on the timeline):
+- A **value field** appears next to the keyframe controls, allowing you to edit the selected keyframe's value directly.
+- **Editing the value updates playback immediately** — the viewport re-renders with the new value without requiring a full bake.
+- Three **interpolation buttons** appear next to the 🗑 (delete) button:
+  - **Lin** (default) — constant-slope linear ramp from this key to the next. Smooth constant-speed transition.
+  - **Hold** — the value holds constant (steps) until the next keyframe; no ramp, just an abrupt change at the next key. Useful for parameter holds or discrete state changes.
+  - **Ease** — smooth in/out curve (smoothstep-like easing) from this key to the next. Visually smoother than linear; eases both entry and exit.
+
+### Interpolation Persistence
+
+- **Interpolation is preserved when you retime a key** (SP2 drag). Move a keyframe left/right on the timeline — its interpolation mode stays the same.
+- **Pre-SP3 saved scenes load with all keys Linear.** Older scene files default all keyframes to Linear interpolation, and they play identically to before SP3 was added (identity case).
+
+### Run paths
+
+**Native:**
+```bash
+cd v3 && cargo run
+```
+
+**Web (WebGPU):**
+```bash
+cd v3 && trunk serve        # (cargo install trunk, once)
+```
+
+### What to report back
+
+Verify value editing and interpolation modes work correctly:
+
+1. **Hold makes a param step (no ramp) until the next key?**
+   - Create a layer and keyframe **Opacity** at Phase 0.0 (value 1.0), Phase 0.5 (value 0.2), Phase 1.0 (value 1.0).
+   - Click the keyframe dot at Phase 0.5 to select it.
+   - Click the **Hold** interpolation button for this keyframe.
+   - Press **Play**. The opacity should hold at 1.0 until Phase 0.5, then **instantly jump** to 0.2 and hold until Phase 1.0 (no ramp between keys).
+   - Report: Does Hold create a step (instant change) with no ramp?
+
+2. **Ease is visibly smoother than Lin?**
+   - On the same animated **Opacity** layer, click the keyframe at Phase 0.5 (currently set to Hold).
+   - Click the **Ease** interpolation button.
+   - Press **Play**. Compare the fade-in (0.0 → 0.5) to before: it should ease smoothly into 0.2, not linear.
+   - Report: Does Ease produce a visibly smoother curve compared to Lin?
+
+3. **Editing the selected key's value from the timeline updates playback?**
+   - With the **Opacity** keyframe at Phase 0.5 still selected, look for the **value field** near the timeline controls.
+   - Change the value in that field from 0.2 to 0.5 (or any other value).
+   - The viewport should **immediately re-render** with the new interpolated value without requiring a full bake.
+   - Report: Does editing the value field update playback in real time?
+
+4. **Retiming a key (drag) keeps its interpolation?**
+   - With the keyframe at Phase 0.5 set to **Ease** interpolation, drag it to Phase 0.3 on the timeline.
+   - The interpolation should remain **Ease** (not revert to Lin).
+   - Press **Play** to verify the fade-in now reaches the low point at 0.3 instead of 0.5, still with the smooth Ease curve.
+   - Report: Does dragging a keyframe to a new position preserve its interpolation mode?
+
+5. **A pre-SP3 saved scene loads + plays the same (all Linear)?**
+   - Load a scene saved **before SP3 was added** (if available), or manually create a scene and save it, then simulate loading from an older version.
+   - All keyframes should default to **Linear** interpolation.
+   - Press **Play**. The playback should look identical to what it was before SP3 (smooth linear ramps between all keyframes).
+   - Report: Do older saved scenes load with all keys Linear and play the same as before?
+
+### Next: SP3.5/SP4 (Bezier Tangent Handles & Value-vs-Time Graph)
+
+**SP3 offers basic interpolation modes** (Lin / Hold / Ease). Coming in **SP3.5/SP4**:
+- **Full Bezier tangent handles:** Per-keyframe in/out tangent control for custom easing curves.
+- **Value-vs-time graph panel:** Visual representation of the parameter curve over the timeline, with direct curve editing.
 
 ### Deferred
 
