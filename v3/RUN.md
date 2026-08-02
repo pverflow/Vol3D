@@ -393,21 +393,66 @@ Verify the new Loop Offset toggle enables seamless loopable distortion:
    - Toggle back to the original state; the distortion should restore to its previous appearance.
    - Report: Does toggling Loop Offset work without errors or visual breakage?
 
+### Scene Persistence verification
+
+Verify the save/reset and auto-load mechanism work correctly:
+
+1. **Build a scene → Save as default → reload/relaunch → scene comes back?**
+   - Create a scene with multiple layers (e.g., a Simplex layer + a Worley layer with different colors).
+   - Adjust the box dimensions (e.g., 64 × 64 × 256).
+   - Add a keyframe or two (e.g., animate Opacity on one layer).
+   - Adjust the camera (pan/zoom).
+   - Click **💾 Save as default**.
+   - **Web:** Reload the page (F5 or browser refresh).
+   - **Native:** Close the app (exit `cargo run`) and relaunch it.
+   - Your scene should come back with all layers, box dims, colors, keyframes, and camera position intact.
+   - Report: Does your scene reappear after reload/relaunch with layers, dims, colors, keyframes, and camera unchanged?
+
+2. **Reset reverts to the demo?**
+   - Click **↺ Reset**.
+   - The scene should change to the built-in demo (typically one Simplex layer, default [128, 128, 128] box, no keyframes, default camera).
+   - Report: Does Reset revert to the demo scene?
+
+3. **First run (no saved data) shows the demo?**
+   - **Web:** Open the app in a **new private/incognito browser tab** (no localStorage history).
+   - **Native:** Delete `~/.vol3d/scene.json` if it exists, then relaunch the app.
+   - The app should start with the built-in demo scene (no crash, no blank canvas).
+   - Report: Does the first run (no saved data) load the demo scene cleanly?
+
+4. **No crash after Save, then Reset, then editing?**
+   - Build a scene and click **💾 Save as default**.
+   - Click **↺ Reset** to revert to the demo.
+   - Edit the demo scene (add a layer, change a color, adjust box dims).
+   - No errors or crashes should occur.
+   - Report: Can you safely switch between your saved scene and the demo without crashing?
+
 ## Known this cycle
 
 - **Worley/Voronoi GPU hash stability:** Worley and Voronoi use a fast hash (`hash13`) for cell seeding; results are consistent per voxel per frame, but the hash is not bit-exact across platforms. Expect minor visual differences between native and web.
 - **White noise varies frame-to-frame:** White noise is re-hashed on each frame; to use it in a static (non-animated) scene, set **Evolutions** to 0. For animation, White will look like TV static transitioning over time (expected behavior).
 
-## Deferred (not in this cycle)
+## Scene Persistence
 
-**Non-cubic volume box** and **Distortion improvements** (Domain Warp, Curl, Swirl, Polar, Turbulence + Warp Noise + Rotation) are now **complete**.
+Save your current scene (layers, box dimensions, colors, keyframes, and camera state) as the **default startup scene**. Every time you launch the app, your saved scene auto-loads.
 
-Still to come:
-- **Export:** Save/load preset layers, scene bundles, and animated sequences.
-- **Presets:** Factory library of named FBM/Worley/Voronoi combinations, preset shape rigs.
-- **Feather & remap curve UI:** Spline-based in/out remapping (beyond hard min/max sliders); feather/falloff for SDF blend softness.
-- **Cutoff & contrast:** Hard clip and contrast scaling in the layer pipeline.
-- **Slice & projection views:** Multi-plane slice views and 2D projection UI for easier inspection of volumetric data.
+### Save & Reset
+
+Two top-bar buttons:
+- **💾 Save as default** — Saves your current scene state (all layers, box X/Y/Z, layer colors, keyframes on the timeline, camera position/zoom) as the startup default. On the next reload (web) or relaunch (native), the app opens with your saved scene.
+- **↺ Reset** — Reverts to the **built-in demo scene** (one Simplex layer, default box dimensions, no keyframes, default camera).
+
+### Auto-Load on Startup
+
+A saved scene loads automatically when you start the app:
+- **Web (localStorage):** The scene is stored in your browser's **localStorage** for the site. Reload the page → your scene comes back.
+- **Native (file):** The scene is saved to **`~/.vol3d/scene.json`**. Relaunch the app → your scene comes back.
+
+**Fallback:** If the saved scene file is corrupt, missing, or parsing fails, the app falls back to the **built-in demo scene** (no crash; you're never left with a blank canvas).
+
+### Notes
+
+- **Single default slot:** You can only save one default scene at a time. Named presets and import/export are planned for a later cycle.
+- **What changes in a saved scene:** Layers (all properties), box dimensions, keyframes and animation timeline, camera position and zoom. UI state (panel width, scroll position) resets on each load.
 
 ### Run paths
 
