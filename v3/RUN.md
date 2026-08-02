@@ -63,6 +63,50 @@ Per-layer **Distortion** section in the Properties panel (v2 parity + v3 improve
 Each distortion type warps the noise layer before rendering, enabling domain-based visual effects beyond simple coordinate transforms. The **Warp Noise** field enables distortion to work on SDF shapes (previously had no effect).
 
 
+## Keyframe Animation (SP1)
+
+Animate any numeric parameter across the timeline with frame-accurate keyframing.
+
+### Basic workflow
+
+Every numeric parameter in the Properties panel now has a **stopwatch toggle** beside it:
+- **◇** (off): parameter is not animated; static value used everywhere
+- **◆** (on): parameter is animated; a small number shows how many keyframes are set
+
+To animate a parameter:
+1. Click **◇** to enable animation (becomes **◆**); a keyframe is immediately created at the current **Phase** (playhead position), using the current value
+2. Move the **Phase** slider to a different position in the loop (0–1)
+3. Change the parameter value in the slider/input
+4. A new keyframe is automatically added at this Phase with the new value
+5. Repeat steps 2–3 to add more keyframes across the timeline
+6. Press **Play** to see the parameter interpolate (linear) smoothly across all keyframes
+
+**Scrubbing the Phase slider** shows the interpolated state live — all animated parameters update their values, and the viewport renders the interpolated scene in real time.
+
+### Evolutions default change
+
+**Evolutions** now defaults to **0 (off)**. In earlier v3 cycles, Evolutions drove a built-in domain-swirl distortion on every noise layer; this is now **opt-in**. You can:
+- Raise the **Evolutions** slider to re-enable the domain swirl
+- Or animate any parameters instead (or both — multiple animations compose)
+- Un-animated scenes look the same as before, aside from no longer applying the default swirl
+
+### Composing animations
+
+Multiple animated parameters compose naturally:
+- Animate **Opacity** and **Offset** on the same layer → both interpolate together across the loop
+- Animate parameters on different layers → each animates independently, and their blended output is rendered
+- Animate the same **Noise** and **Distortion** parameters → both affect the layer's final appearance
+
+### Deferred
+
+This is **SP1 (foundation)** of a 4-part timeline roadmap. Still coming:
+- **SP2:** Visual track lanes — drag keyframe dots directly on the timeline; see parameter curves over time
+- **SP3:** Value curves — edit interpolation mode per keyframe (Bezier, hold, step)
+- **SP4:** Color / enum tracks — animate gradient colors and mode selectors
+
+Export and presets are also in the pipeline.
+
+
 ## What to report back
 
 Verify the new generation primitives work correctly:
@@ -123,6 +167,55 @@ Verify the new generation primitives work correctly:
 **Errors:**
 - Paste any **egui, wgpu, or WGSL compilation error** from the native terminal or web console.
 - Report any **visual artifacts** (z-fighting, NaN values, clipping) in the viewport.
+
+### Keyframe Animation (SP1) verification
+
+Verify keyframing and animation composition work correctly:
+
+10. **Keyframing a parameter animates smoothly across the loop on Play?**
+    - Create a layer with any noise type (e.g., **Simplex**).
+    - Enable animation on **Opacity** by clicking ◇ (becomes ◆) at **Phase** = 0.0. Keep the value at 1.0.
+    - Scrub **Phase** to 0.5. Set **Opacity** to 0.2. A second keyframe should be created.
+    - Scrub to 1.0 and set **Opacity** back to 1.0. A third keyframe should be created.
+    - Press **Play**. The layer's opacity should smoothly interpolate: 1.0 → 0.2 → 1.0 across the loop.
+    - Report: Does the opacity animate smoothly and linearly across the keyframes?
+
+11. **Multiple animated parameters compose?**
+    - On the same layer, enable animation on **Offset X** (click ◇ at **Phase** = 0.0, value = 0.0).
+    - At **Phase** = 0.5, set **Offset X** to 2.0 (creates a second keyframe).
+    - At **Phase** = 1.0, set **Offset X** back to 0.0 (creates a third keyframe).
+    - Also enable animation on **Opacity**: at Phase = 0.0, value = 1.0; at Phase = 0.5, value = 0.2; at Phase = 1.0, value = 1.0.
+    - Press **Play**. Both **Offset X** and **Opacity** should animate at the same time.
+    - Report: Do both parameters animate simultaneously? Does the layer move and fade as expected?
+
+12. **Scrubbing Phase shows interpolated values live?**
+    - With the animated layer from (11) above, pause playback (or start paused).
+    - Drag the **Phase** slider from 0.0 to 1.0.
+    - Watch the **Offset X** and **Opacity** sliders in the Properties panel.
+    - The values should update smoothly as you scrub (not snap). The viewport should also render the interpolated scene in real time.
+    - Report: Do the sliders and viewport update smoothly as you scrub Phase?
+
+13. **Evolutions defaults to 0 (off) and re-enabling it works?**
+    - Create a new scene or reset the existing one.
+    - Check the **Evolutions** slider. It should start at **0.0** (or very close to 0).
+    - Add a layer with **Simplex** noise. It should render without the domain-swirl distortion (clean noise field).
+    - Raise **Evolutions** to 0.5 or higher. The noise field should now show the built-in swirl (visible distortion / warping).
+    - Lower **Evolutions** back to 0. The swirl should disappear.
+    - Report: Does Evolutions start at 0, and does raising/lowering it toggle the domain swirl on/off?
+
+14. **Un-keyframed scenes look the same as before (aside from Evolutions off)?**
+    - Load or recreate a scene using only non-animated parameters and **Evolutions** = 0.
+    - Compare the output to a similar scene from an earlier v3 run (without keyframe animation).
+    - They should look identical, except that **Evolutions** is no longer auto-applied.
+    - Report: Do un-keyframed scenes render the same way, with no unexpected changes (other than Evolutions defaulting to 0)?
+
+15. **Toggling ◆ off removes the animation?**
+    - Create an animated layer (e.g., **Opacity** keyframed from 1.0 → 0.2 → 1.0 as in item 10).
+    - Press **Play**. Verify the animation works.
+    - Click the ◆ toggle next to **Opacity** to turn it off (becomes ◇).
+    - Press **Play** again. The layer should now have a constant opacity (the slider's current value) and not animate.
+    - Click ◆ again to re-enable. The animation should resume.
+    - Report: Does toggling ◆ off freeze the animation and toggle ◇ back on resume it?
 
 ## Known this cycle
 
