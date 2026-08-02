@@ -1,5 +1,5 @@
 use crate::anim;
-use crate::anim_timeline::Timeline;
+use crate::anim_timeline::{Interp, Timeline};
 use crate::camera::OrbitCamera;
 use crate::gradient::gradient_editor;
 use crate::layer::{self, BlendMode, DistortionType, GenParams, LayerDesc, NoiseType, ParamField};
@@ -1382,10 +1382,11 @@ impl Vol3dApp {
             ((x - r.left() - LABEL_W) / (r.width() - LABEL_W)).clamp(0.0, 1.0)
         };
 
+        let sel = self.selected_key;
         ui.horizontal(|ui| {
             ui.weak("Timeline");
             if ui
-                .add_enabled(self.selected_key.is_some(), egui::Button::new("🗑").small())
+                .add_enabled(sel.is_some(), egui::Button::new("🗑").small())
                 .on_hover_text("Delete selected keyframe (Del/Backspace)")
                 .clicked()
             {
@@ -1394,6 +1395,33 @@ impl Vol3dApp {
                     self.selected_key = None;
                     self.dragging_key = None;
                     self.mark_dirty(ui.ctx());
+                }
+            }
+
+            // Value + interpolation editor for the selected key. `sel` was read out of
+            // `self.selected_key` (Copy) above, so this can freely borrow `&mut
+            // self.timeline`/`&mut self` below without aliasing the selection field.
+            if let Some((id, field, phase)) = sel {
+                let mut v = self.timeline.key_value(id, field, phase).unwrap_or(0.0);
+                ui.label("val");
+                if ui.add(egui::DragValue::new(&mut v).speed(0.01)).changed() {
+                    self.timeline.set_key_value(id, field, phase, v);
+                    self.mark_dirty(ui.ctx());
+                }
+
+                let cur = self
+                    .timeline
+                    .key_interp(id, field, phase)
+                    .unwrap_or(Interp::Linear);
+                for (label, mode) in [
+                    ("Lin", Interp::Linear),
+                    ("Hold", Interp::Hold),
+                    ("Ease", Interp::Ease),
+                ] {
+                    if ui.selectable_label(cur == mode, label).clicked() && cur != mode {
+                        self.timeline.set_key_interp(id, field, phase, mode);
+                        self.mark_dirty(ui.ctx());
+                    }
                 }
             }
         });
