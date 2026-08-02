@@ -182,6 +182,44 @@ This is **SP1 (foundation)** of a 4-part timeline roadmap. Still coming:
 Export and presets are also in the pipeline.
 
 
+## HDR Color
+
+The volume is now **float (RGBA16F)**, enabling colors and emission to exceed 1 for bright, glowing emissive content without clipping to flat white.
+
+### Emission
+
+Each layer now has an **Emission** slider (0–16) in the Properties panel, near the Color controls, and is **keyframable**:
+- **Emission** = 1: layer color used as-is (baseline).
+- **Emission** > 1: layer scales bright (crank it for glowing fire, bright highlights).
+- **Emission** = 0: fully dims the layer.
+- A fire layer with **Emission** = 8–16 produces bright, emissive color that does not clip to flat white.
+
+### Exposure
+
+A global **Exposure** control (0.1–4) in the top bar adjusts render brightness:
+- Applied with a **filmic ACES tonemap**, so bright values roll off smoothly instead of blowing out.
+- Tune **Exposure** to brighten or darken the entire render while maintaining natural highlight rolloff.
+- Default: 1.0 (neutral; no change from before).
+
+### Notes
+
+- **Playback cache:** Now fits ~**half as many full-res frames** (RGBA16F is 2× the bytes per voxel). The VRAM readout shows larger MB/frame. Playback still works smoothly; cache auto-reduces all dimensions to stay within the 4 GB budget.
+- **Existing scenes look slightly more filmic:** The default ACES tonemap gives all renders a subtle filmic character, even at **Exposure** = 1. Tune **Exposure** to taste (0.8–1.2 is often natural; higher for drama, lower for subdued).
+- **Pre-HDR saved scenes still load:** Scenes saved before HDR support load cleanly with **Emission** = 1.0 (layer colors unchanged) and **Exposure** = 1.0 (default tonemap applied).
+
+### Run paths
+
+**Native:**
+```bash
+cd v3 && cargo run
+```
+
+**Web (WebGPU):**
+```bash
+cd v3 && trunk serve        # (cargo install trunk, once)
+```
+
+
 ## What to report back
 
 ### Non-Cubic Volume Box
@@ -426,10 +464,56 @@ Verify the save/reset and auto-load mechanism work correctly:
    - No errors or crashes should occur.
    - Report: Can you safely switch between your saved scene and the demo without crashing?
 
+### HDR Color
+
+Verify HDR color (float RGBA16F, Emission, Exposure, ACES tonemap) works correctly:
+
+1. **A fire layer with high Emission looks bright/glowing and rolls off (no flat-white clip)?**
+   - Create a layer with any noise type (e.g., **Simplex**).
+   - Set the **Color** to a warm orange or red (fire-like).
+   - Raise the **Emission** slider to 12–16.
+   - The layer should appear bright and emissive (glowing fire look), with smooth rolloff at the bright edges — **no flat white clipping**.
+   - Report: Does the bright fire look glowing and smooth at the edges?
+
+2. **Exposure brightens/darkens the whole render?**
+   - With the high-Emission fire layer visible, adjust the **Exposure** slider in the top bar.
+   - Raise **Exposure** to 2.0+. The entire render should brighten (including the fire).
+   - Lower **Exposure** to 0.5. The entire render should darken.
+   - Return to **Exposure** = 1.0 (default).
+   - Report: Does Exposure brighten/darken the entire scene?
+
+3. **A plain scene (normal Emission = 1) looks ~like before (slightly filmic)?**
+   - Create or load a scene with normal layer Emission (1.0, the default).
+   - Set **Exposure** = 1.0.
+   - Compare the render to a similar scene from before this release. Should look very similar, with a subtle filmic tonemap applied (not flat/washed).
+   - If you prefer a brighter or darker baseline, adjust **Exposure** slightly (0.8–1.2 is typical).
+   - Report: Does a normal scene look ~like before, with a subtle filmic character?
+
+4. **Playback still works; VRAM readout shows larger MB/frame?**
+   - Create a scene with multiple layers and press **Bake**.
+   - Press **Play**. Animation should play smoothly without stutters.
+   - Watch the **VRAM readout** in the UI (displayed as `box X×Y×Z — MB/frame`). It should show a larger value than before (RGBA16F = 2× the bytes).
+   - Example: a 128×128×128 box that was 4 MB/frame before is now ~8 MB/frame. Playback cache auto-reduces all axes to stay within the 4 GB budget.
+   - Report: Does playback run smoothly, and does the readout show larger MB/frame values?
+
+5. **A pre-HDR saved scene (from the previous build) still loads?**
+   - From the previous build, create and save a scene using **💾 Save as default**.
+   - Update to this build (or simulate by loading an old `scene.json`).
+   - The scene should load cleanly with **Emission** = 1.0 on all layers and **Exposure** = 1.0 applied.
+   - The scene's appearance should match (or be very close to) what it was before, with the filmic tonemap applied.
+   - Report: Does a pre-HDR saved scene load without error and look correct?
+
 ## Known this cycle
 
 - **Worley/Voronoi GPU hash stability:** Worley and Voronoi use a fast hash (`hash13`) for cell seeding; results are consistent per voxel per frame, but the hash is not bit-exact across platforms. Expect minor visual differences between native and web.
 - **White noise varies frame-to-frame:** White noise is re-hashed on each frame; to use it in a static (non-animated) scene, set **Evolutions** to 0. For animation, White will look like TV static transitioning over time (expected behavior).
+
+## HDR Color Roadmap
+
+Remaining work for the HDR color cycle (SP2+):
+- **SP2:** Visual timeline lanes — drag keyframe dots directly on the timeline; see parameter curves over time.
+- **Named presets & import/export:** Save/load multiple custom scenes and settings.
+- **HDR export:** Save renders to high-bit-depth formats (e.g., EXR, TIFF 16-bit) for post-production.
 
 ## Scene Persistence
 
