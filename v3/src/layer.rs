@@ -24,7 +24,7 @@ use crate::ramp::ColorRamp;
 /// v2 parity port — see v2's `src/core/sdfField.ts` /
 /// `src/shaders/noise/sdf_{box,cone,capsule,cylinder,plume}.glsl`).
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NoiseType {
     Value = 0,
     Perlin = 1,
@@ -62,7 +62,7 @@ impl NoiseType {
 /// Compositing mode a layer blends into the accumulated volume with. Order
 /// matches v2's `BLEND_MODE_INDEX` (`src/core/renderer/VolumeGenerator.ts`).
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlendMode {
     Normal = 0,
     Add = 1,
@@ -80,7 +80,7 @@ pub enum BlendMode {
 /// (cycle 4 distortion-improvements task 1) is new: a multi-octave warp
 /// accumulated from `warp_field`, not a v2 port.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DistortionType {
     None = 0,
     DomainWarp = 1,
@@ -195,7 +195,7 @@ pub struct GpuLayer {
 /// Ergonomic Rust-side layer description (ported field-for-field from v2's
 /// `Layer`/`NoiseConfig`/`RemapConfig`). `rotation_deg` is Euler XYZ in
 /// **degrees** (as v2 stores it); `pack_layer` converts to radians.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LayerDesc {
     /// Stable identity for this layer, independent of its position in the
     /// `Vec<LayerDesc>` (which reorders on drag/delete). Used by the
@@ -310,7 +310,7 @@ impl Default for LayerDesc {
 /// so a `(layer_id, field as u8)` pair is a cheap, `Copy`, `BTreeMap`-orderable
 /// track key.
 #[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ParamField {
     Opacity,
     ScaleX,

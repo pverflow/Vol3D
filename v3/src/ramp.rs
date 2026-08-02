@@ -6,14 +6,14 @@
 // here (no separate per-layer gate uniform in the v3 atlas path) a
 // disabled ramp bakes straight to a transparent row, same as an empty one.
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RampStop {
     pub t: f32,
     pub color: [u8; 3],
     pub alpha: u8,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ColorRamp {
     pub enabled: bool,
     pub stops: Vec<RampStop>,

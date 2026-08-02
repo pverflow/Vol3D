@@ -10,7 +10,7 @@ use crate::layer::{LayerDesc, ParamField};
 use std::collections::BTreeMap;
 
 /// A single animated value at a point in the loop's `[0, 1)` phase.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Keyframe {
     pub phase: f32,
     pub value: f32,
@@ -79,6 +79,16 @@ pub struct Timeline {
     tracks: BTreeMap<(u64, u8), Track>,
 }
 
+/// One track's worth of keyframes in a flat, serde-friendly shape — the
+/// persistence-file form of a `Timeline`'s otherwise-private
+/// `BTreeMap<(u64, u8), Track>` (see `SceneFile::tracks`, `persistence.rs`).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TrackEntry {
+    pub layer_id: u64,
+    pub field: ParamField,
+    pub keys: Vec<Keyframe>,
+}
+
 impl Timeline {
     pub fn upsert(&mut self, id: u64, f: ParamField, phase: f32, value: f32) {
         self.tracks
@@ -140,6 +150,35 @@ impl Timeline {
         }
         fnv1a(&bytes)
     }
+
+    /// Flatten every track into serde-friendly entries (see `TrackEntry`),
+    /// decoding each `u8` field key back into a `ParamField`. Entries whose
+    /// `u8` doesn't decode (stale/corrupt data) are skipped, same as
+    /// `evaluate_into`.
+    pub fn to_entries(&self) -> Vec<TrackEntry> {
+        self.tracks
+            .iter()
+            .filter_map(|(&(layer_id, field_u8), track)| {
+                let field = ParamField::from_u8(field_u8)?;
+                Some(TrackEntry {
+                    layer_id,
+                    field,
+                    keys: track.keys.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Rebuild a `Timeline` from flattened entries (the inverse of
+    /// `to_entries`), keying each into a fresh `BTreeMap` by `(layer_id, field
+    /// as u8)`.
+    pub fn from_entries(entries: Vec<TrackEntry>) -> Timeline {
+        let mut tracks = BTreeMap::new();
+        for e in entries {
+            tracks.insert((e.layer_id, e.field as u8), Track { keys: e.keys });
+        }
+        Timeline { tracks }
+    }
 }
 
 #[cfg(test)]
@@ -195,5 +234,15 @@ mod tests {
         b.upsert(3, ParamField::ScaleX, 0.0, 1.0);
 
         assert_eq!(a.hash(), b.hash());
+    }
+
+    #[test]
+    fn timeline_entries_roundtrip() {
+        let mut tl = Timeline::default();
+        tl.upsert(7, ParamField::Opacity, 0.0, 0.2);
+        tl.upsert(7, ParamField::Opacity, 1.0, 0.8);
+        tl.upsert(9, ParamField::ScaleX, 0.5, 3.0);
+        let back = Timeline::from_entries(tl.to_entries());
+        assert_eq!(back.hash(), tl.hash());
     }
 }

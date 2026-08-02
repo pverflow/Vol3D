@@ -4,6 +4,7 @@ mod app;
 mod camera;
 mod gradient;
 mod layer;
+mod persistence;
 mod ramp;
 mod render;
 mod theme;
