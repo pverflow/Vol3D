@@ -640,7 +640,10 @@ impl Vol3dApp {
                             }
                             ui.end_row();
 
-                            if self.layers[i].distortion_type == DistortionType::DomainWarp {
+                            if matches!(
+                                self.layers[i].distortion_type,
+                                DistortionType::DomainWarp | DistortionType::Turbulence
+                            ) {
                                 ui.label("Warp Freq");
                                 if ui
                                     .add(egui::Slider::new(
