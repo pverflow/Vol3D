@@ -202,6 +202,11 @@ pub struct Vol3dApp {
     /// Active UI theme (`theme::apply` runs this against `egui::Visuals` at startup, and again
     /// from the top bar's toggle button on click). Defaults to `Dark`.
     pub theme: Theme,
+    /// Global HDR exposure multiplier (Task 3 of the hdr-color cycle): scales the raymarch's
+    /// accumulated linear color before the ACES tonemap. `1.0` = unity gain — a render param the
+    /// shader reads live every frame (continuous repaint already covers it), not a bake input, so
+    /// editing it doesn't touch `cache_stale`/`mark_dirty`.
+    pub exposure: f32,
 
     // --- cycle-4 animation state (Task 4) ---
     /// Playback toggle. While `true` the phase clock advances each frame and the raymarch
@@ -278,6 +283,7 @@ impl Default for Vol3dApp {
             last_layers_len,
             frame_ms_ema: 0.0,
             theme: Theme::default(),
+            exposure: 1.0,
             playing: false,
             phase: 0.0,
             loop_seconds: 4.0,
@@ -355,6 +361,7 @@ impl Vol3dApp {
                 pitch: self.cam.pitch,
                 distance: self.cam.distance,
             },
+            exposure: self.exposure,
         }
     }
 
@@ -381,6 +388,7 @@ impl Vol3dApp {
         self.cam.yaw = s.camera.yaw;
         self.cam.pitch = s.camera.pitch;
         self.cam.distance = s.camera.distance;
+        self.exposure = s.exposure;
         // Never reuse an id: floor next_layer_id at one past the highest id actually in the
         // loaded layers, in case a hand-edited/older save's `next_layer_id` undershoots it.
         self.next_layer_id = s.next_layer_id.max(max_existing_id);
@@ -1392,6 +1400,11 @@ impl eframe::App for Vol3dApp {
                     self.mark_dirty(ui.ctx());
                 }
 
+                ui.separator();
+                // HDR exposure (Task 3): a render param the raymarch reads live each frame, not a
+                // bake input — no `mark_dirty`/`cache_stale` needed, continuous repaint covers it.
+                ui.add(egui::Slider::new(&mut self.exposure, 0.1..=4.0).text("Exposure"));
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let toggle_label = match self.theme {
                         Theme::Dark => "☀",
@@ -1426,6 +1439,7 @@ impl eframe::App for Vol3dApp {
                             interp: false,
                             tracks: Vec::new(),
                             camera: persistence::CamState::default(),
+                            exposure: 1.0,
                         });
                     }
                     if ui.button("💾 Save as default").clicked() {
@@ -1546,6 +1560,7 @@ impl eframe::App for Vol3dApp {
             let now = ui.ctx().input(|i| i.time);
             let flash = anim::flash_envelope(now - self.wire_flash_start, 2.0, 1.0);
             cam.wire_alpha = (self.wire_hover * 0.55).max(flash).clamp(0.0, 1.0);
+            cam.exposure = self.exposure;
 
             // Bake the dense cache when playing with a stale cache (Play press, or re-bake after
             // an edit while playing). `ensure_baked`'s `is_stale` is the real single-fire guard;
@@ -1695,6 +1710,7 @@ mod tests {
                 pitch: -0.17,
                 distance: 5.5,
             },
+            exposure: 1.75,
         };
 
         let js = serde_json::to_string(&s).unwrap();
@@ -1712,6 +1728,7 @@ mod tests {
         assert_eq!(back.camera.yaw, s.camera.yaw);
         assert_eq!(back.camera.pitch, s.camera.pitch);
         assert_eq!(back.camera.distance, s.camera.distance);
+        assert_eq!(back.exposure, s.exposure);
         assert!(!back.tracks.is_empty());
         assert_eq!(Timeline::from_entries(back.tracks).hash(), tracks_hash);
     }
@@ -1788,6 +1805,7 @@ mod tests {
         app.cam.yaw = 1.23;
         app.cam.pitch = -0.55;
         app.cam.distance = 9.0;
+        app.exposure = 2.25;
 
         let scene = app.to_scene();
         let mut b = Vol3dApp::default();
@@ -1803,6 +1821,7 @@ mod tests {
         assert_eq!(b.cam.yaw, app.cam.yaw);
         assert_eq!(b.cam.pitch, app.cam.pitch);
         assert_eq!(b.cam.distance, app.cam.distance);
+        assert_eq!(b.exposure, app.exposure);
         assert_eq!(b.layers.len(), app.layers.len());
     }
 }

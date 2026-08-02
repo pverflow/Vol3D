@@ -10,6 +10,7 @@ struct Cam {
   frac: f32,
   box_aspect_x: f32, box_aspect_y: f32, box_aspect_z: f32,
   wire_alpha: f32,
+  exposure: f32,
 };
 @group(0) @binding(2) var<uniform> C: Cam;
 // Occupancy overlay (Task 1): r32float max-density per 8³ macrocell. Non-filterable, so a
@@ -25,6 +26,13 @@ struct Cam {
 
 // A macrocell whose max density is below this contributes nothing worth marching — skip it.
 const SKIP_THRESHOLD: f32 = 2.0 / 255.0;
+
+// ACES filmic tonemap (Narkowicz fit): rolls HDR color off toward white instead of hard-clipping,
+// so over-bright accumulation stays a highlight rather than banding/clipping to solid color.
+fn aces(x: vec3<f32>) -> vec3<f32> {
+  return clamp((x * (2.51 * x + vec3<f32>(0.03))) / (x * (2.43 * x + vec3<f32>(0.59)) + vec3<f32>(0.14)),
+               vec3<f32>(0.0), vec3<f32>(1.0));
+}
 
 // Ray/box slab test in [0,1]³ space. Returns (tnear, tfar) along `rd` from `ro`.
 // Used for both the outer volume box and the per-macrocell empty-space jump.
@@ -119,7 +127,7 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     if (trans < 0.01) { break; }
     t = t + dt;
   }
-  var col = pow(acc, vec3<f32>(0.4545));
+  var col = pow(aces(acc * C.exposure), vec3<f32>(0.4545));
   if (C.wire_alpha > 0.0) {
     let asp = vec3<f32>(C.box_aspect_x, C.box_aspect_y, C.box_aspect_z);
     var corners = array<vec3<f32>, 8>(

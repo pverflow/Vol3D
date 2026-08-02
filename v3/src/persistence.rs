@@ -50,6 +50,11 @@ pub struct SceneFile {
     pub interp: bool,
     pub tracks: Vec<TrackEntry>,
     pub camera: CamState,
+    /// Global HDR exposure multiplier (Task 3 of the hdr-color cycle) — applied in the raymarch
+    /// before the ACES tonemap. `1.0` = unity gain; missing from older/hand-edited JSON falls
+    /// back to this via the struct's `#[serde(default)]`, so old saves still load (and render at
+    /// the same exposure they always implicitly had).
+    pub exposure: f32,
 }
 
 impl Default for SceneFile {
@@ -66,6 +71,7 @@ impl Default for SceneFile {
             interp: false,
             tracks: Vec::new(),
             camera: CamState::default(),
+            exposure: 1.0,
         }
     }
 }
@@ -141,6 +147,7 @@ mod tests {
                 pitch: 0.5,
                 distance: 3.0,
             },
+            exposure: 1.0,
         };
         let js = serde_json::to_string(&s).unwrap();
         let back: SceneFile = serde_json::from_str(&js).unwrap();
@@ -151,5 +158,15 @@ mod tests {
     #[test]
     fn garbage_json_is_none_not_panic() {
         assert!(serde_json::from_str::<SceneFile>("{ not valid").is_err());
+    }
+
+    /// A save from before Task 3 (exposure/ACES) has no `exposure` key at all — the struct's
+    /// `#[serde(default)]` must fall back to `1.0` (unity gain), not `0.0` (which would render
+    /// black once the shader multiplies it in), so old scenes keep looking the way they always
+    /// did after this cycle ships.
+    #[test]
+    fn missing_exposure_field_defaults_to_unity_gain() {
+        let s: SceneFile = serde_json::from_str("{\"dims\":[64,64,64]}").unwrap();
+        assert_eq!(s.exposure, 1.0);
     }
 }
