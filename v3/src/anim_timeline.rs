@@ -99,6 +99,18 @@ impl Track {
             .copied()
     }
 
+    /// Remove and return the key within `1e-5` of `phase`, if any — a single
+    /// find-and-remove pass, so a caller that needs to relocate a specific
+    /// key (`Timeline::move_key`) can't have a separate read and a separate
+    /// remove disagree on which key matched (e.g. two closely-spaced keys).
+    pub fn take_key_at(&mut self, phase: f32) -> Option<Keyframe> {
+        let idx = self
+            .keys
+            .iter()
+            .position(|k| (k.phase - phase).abs() < 1e-5)?;
+        Some(self.keys.remove(idx))
+    }
+
     /// Replace the key within `1e-5` of `key.phase`, if any, else insert
     /// `key` — keeping `keys` sorted by phase either way. Unlike `upsert`,
     /// this also overwrites `interp` (used by `move_key` to relocate a key
@@ -242,8 +254,7 @@ impl Timeline {
     pub fn move_key(&mut self, id: u64, f: ParamField, from: f32, to: f32) {
         let key = (id, f as u8);
         if let Some(t) = self.tracks.get_mut(&key) {
-            if let Some(mut k) = t.key_at(from) {
-                t.remove_at(from);
+            if let Some(mut k) = t.take_key_at(from) {
                 k.phase = to.clamp(0.0, 1.0);
                 t.insert_key(k);
             }
@@ -304,6 +315,7 @@ impl Timeline {
             for k in &track.keys {
                 bytes.extend_from_slice(&k.phase.to_bits().to_le_bytes());
                 bytes.extend_from_slice(&k.value.to_bits().to_le_bytes());
+                bytes.push(k.interp as u8);
             }
         }
         fnv1a(&bytes)
@@ -481,6 +493,15 @@ mod tests {
         t.upsert(0.5, 9.0);
         assert_eq!(t.interp_at(0.5), Some(Interp::Ease));
         assert_eq!(t.value_at_key(0.5), Some(9.0));
+    }
+
+    #[test]
+    fn hash_changes_on_interp_edit() {
+        let mut a = Timeline::default();
+        a.upsert(7, ParamField::Opacity, 0.5, 1.0);
+        let h0 = a.hash();
+        a.set_key_interp(7, ParamField::Opacity, 0.5, Interp::Ease);
+        assert_ne!(h0, a.hash());
     }
 
     #[test]
