@@ -742,7 +742,9 @@ struct GpuLayer {
   distortion_offset_x: f32,  // 280 (was _pad_di0)
   distortion_offset_y: f32,  // 284 (was _pad_di1)
   distortion_offset_z: f32,  // 288
-  _pad_do0: f32,             // 292
+  // loopable-warp-offset cycle task 1 (append-only, 0..292 unchanged; the
+  // former first _pad_do scalar is now a live field):
+  warp_loop: u32,            // 292 (was _pad_do0) — nonzero selects the periodic warp path
   _pad_do1: f32,             // 296
   _pad_do2: f32,             // 300..304 (pad to 16-byte multiple)
 };
@@ -838,6 +840,16 @@ fn warp_field(L: GpuLayer, p: vec3<f32>) -> f32 {
   return eval_base_noise(L.warp_noise, p, L.seed);
 }
 
+// Periodic (tileable) warp field for `warp_loop` layers (loopable-warp-offset
+// cycle task 1): `pnoise3_core`'s `rep` parameter makes it exactly periodic
+// with period WARP_LOOP_PERIOD on every axis, so scrolling `distortion_offset
+// * WARP_LOOP_PERIOD` through one full unit (`distortion_offset` 0..1) samples
+// exactly one period and lands back where it started — a seamless loop.
+const WARP_LOOP_PERIOD: f32 = 32.0;
+fn warp_field_loop(p: vec3<f32>) -> f32 {
+  return pnoise3_core(p, vec3<f32>(WARP_LOOP_PERIOD)) * 0.5 + 0.5;
+}
+
 // apply_distortion(L, p): dispatches on L.distortion_type. 0=None is an
 // identity no-op (v2's IDENTITY_DISTORTION) returned before any rotation
 // math runs. For the active types (1=DomainWarp, 2=Curl, 3=Swirl, 4=Polar,
@@ -866,10 +878,24 @@ fn apply_distortion(L: GpuLayer, p: vec3<f32>) -> vec3<f32> {
       if (L.distortion_strength < 0.001) {
         return p;
       }
-      let wp = (q + ofs) * L.distortion_frequency;
-      let nx = warp_field(L, wp + vec3<f32>(0.0, 1.7, 9.2));
-      let ny = warp_field(L, wp + vec3<f32>(8.3, 2.8, 4.1));
-      let nz = warp_field(L, wp + vec3<f32>(4.0, 3.1, 6.7));
+      var nx: f32;
+      var ny: f32;
+      var nz: f32;
+      if (L.warp_loop != 0u) {
+        // Periodic path (loopable-warp-offset cycle task 1): offset scrolls
+        // through one full period of warp_field_loop instead of translating
+        // an aperiodic field, so distortion_offset 0..1 loops seamlessly.
+        let wp = q * L.distortion_frequency + ofs * WARP_LOOP_PERIOD;
+        nx = warp_field_loop(wp + vec3<f32>(0.0, 1.7, 9.2));
+        ny = warp_field_loop(wp + vec3<f32>(8.3, 2.8, 4.1));
+        nz = warp_field_loop(wp + vec3<f32>(4.0, 3.1, 6.7));
+      } else {
+        // Off-path unchanged.
+        let wp = (q + ofs) * L.distortion_frequency;
+        nx = warp_field(L, wp + vec3<f32>(0.0, 1.7, 9.2));
+        ny = warp_field(L, wp + vec3<f32>(8.3, 2.8, 4.1));
+        nz = warp_field(L, wp + vec3<f32>(4.0, 3.1, 6.7));
+      }
       let warp = (vec3<f32>(nx, ny, nz) - vec3<f32>(0.5)) * 2.0 * L.distortion_strength;
       q = q + warp;
     }
@@ -879,12 +905,30 @@ fn apply_distortion(L: GpuLayer, p: vec3<f32>) -> vec3<f32> {
         return p;
       }
       let eps: f32 = 0.01;
-      let n1 = warp_field(L, q + ofs + vec3<f32>(eps, 0.0, 0.0));
-      let n2 = warp_field(L, q + ofs - vec3<f32>(eps, 0.0, 0.0));
-      let n3 = warp_field(L, q + ofs + vec3<f32>(0.0, eps, 0.0));
-      let n4 = warp_field(L, q + ofs - vec3<f32>(0.0, eps, 0.0));
-      let n5 = warp_field(L, q + ofs + vec3<f32>(0.0, 0.0, eps));
-      let n6 = warp_field(L, q + ofs - vec3<f32>(0.0, 0.0, eps));
+      var n1: f32;
+      var n2: f32;
+      var n3: f32;
+      var n4: f32;
+      var n5: f32;
+      var n6: f32;
+      if (L.warp_loop != 0u) {
+        // Periodic path (loopable-warp-offset cycle task 1).
+        let lofs = ofs * WARP_LOOP_PERIOD;
+        n1 = warp_field_loop(q + lofs + vec3<f32>(eps, 0.0, 0.0));
+        n2 = warp_field_loop(q + lofs - vec3<f32>(eps, 0.0, 0.0));
+        n3 = warp_field_loop(q + lofs + vec3<f32>(0.0, eps, 0.0));
+        n4 = warp_field_loop(q + lofs - vec3<f32>(0.0, eps, 0.0));
+        n5 = warp_field_loop(q + lofs + vec3<f32>(0.0, 0.0, eps));
+        n6 = warp_field_loop(q + lofs - vec3<f32>(0.0, 0.0, eps));
+      } else {
+        // Off-path unchanged.
+        n1 = warp_field(L, q + ofs + vec3<f32>(eps, 0.0, 0.0));
+        n2 = warp_field(L, q + ofs - vec3<f32>(eps, 0.0, 0.0));
+        n3 = warp_field(L, q + ofs + vec3<f32>(0.0, eps, 0.0));
+        n4 = warp_field(L, q + ofs - vec3<f32>(0.0, eps, 0.0));
+        n5 = warp_field(L, q + ofs + vec3<f32>(0.0, 0.0, eps));
+        n6 = warp_field(L, q + ofs - vec3<f32>(0.0, 0.0, eps));
+      }
       let inv2eps = 1.0 / (2.0 * eps);
       let curl = vec3<f32>(
         (n4 - n3 - n6 + n5) * inv2eps,
@@ -931,12 +975,25 @@ fn apply_distortion(L: GpuLayer, p: vec3<f32>) -> vec3<f32> {
         if (o >= octaves) {
           break;
         }
-        let wp = (q + ofs) * freq;
-        off = off + (vec3<f32>(
-          warp_field(L, wp + vec3<f32>(0.0, 1.7, 9.2)),
-          warp_field(L, wp + vec3<f32>(8.3, 2.8, 4.1)),
-          warp_field(L, wp + vec3<f32>(4.0, 3.1, 6.7))
-        ) - vec3<f32>(0.5)) * 2.0 * amp;
+        var tap: vec3<f32>;
+        if (L.warp_loop != 0u) {
+          // Periodic path (loopable-warp-offset cycle task 1).
+          let wp = q * freq + ofs * WARP_LOOP_PERIOD;
+          tap = vec3<f32>(
+            warp_field_loop(wp + vec3<f32>(0.0, 1.7, 9.2)),
+            warp_field_loop(wp + vec3<f32>(8.3, 2.8, 4.1)),
+            warp_field_loop(wp + vec3<f32>(4.0, 3.1, 6.7))
+          );
+        } else {
+          // Off-path unchanged.
+          let wp = (q + ofs) * freq;
+          tap = vec3<f32>(
+            warp_field(L, wp + vec3<f32>(0.0, 1.7, 9.2)),
+            warp_field(L, wp + vec3<f32>(8.3, 2.8, 4.1)),
+            warp_field(L, wp + vec3<f32>(4.0, 3.1, 6.7))
+          );
+        }
+        off = off + (tap - vec3<f32>(0.5)) * 2.0 * amp;
         freq = freq * 2.0;
         amp = amp * 0.5;
       }

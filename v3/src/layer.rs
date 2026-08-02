@@ -186,7 +186,10 @@ pub struct GpuLayer {
     pub distortion_offset_x: f32, // 280 (was _pad_di0)
     pub distortion_offset_y: f32, // 284 (was _pad_di1)
     pub distortion_offset_z: f32, // 288
-    pub _pad_do: [f32; 3],        // 292..304 (pad to 16-byte multiple)
+    // loopable-warp-offset cycle task 1 (append-only, 0..292 unchanged; the
+    // former first `_pad_do` scalar is now a live field):
+    pub warp_loop: u32, // 292 (was _pad_do[0]) — nonzero selects the periodic warp path
+    pub _pad_do: [f32; 2], // 296..304 (pad to 16-byte multiple)
 }
 
 /// Ergonomic Rust-side layer description (ported field-for-field from v2's
@@ -245,6 +248,12 @@ pub struct LayerDesc {
     /// the returned distorted position, only where the warp noise is
     /// sampled from (distortion-offset cycle task 1).
     pub distortion_offset: [f32; 3],
+    /// When true, `generate.wgsl`'s `apply_distortion` samples the warp field
+    /// on a periodic (tileable) path instead of the plain `warp_field` —
+    /// scrolling `distortion_offset` from 0..1 then loops seamlessly back to
+    /// its start (loopable-warp-offset cycle task 1). Default `false`
+    /// (off-path) is byte-identical to the pre-existing warp behavior.
+    pub warp_loop: bool,
     pub ramp: ColorRamp,
     /// UI-only visibility toggle (cycle 3): invisible layers are skipped at
     /// pack time (`app.rs`), contributing neither shape nor color. Not part
@@ -289,6 +298,7 @@ impl Default for LayerDesc {
             warp_noise: NoiseType::Perlin,
             distortion_octaves: 4,
             distortion_offset: [0.0, 0.0, 0.0],
+            warp_loop: false,
             ramp: ColorRamp::default(), // disabled, no stops
             visible: true,
         }
@@ -537,7 +547,8 @@ pub fn pack_layer(l: &LayerDesc) -> GpuLayer {
         distortion_offset_x: l.distortion_offset[0],
         distortion_offset_y: l.distortion_offset[1],
         distortion_offset_z: l.distortion_offset[2],
-        _pad_do: [0.0; 3],
+        warp_loop: l.warp_loop as u32,
+        _pad_do: [0.0; 2],
     }
 }
 
@@ -673,6 +684,7 @@ mod tests {
         assert_eq!(offset_of!(GpuLayer, distortion_offset_x), 280);
         assert_eq!(offset_of!(GpuLayer, distortion_offset_y), 284);
         assert_eq!(offset_of!(GpuLayer, distortion_offset_z), 288);
+        assert_eq!(offset_of!(GpuLayer, warp_loop), 292);
     }
 
     #[test]
