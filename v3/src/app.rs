@@ -945,6 +945,45 @@ impl Vol3dApp {
                                 }
                             });
                             ui.end_row();
+
+                            if matches!(
+                                self.layers[i].distortion_type,
+                                DistortionType::DomainWarp
+                                    | DistortionType::Curl
+                                    | DistortionType::Turbulence
+                            ) {
+                                ui.label("Warp Offset");
+                                ui.horizontal(|ui| {
+                                    let fields = [
+                                        ParamField::DistortionOffsetX,
+                                        ParamField::DistortionOffsetY,
+                                        ParamField::DistortionOffsetZ,
+                                    ];
+                                    for (axis, field) in fields.into_iter().enumerate() {
+                                        let mut v = self.layers[i].distortion_offset[axis];
+                                        let need = anim_param(
+                                            ui,
+                                            &mut self.timeline,
+                                            ph,
+                                            id,
+                                            field,
+                                            &mut v,
+                                            |ui, v| {
+                                                ui.add(
+                                                    egui::DragValue::new(v)
+                                                        .speed(0.05)
+                                                        .range(-10.0..=10.0),
+                                                )
+                                            },
+                                        );
+                                        self.layers[i].distortion_offset[axis] = v;
+                                        if need {
+                                            self.mark_dirty(ui.ctx());
+                                        }
+                                    }
+                                });
+                                ui.end_row();
+                            }
                         }
                     });
             });

@@ -691,7 +691,7 @@ fn apply_blend(mode: i32, base: f32, layer: f32) -> f32 {
 }
 
 // ---------------------------------------------------------------------
-// GpuLayer: mirrors v3/src/layer.rs `GpuLayer` (#[repr(C)], size 288, see
+// GpuLayer: mirrors v3/src/layer.rs `GpuLayer` (#[repr(C)], size 304, see
 // `gpu_layer_std430_layout` test there) field-for-field. All-vec4/f32/u32
 // fields pack tightly with natural 4-byte scalar alignment, so this
 // struct's storage-buffer layout matches the Rust byte layout with no
