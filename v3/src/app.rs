@@ -263,6 +263,10 @@ pub struct Vol3dApp {
     /// stable index across inserts/removes. `None` = nothing selected. Painted only this task
     /// (Task 2); Task 3 wires click-to-select / drag-retime / delete against it.
     pub selected_key: Option<(u64, layer::ParamField, f32)>,
+    /// Transient: the `(layer_id, field)` track whose dot is currently being drag-retimed, if
+    /// any (Task 3). Set at drag-start hit-test time, cleared once `response.dragged()` goes
+    /// false. Not persisted — a mid-drag gesture never survives a save/load anyway.
+    dragging_key: Option<(u64, layer::ParamField)>,
 }
 
 impl Default for Vol3dApp {
@@ -303,6 +307,7 @@ impl Default for Vol3dApp {
             timeline: Timeline::default(),
             next_layer_id,
             selected_key: None,
+            dragging_key: None,
         }
     }
 }
@@ -1330,37 +1335,79 @@ impl Vol3dApp {
     }
 
     /// Visual timeline: a seconds ruler, one lane per animated `(layer_id, field)` track with a
-    /// keyframe dot per key, and a playhead line — display only (Task 2 of the timeline-SP2
-    /// cycle; click/drag/delete land in Task 3). Called at the tail of `animation_panel`, below
-    /// the Phase slider.
+    /// keyframe dot per key, and a playhead line (Task 2), now wired for interaction (Task 3):
+    /// playhead scrub (drag/click the ruler or an empty stretch of a lane), keyframe select
+    /// (click a dot), drag-to-retime (drag a dot, horizontal only), and delete (🗑 button or
+    /// Del/Backspace while a key is selected and the pointer is over the panel). Called at the
+    /// tail of `animation_panel`, below the Phase slider.
     fn timeline_panel(&mut self, ui: &mut egui::Ui) {
-        // Owned snapshot (`to_entries` clones out of `&self.timeline`) — painting below reads
-        // `self.layers`/`self.phase`/`self.selected_key` too, so nothing here aliases `&mut self`.
+        // Owned snapshot (`to_entries` clones out of `&self.timeline`) — hit-testing below reads
+        // `self.layers`/`self.phase`/`self.selected_key` too and mutates `self.timeline`
+        // (retime/delete), so nothing here aliases a live borrow of `self.timeline` itself.
         let entries = self.timeline.to_entries();
+
+        // Keep selection valid: a selected key's track can vanish out from under it between
+        // frames (layer deleted → `remove_layer`, or the key itself deleted elsewhere).
+        if let Some((id, field, phase)) = self.selected_key {
+            let still_there = entries.iter().any(|e| {
+                e.layer_id == id
+                    && e.field == field
+                    && e.keys.iter().any(|k| (k.phase - phase).abs() < 1e-4)
+            });
+            if !still_there {
+                self.selected_key = None;
+                self.dragging_key = None;
+            }
+        }
+
         if entries.is_empty() {
+            self.dragging_key = None;
             ui.weak("no keyframes — click ◆ next to a value to animate it");
             return;
         }
 
         // Left gutter width (track-label column), shared by the ruler and every lane so a key's
-        // dot lines up under its ruler tick. `phase_to_x` takes the row's own rect (rather than
-        // closing over one shared rect) so the ruler (outside the `ScrollArea`) and each lane
-        // (inside it, whose width shrinks slightly once a vertical scrollbar appears) each map
-        // through their own width — Task 3's inverse (`x_to_phase`) should mirror this shape.
+        // dot lines up under its ruler tick. `phase_to_x`/`x_to_phase` take the row's own rect
+        // (rather than closing over one shared rect) so the ruler (outside the `ScrollArea`) and
+        // each lane (inside it, whose width shrinks slightly once a vertical scrollbar appears)
+        // each map through their own width — every hit-test below reuses the exact rect its row
+        // was just painted into, so a dot is always grabbable right where it's drawn, regardless
+        // of scroll offset.
         const LABEL_W: f32 = 90.0;
         const RULER_H: f32 = 16.0;
         const LANE_H: f32 = 18.0;
+        const HIT_PX: f32 = 5.0; // keyframe-dot grab radius, screen px
         let phase_to_x = |p: f32, r: egui::Rect| r.left() + LABEL_W + p * (r.width() - LABEL_W);
+        let x_to_phase = |x: f32, r: egui::Rect| {
+            ((x - r.left() - LABEL_W) / (r.width() - LABEL_W)).clamp(0.0, 1.0)
+        };
+
+        ui.horizontal(|ui| {
+            ui.weak("Timeline");
+            if ui
+                .add_enabled(self.selected_key.is_some(), egui::Button::new("🗑").small())
+                .on_hover_text("Delete selected keyframe (Del/Backspace)")
+                .clicked()
+            {
+                if let Some((id, f, p)) = self.selected_key {
+                    self.timeline.remove_key(id, f, p);
+                    self.selected_key = None;
+                    self.dragging_key = None;
+                    self.mark_dirty(ui.ctx());
+                }
+            }
+        });
 
         let weak = ui.visuals().weak_text_color();
         let text_color = ui.visuals().text_color();
         let accent = ui.visuals().selection.bg_fill;
         let font = egui::TextStyle::Small.resolve(ui.style());
 
-        // Ruler: baseline + 0s / mid / end labels.
-        let (ruler_rect, _) = ui.allocate_exact_size(
+        // Ruler: baseline + 0s / mid / end labels. `click_and_drag` so dragging/clicking it
+        // scrubs the playhead — there are no dots up here to grab, so it's scrub-only.
+        let (ruler_rect, ruler_response) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), RULER_H),
-            egui::Sense::hover(),
+            egui::Sense::click_and_drag(),
         );
         let painter = ui.painter();
         painter.hline(
@@ -1397,15 +1444,24 @@ impl Vol3dApp {
             ],
             egui::Stroke::new(1.5, accent),
         );
+        if ruler_response.dragged() || ruler_response.clicked() {
+            if let Some(pos) = ruler_response.interact_pointer_pos() {
+                let p = x_to_phase(pos.x, ruler_rect);
+                self.sync_playhead(p);
+                self.mark_dirty(ui.ctx());
+            }
+        }
 
-        egui::ScrollArea::vertical()
+        let panel_hovered = egui::ScrollArea::vertical()
             .max_height(160.0)
             .show(ui, |ui| {
+                let mut any_hovered = ruler_response.hovered();
                 for entry in &entries {
-                    let (row, _) = ui.allocate_exact_size(
+                    let (row, response) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), LANE_H),
-                        egui::Sense::hover(),
+                        egui::Sense::click_and_drag(),
                     );
+                    any_hovered |= response.hovered();
                     let lane_y = row.center().y;
                     let painter = ui.painter();
 
@@ -1452,8 +1508,84 @@ impl Vol3dApp {
                         ],
                         egui::Stroke::new(1.5, accent),
                     );
+
+                    // --- interaction (Task 3) — hit-test against `row`, the exact rect this
+                    // lane's dots were just painted into, so a grab always lands where drawn. ---
+                    let track = (entry.layer_id, entry.field);
+                    let hit_test = |x: f32| {
+                        entry
+                            .keys
+                            .iter()
+                            .copied()
+                            .find(|k| (phase_to_x(k.phase, row) - x).abs() <= HIT_PX)
+                    };
+
+                    if response.drag_started() {
+                        // Priority: a drag starting near a dot grabs it; otherwise the gesture
+                        // is a playhead scrub (handled in the `dragged()` block below).
+                        if let Some(pos) = response.interact_pointer_pos() {
+                            let hit = hit_test(pos.x);
+                            self.dragging_key = hit.map(|_| track);
+                            if let Some(k) = hit {
+                                self.selected_key = Some((entry.layer_id, entry.field, k.phase));
+                            }
+                        }
+                    }
+                    if response.dragged() {
+                        if let Some(pos) = response.interact_pointer_pos() {
+                            if self.dragging_key == Some(track) {
+                                // Drag-retime the grabbed dot. `old_phase` is carried across
+                                // frames via `selected_key` (set at grab time above, updated
+                                // every frame of the drag below) — horizontal only (`pos.x`).
+                                if let Some((id, field, old_phase)) = self.selected_key {
+                                    let np = x_to_phase(pos.x, row);
+                                    self.timeline.move_key(id, field, old_phase, np);
+                                    self.selected_key = Some((id, field, np));
+                                    self.mark_dirty(ui.ctx());
+                                }
+                            } else {
+                                // Not grabbing a dot in this lane: scrub the playhead instead —
+                                // a single drag can only ever take one of these two branches,
+                                // never both (decided once, at `drag_started`, above).
+                                let p = x_to_phase(pos.x, row);
+                                self.sync_playhead(p);
+                                self.mark_dirty(ui.ctx());
+                            }
+                        }
+                    } else if self.dragging_key == Some(track) {
+                        self.dragging_key = None; // drag ended
+                    }
+
+                    if response.clicked() {
+                        if let Some(pos) = response.interact_pointer_pos() {
+                            if let Some(k) = hit_test(pos.x) {
+                                self.selected_key = Some((entry.layer_id, entry.field, k.phase));
+                            } else {
+                                let p = x_to_phase(pos.x, row);
+                                self.sync_playhead(p);
+                                self.mark_dirty(ui.ctx());
+                            }
+                        }
+                    }
                 }
-            });
+                any_hovered
+            })
+            .inner;
+
+        // Keyboard delete: the 🗑 button (above) already covers the click case; this adds
+        // Del/Backspace, gated on the pointer hovering some part of the timeline panel so it
+        // doesn't eat a keystroke meant for some other focused widget.
+        if panel_hovered
+            && self.selected_key.is_some()
+            && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+        {
+            if let Some((id, f, p)) = self.selected_key {
+                self.timeline.remove_key(id, f, p);
+                self.selected_key = None;
+                self.dragging_key = None;
+                self.mark_dirty(ui.ctx());
+            }
+        }
     }
 }
 
