@@ -745,8 +745,10 @@ struct GpuLayer {
   // loopable-warp-offset cycle task 1 (append-only, 0..292 unchanged; the
   // former first _pad_do scalar is now a live field):
   warp_loop: u32,            // 292 (was _pad_do0) — nonzero selects the periodic warp path
-  _pad_do1: f32,             // 296
-  _pad_do2: f32,             // 300..304 (pad to 16-byte multiple)
+  // HDR-color cycle task 2 (append-only, 0..296 unchanged; the former first
+  // _pad_do scalar of the pad pair is now a live field):
+  emission: f32,             // 296 (was _pad_do1) — scales the layer's baked ramp color for HDR
+  _pad_do: f32,              // 300..304 (pad to 16-byte multiple)
 };
 
 // dim_x/dim_y/dim_z replace cubic `res` (v3 non-cubic-volume cycle, Task 1); aspect_x/y/z
@@ -1106,7 +1108,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     density = mix(density, blended, L.opacity);
     let c = textureSampleLevel(ramp_lut, ramp_samp, vec2<f32>(v, (f32(i) + 0.5) / f32(n)), 0.0);
     let a = c.a * L.opacity;
-    color = c.rgb * a + color * (1.0 - a);
+    // HDR-color cycle task 2: scale this layer's ramp color by its emission before
+    // compositing, so per-layer emission can push its own contribution above the LDR [0,1]
+    // range (bright fire) into the Rgba16Float volume. At emission == 1.0 (default) this is
+    // byte-identical to the pre-emission composite.
+    color = (c.rgb * L.emission) * a + color * (1.0 - a);
   }
   textureStore(vol, vec3<i32>(gid), vec4<f32>(color, density));
 }

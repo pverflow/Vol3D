@@ -1193,6 +1193,24 @@ impl Vol3dApp {
         egui::CollapsingHeader::new("Color")
             .default_open(true)
             .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Emission");
+                    let mut v = self.layers[i].emission;
+                    let need = anim_param(
+                        ui,
+                        &mut self.timeline,
+                        ph,
+                        id,
+                        ParamField::Emission,
+                        &mut v,
+                        |ui, v| ui.add(egui::DragValue::new(v).speed(0.05).range(0.0..=16.0)),
+                    );
+                    self.layers[i].emission = v;
+                    if need {
+                        self.mark_dirty(ui.ctx());
+                    }
+                });
+
                 if gradient_editor(ui, &mut self.layers[i].ramp, &mut self.selected_stop).changed()
                 {
                     self.mark_dirty(ui.ctx());

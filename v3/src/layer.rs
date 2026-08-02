@@ -189,7 +189,10 @@ pub struct GpuLayer {
     // loopable-warp-offset cycle task 1 (append-only, 0..292 unchanged; the
     // former first `_pad_do` scalar is now a live field):
     pub warp_loop: u32, // 292 (was _pad_do[0]) — nonzero selects the periodic warp path
-    pub _pad_do: [f32; 2], // 296..304 (pad to 16-byte multiple)
+    // HDR-color cycle task 2 (append-only, 0..296 unchanged; the former first
+    // `_pad_do` scalar of the pad pair is now a live field):
+    pub emission: f32, // 296 (was _pad_do[0]) — scales the layer's baked ramp color for HDR
+    pub _pad_do: [f32; 1], // 300..304 (pad to 16-byte multiple)
 }
 
 /// Ergonomic Rust-side layer description (ported field-for-field from v2's
@@ -259,6 +262,19 @@ pub struct LayerDesc {
     /// pack time (`app.rs`), contributing neither shape nor color. Not part
     /// of `GpuLayer` — filtering happens before packing, not on the GPU.
     pub visible: bool,
+    /// Multiplies the layer's baked ramp color before compositing
+    /// (`generate.wgsl`'s main loop) — >1.0 pushes it above the `[0,1]` range
+    /// the LDR ramp LUT alone can reach, letting a layer read as HDR-bright
+    /// (e.g. fire) now that the volume is `Rgba16Float` (HDR-color cycle
+    /// task 1). Default `1.0` composites byte-identically to pre-emission
+    /// behavior. `#[serde(default = "default_emission")]` so scenes saved
+    /// before this field existed still deserialize.
+    #[serde(default = "default_emission")]
+    pub emission: f32,
+}
+
+fn default_emission() -> f32 {
+    1.0
 }
 
 impl Default for LayerDesc {
@@ -301,6 +317,7 @@ impl Default for LayerDesc {
             warp_loop: false,
             ramp: ColorRamp::default(), // disabled, no stops
             visible: true,
+            emission: 1.0,
         }
     }
 }
@@ -341,10 +358,11 @@ pub enum ParamField {
     DistortionOffsetX,
     DistortionOffsetY,
     DistortionOffsetZ,
+    Emission,
 }
 
 impl ParamField {
-    pub const ALL: [ParamField; 29] = [
+    pub const ALL: [ParamField; 30] = [
         ParamField::Opacity,
         ParamField::ScaleX,
         ParamField::ScaleY,
@@ -374,6 +392,7 @@ impl ParamField {
         ParamField::DistortionOffsetX,
         ParamField::DistortionOffsetY,
         ParamField::DistortionOffsetZ,
+        ParamField::Emission,
     ];
 
     pub fn label(self) -> &'static str {
@@ -408,13 +427,14 @@ impl ParamField {
             DistortionOffsetX => "Distortion Offset X",
             DistortionOffsetY => "Distortion Offset Y",
             DistortionOffsetZ => "Distortion Offset Z",
+            Emission => "Emission",
         }
     }
 
     /// Decode a `ParamField as u8` discriminant back into its variant (the
     /// inverse used by `Timeline::evaluate_into` to turn a track's `u8` key
     /// back into something `get_param`/`set_param` accept). `None` for any
-    /// value outside the 29 valid discriminants.
+    /// value outside the 30 valid discriminants.
     pub fn from_u8(v: u8) -> Option<ParamField> {
         Self::ALL.into_iter().find(|&f| f as u8 == v)
     }
@@ -453,6 +473,7 @@ impl LayerDesc {
             DistortionOffsetX => self.distortion_offset[0],
             DistortionOffsetY => self.distortion_offset[1],
             DistortionOffsetZ => self.distortion_offset[2],
+            Emission => self.emission,
         }
     }
 
@@ -488,6 +509,7 @@ impl LayerDesc {
             DistortionOffsetX => self.distortion_offset[0] = v,
             DistortionOffsetY => self.distortion_offset[1] = v,
             DistortionOffsetZ => self.distortion_offset[2] = v,
+            Emission => self.emission = v,
         }
     }
 }
@@ -548,7 +570,8 @@ pub fn pack_layer(l: &LayerDesc) -> GpuLayer {
         distortion_offset_y: l.distortion_offset[1],
         distortion_offset_z: l.distortion_offset[2],
         warp_loop: l.warp_loop as u32,
-        _pad_do: [0.0; 2],
+        emission: l.emission,
+        _pad_do: [0.0; 1],
     }
 }
 
@@ -685,6 +708,7 @@ mod tests {
         assert_eq!(offset_of!(GpuLayer, distortion_offset_y), 284);
         assert_eq!(offset_of!(GpuLayer, distortion_offset_z), 288);
         assert_eq!(offset_of!(GpuLayer, warp_loop), 292);
+        assert_eq!(offset_of!(GpuLayer, emission), 296);
     }
 
     #[test]
