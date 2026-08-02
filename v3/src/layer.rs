@@ -107,18 +107,33 @@ pub fn mat3_from_euler(rx: f32, ry: f32, rz: f32) -> [[f32; 4]; 3] {
     ]
 }
 
-/// Per-frame/per-scene uniform, std140/std430-compatible at 16 bytes.
+/// Per-frame/per-scene uniform, std140/std430-compatible at 48 bytes.
 ///
 /// `global_seed` was dropped (cycle 4): it was unread by the shader — already folded into
 /// each layer's `seed` at pack time (see `app.rs::pack_for_gpu`, unchanged) — so carrying it
 /// here too was dead weight. `anim_evolutions` replaces it.
+///
+/// `res: u32` (cubic-only) was replaced (v3 non-cubic-volume cycle, Task 1) by per-axis
+/// `dim_x/dim_y/dim_z` plus `aspect_x/aspect_y/aspect_z` (`anim::aspect_from_dims`) — the
+/// aspect lets `generate.wgsl`'s `sample_noise_at` correct the sample position so a non-cubic
+/// volume's noise/SDF proportions stay true instead of stretching with the voxel grid. At
+/// `dims=[n,n,n]` (aspect `[1,1,1]`), generation is byte-identical to the old cubic path.
+/// `_pad0.._pad2` keep the struct a 16-byte multiple (std140 uniform requirement).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GenParams {
-    pub res: u32,
+    pub dim_x: u32,
+    pub dim_y: u32,
+    pub dim_z: u32,
     pub layer_count: u32,
+    pub aspect_x: f32,
+    pub aspect_y: f32,
+    pub aspect_z: f32,
     pub anim_phase: f32,
     pub anim_evolutions: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
 }
 
 /// Packed per-layer GPU form. Field order/offsets are the std430 contract
@@ -661,8 +676,8 @@ mod tests {
     }
 
     #[test]
-    fn gen_params_is_16_bytes() {
-        assert_eq!(std::mem::size_of::<GenParams>(), 16);
+    fn gen_params_is_48_bytes() {
+        assert_eq!(std::mem::size_of::<GenParams>(), 48);
     }
 
     #[test]

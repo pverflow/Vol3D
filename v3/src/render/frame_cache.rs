@@ -4,7 +4,7 @@
 // buffer map.
 #![allow(dead_code)]
 
-use crate::anim::{frame_for_phase, playback_bake_res};
+use crate::anim::{aspect_from_dims, frame_for_phase, playback_bake_res};
 use crate::layer::{GenParams, GpuLayer};
 use crate::render::occupancy::make_occupancy_texture;
 use crate::render::volume::VolumeGen;
@@ -77,11 +77,14 @@ impl FrameCache {
         self.views.clear();
         self.occ_textures.clear();
         self.occ_views.clear();
+        // TEMPORARY: `bake_res` is still cubic (Task 3 makes the bake per-axis) — widened to
+        // `[bake_res;3]` here at the boundary into the now-per-axis occupancy/generation calls.
+        let dims = [bake_res; 3];
         for _ in 0..n {
             let (t, v) = Self::make_frame(device, bake_res);
             self.frames.push(t);
             self.views.push(v);
-            let (ot, ov) = make_occupancy_texture(device, bake_res);
+            let (ot, ov) = make_occupancy_texture(device, dims);
             self.occ_textures.push(ot);
             self.occ_views.push(ov);
         }
@@ -99,14 +102,20 @@ impl FrameCache {
             .enumerate()
         {
             let mut p = base_params;
-            p.res = bake_res;
+            let aspect = aspect_from_dims(dims);
+            p.dim_x = dims[0];
+            p.dim_y = dims[1];
+            p.dim_z = dims[2];
+            p.aspect_x = aspect[0];
+            p.aspect_y = aspect[1];
+            p.aspect_z = aspect[2];
             p.anim_phase = i as f32 / n as f32;
             gen.generate_into(
                 device,
                 queue,
                 view,
                 Some(occ_view),
-                bake_res,
+                dims,
                 frame_layers,
                 &p,
                 lut_atlas,

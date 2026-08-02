@@ -9,7 +9,7 @@ const LUT_WIDTH: u32 = 256;
 /// `GpuLayer`s (storage buffer) per voxel, sampling each layer's row of the `256xN` ramp LUT
 /// atlas for color. No CPU readback — the raymarch pass samples `view` directly.
 pub struct VolumeGen {
-    res: u32,
+    dims: [u32; 3],
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     // Coarse max-density-per-macrocell overlay of the live volume (recreated on res change
@@ -31,7 +31,7 @@ pub struct VolumeGen {
 }
 
 impl VolumeGen {
-    pub fn new(device: &wgpu::Device, res: u32) -> Self {
+    pub fn new(device: &wgpu::Device, dims: [u32; 3]) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("generate"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/generate.wgsl").into()),
@@ -129,8 +129,8 @@ impl VolumeGen {
             ..Default::default()
         });
 
-        let (texture, view) = Self::make_volume_texture(device, res);
-        let (occupancy, occupancy_view) = make_occupancy_texture(device, res);
+        let (texture, view) = Self::make_volume_texture(device, dims);
+        let (occupancy, occupancy_view) = make_occupancy_texture(device, dims);
         let occupancy_builder = OccupancyBuilder::new(device);
         let bind_group = Self::make_bind_group(
             device,
@@ -143,7 +143,7 @@ impl VolumeGen {
         );
 
         Self {
-            res,
+            dims,
             texture,
             view,
             occupancy,
@@ -162,13 +162,16 @@ impl VolumeGen {
         }
     }
 
-    fn make_volume_texture(device: &wgpu::Device, res: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    fn make_volume_texture(
+        device: &wgpu::Device,
+        dims: [u32; 3],
+    ) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("volume"),
             size: wgpu::Extent3d {
-                width: res,
-                height: res,
-                depth_or_array_layers: res,
+                width: dims[0],
+                height: dims[1],
+                depth_or_array_layers: dims[2],
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -247,7 +250,7 @@ impl VolumeGen {
         })
     }
 
-    /// Regenerate the internal volume: resizes the internal volume texture when `res` changed,
+    /// Regenerate the internal volume: resizes the internal volume texture when `dims` changed,
     /// then bakes into it via `generate_into`. The live raymarch path samples `self.view`, so
     /// this is unchanged behavior from before the `generate_into` refactor. No CPU readback.
     #[allow(clippy::too_many_arguments)]
@@ -255,20 +258,20 @@ impl VolumeGen {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        res: u32,
+        dims: [u32; 3],
         layers: &[GpuLayer],
         params: &GenParams,
         lut_atlas: &[u8],
         lut_rows: u32,
     ) {
-        if res != self.res {
-            let (t, v) = Self::make_volume_texture(device, res);
+        if dims != self.dims {
+            let (t, v) = Self::make_volume_texture(device, dims);
             self.texture = t;
             self.view = v;
-            let (ot, ov) = make_occupancy_texture(device, res);
+            let (ot, ov) = make_occupancy_texture(device, dims);
             self.occupancy = ot;
             self.occupancy_view = ov;
-            self.res = res;
+            self.dims = dims;
         }
         // Clone (an Arc bump) so the internal views aren't borrowed while `&mut self` is passed to
         // `generate_into` — same underlying textures, so the live path is byte-for-byte unchanged.
@@ -279,7 +282,7 @@ impl VolumeGen {
             queue,
             &view,
             Some(&occ),
-            res,
+            dims,
             layers,
             params,
             lut_atlas,
@@ -293,18 +296,18 @@ impl VolumeGen {
         &self.occupancy_view
     }
 
-    /// Resolution the volume/occupancy textures currently ARE (not the UI's pending target).
+    /// Per-axis dims the volume/occupancy textures currently ARE (not the UI's pending target).
     /// The raymarch derives `macro_dim` from this so the skip grid always matches the bound
     /// occupancy texture, even during the res-change debounce before `generate` rebuilds.
-    pub fn res(&self) -> u32 {
-        self.res
+    pub fn dims(&self) -> [u32; 3] {
+        self.dims
     }
 
     /// Bake one volume into an arbitrary storage-texture `target_view` (binding 0): uploads
     /// `layers`/`params`/`lut_atlas` (a `256 x lut_rows` RGBA8 atlas, one row per layer's color
     /// ramp — see `ramp::build_ramp_lut_atlas`), resizing the layers storage buffer / LUT texture
     /// only when `layers.len()` / `lut_rows` actually changed, rebuilds the compute bind group
-    /// against `target_view`, then dispatches. `target_view` must be an `res³` rgba8unorm D3
+    /// against `target_view`, then dispatches. `target_view` must be a `dims`-sized rgba8unorm D3
     /// `STORAGE_BINDING` view. No CPU readback — used for both the live volume and the FrameCache.
     #[allow(clippy::too_many_arguments)]
     pub fn generate_into(
@@ -313,7 +316,7 @@ impl VolumeGen {
         queue: &wgpu::Queue,
         target_view: &wgpu::TextureView,
         occupancy_view: Option<&wgpu::TextureView>,
-        res: u32,
+        dims: [u32; 3],
         layers: &[GpuLayer],
         params: &GenParams,
         lut_atlas: &[u8],
@@ -382,8 +385,11 @@ impl VolumeGen {
             });
             cpass.set_pipeline(&self.pipeline);
             cpass.set_bind_group(0, &self.bind_group, &[]);
-            let g = res.div_ceil(4);
-            cpass.dispatch_workgroups(g, g, g);
+            cpass.dispatch_workgroups(
+                dims[0].div_ceil(4),
+                dims[1].div_ceil(4),
+                dims[2].div_ceil(4),
+            );
         }
         queue.submit(Some(enc.finish()));
 
@@ -391,7 +397,7 @@ impl VolumeGen {
         // caller passes `None`, e.g. FrameCache bakes until Task 3 wires per-frame occupancy).
         if let Some(occ) = occupancy_view {
             self.occupancy_builder
-                .build(device, queue, target_view, occ, res);
+                .build(device, queue, target_view, occ, dims);
         }
     }
 }

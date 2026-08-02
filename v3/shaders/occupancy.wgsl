@@ -12,19 +12,23 @@
 // R32Float is storage-write-capable in core WebGPU. Non-filterable; Task 2 samples with a
 // NEAREST sampler + Texture{ sample_type: Float{ filterable: false } }.
 @group(0) @binding(1) var occ: texture_storage_3d<r32float, write>;
-struct OccParams { res: u32, macro_dim: u32, _p0: u32, _p1: u32 };
+struct OccParams {
+  dim_x: u32, dim_y: u32, dim_z: u32,
+  macro_x: u32, macro_y: u32, macro_z: u32,
+  _p0: u32, _p1: u32,
+};
 @group(0) @binding(2) var<uniform> P: OccParams;
 
 @compute @workgroup_size(4, 4, 4)
 fn main(@builtin(global_invocation_id) mc: vec3<u32>) {
-  if (mc.x >= P.macro_dim || mc.y >= P.macro_dim || mc.z >= P.macro_dim) { return; }
+  if (mc.x >= P.macro_x || mc.y >= P.macro_y || mc.z >= P.macro_z) { return; }
   let base = mc * 8u; // MACRO=8
   var m = 0.0;
   for (var z = 0u; z < 8u; z = z + 1u) {
     for (var y = 0u; y < 8u; y = y + 1u) {
       for (var x = 0u; x < 8u; x = x + 1u) {
         let v = base + vec3<u32>(x, y, z);
-        if (v.x < P.res && v.y < P.res && v.z < P.res) {
+        if (v.x < P.dim_x && v.y < P.dim_y && v.z < P.dim_z) {
           m = max(m, textureLoad(vol, vec3<i32>(v), 0).a);
         }
       }

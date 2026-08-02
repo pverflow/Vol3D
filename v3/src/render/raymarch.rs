@@ -340,7 +340,10 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
         let macro_res = if self.playback_phase.is_some() && !r.frame_cache.is_empty() {
             r.frame_cache.bake_res()
         } else {
-            r.volume.res()
+            // TEMPORARY: `dims()` is now per-axis (Task 1) but the live volume is still cubic
+            // this cycle (`self.resolution`, Task 4 makes it a real per-axis field) — `dims()[0]`
+            // is exact for the cubic case.
+            r.volume.dims()[0]
         };
         cam.macro_dim = crate::anim::macro_dims(macro_res, crate::anim::MACRO) as f32;
         // Interpolation fraction between the two bound frames; `None` (live/paused, or empty cache)

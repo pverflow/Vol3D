@@ -335,15 +335,28 @@ impl Vol3dApp {
     fn pack_for_gpu(&self) -> (Vec<layer::GpuLayer>, Vec<u8>, u32, GenParams) {
         let (packed, lut_atlas, lut_rows) = self.pack_scene(&self.layers);
 
+        // TEMPORARY: cubic-only dims (`self.resolution`, Task 4 replaces this with a real
+        // per-axis field) — `aspect_from_dims` on `[r,r,r]` is always `[1,1,1]`, so generation
+        // stays byte-identical to the pre-dims cubic path.
+        let dims = [self.resolution; 3];
+        let aspect = anim::aspect_from_dims(dims);
         let gen_params = GenParams {
-            res: self.resolution,
+            dim_x: dims[0],
+            dim_y: dims[1],
+            dim_z: dims[2],
             layer_count: packed.len() as u32,
+            aspect_x: aspect[0],
+            aspect_y: aspect[1],
+            aspect_z: aspect[2],
             // The live volume's phase. Only matters when playback has just stopped (pause snap,
             // see `ui()`'s tail): the paused full-res frame should match where playback stopped,
             // not always frame 0. Harmless elsewhere — a live regen from ordinary edits shows
             // whatever `self.phase` currently is (0.0 until the user has ever played/scrubbed).
             anim_phase: self.phase,
             anim_evolutions: self.evolutions,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
         };
 
         (packed, lut_atlas, lut_rows, gen_params)
@@ -1326,11 +1339,22 @@ impl eframe::App for Vol3dApp {
             // frame is always full-res, never the bake's reduced resolution (cycle-5 contract).
             let use_cache = self.playing && self.frame_count > 0;
 
+            // TEMPORARY: cubic-only dims (see `pack_for_gpu`'s comment; Task 4 makes this real).
+            let empty_dims = [self.resolution; 3];
+            let empty_aspect = anim::aspect_from_dims(empty_dims);
             let empty_params = GenParams {
-                res: self.resolution,
+                dim_x: empty_dims[0],
+                dim_y: empty_dims[1],
+                dim_z: empty_dims[2],
                 layer_count: 0,
+                aspect_x: empty_aspect[0],
+                aspect_y: empty_aspect[1],
+                aspect_z: empty_aspect[2],
                 anim_phase: 0.0,
                 anim_evolutions: self.evolutions,
+                _pad0: 0.0,
+                _pad1: 0.0,
+                _pad2: 0.0,
             };
             let (layers, bake_frames, lut_atlas, lut_rows, gen_params, bake_key, pending_regen) =
                 if need_bake {
@@ -1347,11 +1371,24 @@ impl eframe::App for Vol3dApp {
                                 .0
                         })
                         .collect();
+                    // TEMPORARY: cubic-only dims (see `pack_for_gpu`'s comment; Task 4 makes this
+                    // real; `FrameCache::bake` further overrides dim_*/aspect_* per its own
+                    // (possibly reduced) `bake_res`).
+                    let bake_dims = [self.resolution; 3];
+                    let bake_aspect = anim::aspect_from_dims(bake_dims);
                     let gp = GenParams {
-                        res: self.resolution,
+                        dim_x: bake_dims[0],
+                        dim_y: bake_dims[1],
+                        dim_z: bake_dims[2],
                         layer_count: frames[0].len() as u32,
+                        aspect_x: bake_aspect[0],
+                        aspect_y: bake_aspect[1],
+                        aspect_z: bake_aspect[2],
                         anim_phase: 0.0, // bake sets per-frame phase in FrameCache::bake
                         anim_evolutions: self.evolutions,
+                        _pad0: 0.0,
+                        _pad1: 0.0,
+                        _pad2: 0.0,
                     };
                     // Frame 0's packed layers stand in for the whole bake in the key (matching
                     // `pack_for_gpu`'s single-snapshot fingerprint elsewhere); `timeline_hash`

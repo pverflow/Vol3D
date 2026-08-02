@@ -747,11 +747,24 @@ struct GpuLayer {
   _pad_do2: f32,             // 300..304 (pad to 16-byte multiple)
 };
 
+// dim_x/dim_y/dim_z replace cubic `res` (v3 non-cubic-volume cycle, Task 1); aspect_x/y/z
+// (`anim::aspect_from_dims` on the CPU side) correct sample_noise_at's uvw so a non-cubic
+// volume's proportions stay true instead of stretching with the voxel grid. At dims=[n,n,n]
+// (aspect=[1,1,1]) generation is byte-identical to the old cubic path. _pad0.._pad2 keep the
+// struct a 16-byte multiple (mirrors v3/src/layer.rs `GenParams`, 48 bytes, same field order).
 struct GenParams {
-  res: u32,
+  dim_x: u32,
+  dim_y: u32,
+  dim_z: u32,
   layer_count: u32,
+  aspect_x: f32,
+  aspect_y: f32,
+  aspect_z: f32,
   anim_phase: f32,
   anim_evolutions: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
 };
 
 // ---------------------------------------------------------------------
@@ -948,14 +961,17 @@ fn apply_distortion(L: GpuLayer, p: vec3<f32>) -> vec3<f32> {
 // `apply_distortion`.
 fn sample_noise_at(L: GpuLayer, uvw: vec3<f32>) -> f32 {
   let rot = mat3x3<f32>(L.rot0.xyz, L.rot1.xyz, L.rot2.xyz);
+  // Per-axis aspect (anim::aspect_from_dims on the CPU side): at [1,1,1] (cubic dims) this is a
+  // no-op multiply, so cubic generation stays byte-identical to before non-cubic dims existed.
+  let asp = vec3<f32>(params.aspect_x, params.aspect_y, params.aspect_z);
   var p: vec3<f32>;
   if (is_sdf(L.noise_type)) {
     // SDF_SOURCE branch (layer_gen.frag.glsl L48-54).
-    p = (uvw - vec3<f32>(0.5)) * L.scale.xyz + L.offset.xyz;
+    p = ((uvw - vec3<f32>(0.5)) * asp) * L.scale.xyz + L.offset.xyz;
     p = rot * p;
   } else {
     // non-SDF branch (layer_gen.frag.glsl L56-59).
-    p = uvw * L.scale.xyz + L.offset.xyz;
+    p = (uvw * asp) * L.scale.xyz + L.offset.xyz;
     p = rot * p;
     p = p + animated_domain_offset(L.seed, params.anim_phase, params.anim_evolutions);
   }
@@ -1001,10 +1017,11 @@ fn sample_noise_tileable(L: GpuLayer, uvw: vec3<f32>) -> f32 {
 
 @compute @workgroup_size(4, 4, 4)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  if (gid.x >= params.res || gid.y >= params.res || gid.z >= params.res) {
+  if (gid.x >= params.dim_x || gid.y >= params.dim_y || gid.z >= params.dim_z) {
     return;
   }
-  let uvw = (vec3<f32>(gid) + vec3<f32>(0.5)) / f32(params.res);
+  let uvw = (vec3<f32>(gid) + vec3<f32>(0.5)) /
+    vec3<f32>(f32(params.dim_x), f32(params.dim_y), f32(params.dim_z));
   var density = 0.0;
   var color = vec3<f32>(0.0);
   let n = params.layer_count;

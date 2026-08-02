@@ -44,6 +44,13 @@ mod tests {
     }
 
     #[test]
+    fn aspect_from_dims_cases() {
+        assert_eq!(aspect_from_dims([128, 128, 128]), [1.0, 1.0, 1.0]);
+        assert_eq!(aspect_from_dims([64, 64, 256]), [0.25, 0.25, 1.0]);
+        assert_eq!(aspect_from_dims([0, 0, 0]), [0.0, 0.0, 0.0]); // max(1) guard, no NaN
+    }
+
+    #[test]
     fn macro_dims_ceils() {
         assert_eq!(macro_dims(256, 8), 32);
         assert_eq!(macro_dims(128, 8), 16);
@@ -139,6 +146,15 @@ pub fn max_frames(res: u32, budget_bytes: u64) -> u32 {
 /// Macrocell edge length (voxels) for the occupancy overlay. Hardcoded as `8u` in
 /// `shaders/occupancy.wgsl`'s inner scan loop — keep the two in sync.
 pub const MACRO: u32 = 8;
+
+/// Per-axis aspect ratio for a `dims` volume: each axis divided by the longest axis, so the
+/// longest maps to `1.0` and the shorter axes shrink proportionally — keeps a non-cubic
+/// volume's sample-space proportions true (see `generate.wgsl`'s `sample_noise_at`).
+/// `.max(1)` guards the divisor against an all-zero `dims` (returns `[0,0,0]`, never NaN).
+pub fn aspect_from_dims(dims: [u32; 3]) -> [f32; 3] {
+    let m = dims.iter().copied().max().unwrap().max(1) as f32;
+    [dims[0] as f32 / m, dims[1] as f32 / m, dims[2] as f32 / m]
+}
 
 /// Number of macrocells along one axis for a `res³` volume with `macro_size³` cells: ceil so a
 /// partial trailing cell still gets one slot; floored at 1 so a 0/degenerate res still allocates.

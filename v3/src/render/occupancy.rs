@@ -6,9 +6,9 @@
 
 use crate::anim::{macro_dims, MACRO};
 
-/// Builds occupancy textures from generated volumes. Owns the pipeline + a reused 16-byte
-/// `OccParams` uniform (`res, macro_dim, pad, pad`); the bind group is rebuilt per `build` since
-/// it binds a caller-supplied (volume, occupancy) view pair.
+/// Builds occupancy textures from generated volumes. Owns the pipeline + a reused 32-byte
+/// `OccParams` uniform (`dim_x, dim_y, dim_z, macro_x, macro_y, macro_z, pad, pad`); the bind
+/// group is rebuilt per `build` since it binds a caller-supplied (volume, occupancy) view pair.
 pub struct OccupancyBuilder {
     pipeline: wgpu::ComputePipeline,
     bgl: wgpu::BindGroupLayout,
@@ -76,10 +76,10 @@ impl OccupancyBuilder {
             compilation_options: Default::default(),
             cache: None,
         });
-        // OccParams: 4 x u32 = 16 bytes.
+        // OccParams: 8 x u32 = 32 bytes.
         let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("occ-params"),
-            size: 16,
+            size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -90,23 +90,27 @@ impl OccupancyBuilder {
         }
     }
 
-    /// Fill `occupancy_view` with the max-density-per-macrocell of `volume_view` (an `res³`
-    /// volume). Dispatches one invocation per macrocell (`macro_dims(res, MACRO)³`, workgroup
-    /// 4³). Submits its own encoder; no readback.
+    /// Fill `occupancy_view` with the max-density-per-macrocell of `volume_view` (a `dims`-sized
+    /// volume). Dispatches one invocation per macrocell (`macro_dims(dims[i], MACRO)` per axis,
+    /// workgroup 4³). Submits its own encoder; no readback.
     pub fn build(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         volume_view: &wgpu::TextureView,
         occupancy_view: &wgpu::TextureView,
-        res: u32,
+        dims: [u32; 3],
     ) {
-        let md = macro_dims(res, MACRO);
-        // OccParams { res, macro_dim, _p0, _p1 } — laid out as a plain [u32; 4].
+        let macro_x = macro_dims(dims[0], MACRO);
+        let macro_y = macro_dims(dims[1], MACRO);
+        let macro_z = macro_dims(dims[2], MACRO);
+        // OccParams { dim_x, dim_y, dim_z, macro_x, macro_y, macro_z, _p0, _p1 } — a plain [u32; 8].
         queue.write_buffer(
             &self.params_buf,
             0,
-            bytemuck::cast_slice(&[res, md, 0u32, 0u32]),
+            bytemuck::cast_slice(&[
+                dims[0], dims[1], dims[2], macro_x, macro_y, macro_z, 0u32, 0u32,
+            ]),
         );
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -138,27 +142,33 @@ impl OccupancyBuilder {
             });
             cpass.set_pipeline(&self.pipeline);
             cpass.set_bind_group(0, &bind_group, &[]);
-            let g = md.div_ceil(4);
-            cpass.dispatch_workgroups(g, g, g);
+            cpass.dispatch_workgroups(
+                macro_x.div_ceil(4),
+                macro_y.div_ceil(4),
+                macro_z.div_ceil(4),
+            );
         }
         queue.submit(Some(enc.finish()));
     }
 }
 
-/// A `macro_dims(res, MACRO)³` r32float D3 occupancy texture (`STORAGE_BINDING | TEXTURE_BINDING`):
-/// written by `OccupancyBuilder::build`, sampled by the raymarch. R32Float (not R8Unorm) because
-/// R8Unorm is not a WebGPU storage-texture format; it is non-filterable (Task 2 samples NEAREST).
+/// A `[macro_dims(dims[0]), macro_dims(dims[1]), macro_dims(dims[2])]` r32float D3 occupancy
+/// texture (`STORAGE_BINDING | TEXTURE_BINDING`): written by `OccupancyBuilder::build`, sampled
+/// by the raymarch. R32Float (not R8Unorm) because R8Unorm is not a WebGPU storage-texture
+/// format; it is non-filterable (Task 2 samples NEAREST).
 pub fn make_occupancy_texture(
     device: &wgpu::Device,
-    res: u32,
+    dims: [u32; 3],
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let d = macro_dims(res, MACRO);
+    let macro_x = macro_dims(dims[0], MACRO);
+    let macro_y = macro_dims(dims[1], MACRO);
+    let macro_z = macro_dims(dims[2], MACRO);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("occupancy"),
         size: wgpu::Extent3d {
-            width: d,
-            height: d,
-            depth_or_array_layers: d,
+            width: macro_x,
+            height: macro_y,
+            depth_or_array_layers: macro_z,
         },
         mip_level_count: 1,
         sample_count: 1,
