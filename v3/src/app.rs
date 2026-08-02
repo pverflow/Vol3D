@@ -422,8 +422,11 @@ impl Vol3dApp {
                 .clicked()
             {
                 let removed_id = self.layers[self.selected].id;
+                let before = self.layers.len();
                 self.selected = delete_layer(&mut self.layers, self.selected);
-                self.timeline.remove_layer(removed_id);
+                if self.layers.len() < before {
+                    self.timeline.remove_layer(removed_id);
+                }
                 self.mark_dirty(ui.ctx());
             }
             if ui.button("Up").clicked() {
