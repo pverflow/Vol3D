@@ -796,6 +796,22 @@ mod tests {
         }
     }
 
+    /// Regression lock for the `#[serde(default = "default_emission")]` backward-compat path
+    /// (HDR-color cycle task 2): a scene saved before `emission` existed has no `"emission"` key
+    /// in its JSON. If that attribute is ever dropped or misspelled, this catches it — without
+    /// this test, a scene saved pre-emission would silently fail to deserialize (or, worse,
+    /// panic) and nothing else here would notice.
+    #[test]
+    fn layerdesc_without_emission_defaults_to_one() {
+        let full = serde_json::to_string(&LayerDesc::default()).unwrap();
+        let obj: serde_json::Value = serde_json::from_str(&full).unwrap();
+        let mut map = obj.as_object().unwrap().clone();
+        map.remove("emission");
+        let stripped = serde_json::to_string(&serde_json::Value::Object(map)).unwrap();
+        let back: LayerDesc = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(back.emission, 1.0);
+    }
+
     #[test]
     fn demo_scene_packs_without_panicking() {
         let scene = demo_scene();
