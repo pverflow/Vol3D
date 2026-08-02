@@ -237,16 +237,16 @@ Verify the timeline panel and keyframe editing work correctly:
 
 ## Value & Interpolation (SP3)
 
-Edit keyframe values and set per-keyframe **interpolation modes** (how a keyframe eases into the next key).
+Edit keyframe values and set per-keyframe **interpolation modes** (how each keyframe eases out toward the next key).
 
 ### Per-Keyframe Value & Interpolation Editing
 
 When you **select a keyframe** (click its dot on the timeline):
 - A **value field** appears next to the keyframe controls, allowing you to edit the selected keyframe's value directly.
 - **Editing the value updates playback immediately** — the viewport re-renders with the new value without requiring a full bake.
-- Three **interpolation buttons** appear next to the 🗑 (delete) button:
+- Three **interpolation buttons** appear next to the 🗑 (delete) button. **A keyframe's interpolation sets how it eases out toward the next keyframe** (the segment to its right):
   - **Lin** (default) — constant-slope linear ramp from this key to the next. Smooth constant-speed transition.
-  - **Hold** — the value holds constant (steps) until the next keyframe; no ramp, just an abrupt change at the next key. Useful for parameter holds or discrete state changes.
+  - **Hold** — the value holds constant (steps) from this key until the next keyframe; no ramp, just an abrupt change when the next key is reached. Useful for parameter holds or discrete state changes.
   - **Ease** — smooth in/out curve (smoothstep-like easing) from this key to the next. Visually smoother than linear; eases both entry and exit.
 
 ### Interpolation Persistence
@@ -270,18 +270,18 @@ cd v3 && trunk serve        # (cargo install trunk, once)
 
 Verify value editing and interpolation modes work correctly:
 
-1. **Hold makes a param step (no ramp) until the next key?**
+1. **Hold makes a param step (no ramp) from the key to the next?**
    - Create a layer and keyframe **Opacity** at Phase 0.0 (value 1.0), Phase 0.5 (value 0.2), Phase 1.0 (value 1.0).
    - Click the keyframe dot at Phase 0.5 to select it.
    - Click the **Hold** interpolation button for this keyframe.
-   - Press **Play**. The opacity should hold at 1.0 until Phase 0.5, then **instantly jump** to 0.2 and hold until Phase 1.0 (no ramp between keys).
-   - Report: Does Hold create a step (instant change) with no ramp?
+   - Press **Play**. The segment **from Phase 0.5 to 1.0** should hold flat at the 0.5-key's value (0.2) until Phase 1.0, then **instantly jump** to the 1.0 key's value (1.0). The segment before 0.5 (0.0 → 0.5) is still governed by the 0.0 key's interpolation.
+   - Report: Does Hold create a step (instant change) with no ramp from the selected key to the next?
 
 2. **Ease is visibly smoother than Lin?**
-   - On the same animated **Opacity** layer, click the keyframe at Phase 0.5 (currently set to Hold).
+   - On the same animated **Opacity** layer, click the keyframe at Phase 0.0.
    - Click the **Ease** interpolation button.
-   - Press **Play**. Compare the fade-in (0.0 → 0.5) to before: it should ease smoothly into 0.2, not linear.
-   - Report: Does Ease produce a visibly smoother curve compared to Lin?
+   - Press **Play**. The segment **from Phase 0.0 to 0.5** should ease smoothly (starting slow, speeding up) as it transitions from 1.0 to 0.2, visually smoother than a linear ramp would be.
+   - Report: Does Ease produce a visibly smoother curve (easing in/out) compared to Lin?
 
 3. **Editing the selected key's value from the timeline updates playback?**
    - With the **Opacity** keyframe at Phase 0.5 still selected, look for the **value field** near the timeline controls.
@@ -290,9 +290,10 @@ Verify value editing and interpolation modes work correctly:
    - Report: Does editing the value field update playback in real time?
 
 4. **Retiming a key (drag) keeps its interpolation?**
-   - With the keyframe at Phase 0.5 set to **Ease** interpolation, drag it to Phase 0.3 on the timeline.
+   - Click the keyframe at Phase 0.5 (the one you set to **Ease** in step 2, or create a new one and set Ease on it).
+   - Drag it to Phase 0.3 on the timeline.
    - The interpolation should remain **Ease** (not revert to Lin).
-   - Press **Play** to verify the fade-in now reaches the low point at 0.3 instead of 0.5, still with the smooth Ease curve.
+   - Press **Play**. The segment **from this key to the next key** should still show the smooth Ease curve, even though the key moved to 0.3. The easing should now occur from 0.3 to the next keyframe's position.
    - Report: Does dragging a keyframe to a new position preserve its interpolation mode?
 
 5. **A pre-SP3 saved scene loads + plays the same (all Linear)?**
