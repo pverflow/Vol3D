@@ -48,7 +48,7 @@ impl Renderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        res: u32,
+        dims: [u32; 3],
         layers: &[GpuLayer],
         params: &GenParams,
         lut_atlas: &[u8],
@@ -56,18 +56,8 @@ impl Renderer {
         dirty: bool,
     ) {
         if dirty {
-            // TEMPORARY: `res` is still the cubic scalar `self.resolution` (Task 4 replaces it
-            // with a real per-axis `dims` field) — widened to `[res;3]` here at the boundary
-            // into `VolumeGen`, whose dims are now per-axis (Task 1).
-            self.volume.generate(
-                device,
-                queue,
-                [res, res, res],
-                layers,
-                params,
-                lut_atlas,
-                lut_rows,
-            );
+            self.volume
+                .generate(device, queue, dims, layers, params, lut_atlas, lut_rows);
             // Direct field access (not `self.volume_view()`): that helper borrows all of
             // `self` via its `&self` receiver, which would conflict with the `&mut
             // self.raymarch` borrow below even though the two fields are disjoint.

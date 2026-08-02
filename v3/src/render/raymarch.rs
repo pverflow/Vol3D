@@ -260,7 +260,9 @@ impl Raymarch {
 /// `ensure_generated` skips the GPU work entirely when `!pending_regen`.
 pub struct RaymarchCallback {
     pub cam: CamUniform,
-    pub res: u32,
+    /// Per-axis box dims (`Vol3dApp::dims`), threaded straight through to both the live
+    /// (`ensure_generated`) and bake (`ensure_baked`) paths below — no cubic widening.
+    pub dims: [u32; 3],
     /// Live-regen payload (used when `bake_key` is `None`); empty during a bake.
     pub layers: Vec<GpuLayer>,
     pub gen_params: GenParams,
@@ -296,15 +298,14 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
         let r: &mut Renderer = callback_resources.get_mut().unwrap();
         if let Some(key) = &self.bake_key {
             // Playback bake path: fills the dense cache (only if stale — `ensure_baked` guards
-            // with `is_stale`). The live volume is left untouched.
-            // `self.res` is still the cubic scalar `Vol3dApp::resolution` (Task 4 replaces it with
-            // a real per-axis dims field) — widened to `[res;3]` here at the boundary into
-            // `ensure_baked`'s now-per-axis `source_dims`.
+            // with `is_stale`). The live volume is left untouched. `self.dims` is the real
+            // per-axis source size — `FrameCache::bake` reduces it further via
+            // `playback_bake_dims` for the actual baked texture size.
             r.ensure_baked(
                 device,
                 queue,
                 key.clone(),
-                [self.res; 3],
+                self.dims,
                 &self.bake_frames,
                 self.gen_params,
                 &self.lut_atlas,
@@ -315,7 +316,7 @@ impl egui_wgpu::CallbackTrait for RaymarchCallback {
             r.ensure_generated(
                 device,
                 queue,
-                self.res,
+                self.dims,
                 &self.layers,
                 &self.gen_params,
                 &self.lut_atlas,

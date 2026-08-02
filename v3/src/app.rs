@@ -340,11 +340,9 @@ impl Vol3dApp {
     fn pack_for_gpu(&self) -> (Vec<layer::GpuLayer>, Vec<u8>, u32, GenParams) {
         let (packed, lut_atlas, lut_rows) = self.pack_scene(&self.layers);
 
-        // `self.dims` is a real per-axis field (Task 4); `aspect_from_dims` derives the true
-        // aspect ratio from it, so a non-cubic pick now reaches `GenParams` correctly. The
-        // downstream GPU bridge (`RaymarchCallback::res: u32`, still cubic-only) is a separate
-        // follow-up — until it's widened to a real per-axis field, the live volume texture itself
-        // stays sized off `self.dims[0]` regardless of the other two axes.
+        // `self.dims` is a real per-axis field; `aspect_from_dims` derives the true aspect ratio
+        // from it, and `RaymarchCallback::dims` threads it straight through to the live volume
+        // texture (no cubic widening) — a non-cubic pick renders as a non-cubic box.
         let dims = self.dims;
         let aspect = anim::aspect_from_dims(dims);
         let gen_params = GenParams {
@@ -1459,10 +1457,7 @@ impl eframe::App for Vol3dApp {
 
             let cb = RaymarchCallback {
                 cam,
-                // `RaymarchCallback::res` is still a cubic `u32` scalar (a separate follow-up
-                // widens it to a real per-axis field, mirroring `self.dims`); `self.dims[0]`
-                // keeps today's default (`[128,128,128]`) behavior byte-identical.
-                res: self.dims[0],
+                dims: self.dims,
                 layers,
                 gen_params,
                 lut_atlas,
