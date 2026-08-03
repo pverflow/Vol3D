@@ -356,6 +356,37 @@ cd v3 && trunk serve        # (cargo install trunk, once)
 ```
 
 
+## Export (SP1 — Volume)
+
+Get the generated volume **out** of Vol3D as a game-engine-ready asset. This first phase exports the **volume texture at the current phase** (scrub the playhead / pause where you want it). It does **not** block the render — the readback runs across a frame or two while the viewport keeps drawing.
+
+### The Export section
+
+Find the **Export** section in the UI. It has:
+- A **cols** field — how many Z-slices per row in the sprite sheet. `0` = **auto** (`ceil(sqrt(depth))`, a near-square sheet). Set it explicitly if your engine wants a specific tiling.
+- Four buttons (disabled while an export is in flight, re-enabled when it finishes):
+  - **Sprite-sheet PNG** — all Z-slices tiled into one PNG grid (left→right, top→bottom), **tonemapped with the current Exposure/ACES so it matches the viewport** (bright fire rolls off, no flat-white clip). The universal "volume flipbook" a game engine samples as a pseudo-3D texture.
+  - **Raw RGBA16F** — the lossless HDR volume as flat 16-bit-float bytes (linear, X-fastest → Y → Z) + a `.json` sidecar with `dims` + `format` + `layout`.
+  - **Raw RGBA8** — tonemapped 8-bit color+density, same byte order + sidecar.
+  - **Raw R8** — density only (1 byte/voxel), same byte order + sidecar.
+- A small **status** label ("exporting…" → "export complete").
+
+### Where files go
+
+- **Native:** files are written to the **current run directory** (`./vol3d_volume.png`, `./vol3d_volume_rgba16f.raw` + `.json`, etc.). The terminal logs the **absolute path** of each file written.
+- **Web:** each file **downloads** through the browser (one download per file; raw formats download the data file **and** its `.json` sidecar).
+
+### What to report back (Export)
+
+1. **Sprite-sheet PNG opens** and shows the volume's Z-slices tiled in a grid, looking like the viewport (tonemapped — no flat-white clipping on bright emission)?
+2. **cols** works — `0` gives a near-square sheet; a set value gives that many columns; a **tall non-cubic** volume (e.g. 64×64×256) tiles correctly (256 slices laid out right)?
+3. **Raw** files write with the expected size (`RGBA16F` = w·h·d·8 bytes; `RGBA8` = ·4; `R8` = ·1) and the `.json` sidecar has the right dims/format?
+4. **Web downloads** land (PNG + raw + sidecar)?
+5. **No render hitch** — the viewport keeps animating during an export; the status shows "export complete" within ~a frame?
+
+*(Next: **Export SP2 — Rendered flipbook** = raymarched/shaded animation frames tiled into a sprite sheet + JSON metadata. This SP1 exports the volume DATA; SP2 exports the rendered LOOK.)*
+
+
 ## What to report back
 
 ### Non-Cubic Volume Box
