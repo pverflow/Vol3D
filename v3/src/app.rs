@@ -1,6 +1,7 @@
 use crate::anim;
 use crate::anim_timeline::{Interp, Timeline};
 use crate::camera::OrbitCamera;
+use crate::export;
 use crate::gradient::gradient_editor;
 use crate::layer::{self, BlendMode, DistortionType, GenParams, LayerDesc, NoiseType, ParamField};
 use crate::persistence;
@@ -267,6 +268,23 @@ pub struct Vol3dApp {
     /// any (Task 3). Set at drag-start hit-test time, cleared once `response.dragged()` goes
     /// false. Not persisted — a mid-drag gesture never survives a save/load anyway.
     dragging_key: Option<(u64, layer::ParamField)>,
+
+    // --- Export (Export SP1, Task 3) — runtime-only, never persisted/scene-saved ---
+    /// The in-flight GPU->CPU readback, if any. `ui()`'s top-of-frame state machine polls this
+    /// once per frame; `export::ReadbackJob::poll_take` unmaps its buffer the instant it returns
+    /// `Some`, so this MUST be set back to `None` that same frame (never polled again after).
+    export_job: Option<export::ReadbackJob>,
+    /// An export the UI requested but hasn't started a readback for yet. Taken (and cleared) by
+    /// `ui()`'s state machine once `export_job` is `None`; a second button click before that
+    /// happens just overwrites this (last-click-wins).
+    pending_export: Option<export::ExportRequest>,
+    /// Small status line the Export UI shows below its buttons ("exporting…" / "export
+    /// complete"). Starts empty (nothing exported yet this session).
+    export_status: String,
+    /// Sprite-sheet column count the Export UI's `DragValue` edits. `0` means "auto" (
+    /// `ceil(sqrt(depth))`, computed fresh each frame from `committed_dims`); a nonzero value
+    /// overrides it.
+    export_cols: u32,
 }
 
 impl Default for Vol3dApp {
@@ -308,6 +326,10 @@ impl Default for Vol3dApp {
             next_layer_id,
             selected_key: None,
             dragging_key: None,
+            export_job: None,
+            pending_export: None,
+            export_status: String::new(),
+            export_cols: 0,
         }
     }
 }
@@ -573,6 +595,83 @@ impl Vol3dApp {
                 self.mark_dirty(ui.ctx());
             }
         });
+
+        egui::CollapsingHeader::new("Export")
+            .default_open(false)
+            .show(ui, |ui| self.export_panel(ui));
+    }
+
+    /// Export section (Export SP1, Task 3): sprite-sheet PNG + raw (RGBA16F/RGBA8/R8) volume
+    /// export. Buttons only ever set `pending_export`; `ui()`'s top-of-frame state machine
+    /// owns the actual GPU readback + encode/save, so a click here never blocks a frame.
+    fn export_panel(&mut self, ui: &mut egui::Ui) {
+        let depth = self.committed_dims[2];
+        let default_cols = (depth as f32).sqrt().ceil() as u32;
+        let eff_cols = if self.export_cols == 0 {
+            default_cols.max(1)
+        } else {
+            self.export_cols
+        };
+
+        ui.horizontal(|ui| {
+            ui.label("Sprite cols");
+            ui.add(
+                egui::DragValue::new(&mut self.export_cols)
+                    .range(0..=depth)
+                    .custom_formatter(|n, _| {
+                        if n == 0.0 {
+                            "auto".to_string()
+                        } else {
+                            format!("{n}")
+                        }
+                    }),
+            );
+        });
+
+        let busy = self.export_job.is_some();
+        if ui
+            .add_enabled(!busy, egui::Button::new("Sprite-sheet PNG"))
+            .clicked()
+        {
+            self.pending_export = Some(export::ExportRequest {
+                kind: export::ExportKind::SpritePng,
+                cols: eff_cols,
+                exposure: self.exposure,
+            });
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!busy, egui::Button::new("Raw RGBA16F"))
+                .clicked()
+            {
+                self.pending_export = Some(export::ExportRequest {
+                    kind: export::ExportKind::Raw(export::RawFmt::Rgba16f),
+                    cols: eff_cols,
+                    exposure: self.exposure,
+                });
+            }
+            if ui
+                .add_enabled(!busy, egui::Button::new("Raw RGBA8"))
+                .clicked()
+            {
+                self.pending_export = Some(export::ExportRequest {
+                    kind: export::ExportKind::Raw(export::RawFmt::Rgba8),
+                    cols: eff_cols,
+                    exposure: self.exposure,
+                });
+            }
+            if ui.add_enabled(!busy, egui::Button::new("Raw R8")).clicked() {
+                self.pending_export = Some(export::ExportRequest {
+                    kind: export::ExportKind::Raw(export::RawFmt::R8),
+                    cols: eff_cols,
+                    exposure: self.exposure,
+                });
+            }
+        });
+
+        if !self.export_status.is_empty() {
+            ui.label(egui::RichText::new(&self.export_status).small());
+        }
     }
 
     /// Properties panel for `layers[selected]`. `ui_logic`'s ops always leave `layers` non-empty
@@ -1621,7 +1720,7 @@ impl eframe::App for Vol3dApp {
     // eframe 0.35.0 (installed): `App::ui` replaces the older `update(&Context, ...)`
     // shape and hands us the root `&mut Ui` directly; panels are shown via
     // `.show(ui, ...)` rather than `.show(ctx, ...)`.
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // Smoothed frame time for the fps/ms readout (the top bar's right-aligned label). Requesting a
         // repaint every frame (unconditionally, independent of the debounced regen below) keeps
         // the raymarch/present loop running continuously so the reading reflects steady-state
@@ -1633,6 +1732,42 @@ impl eframe::App for Vol3dApp {
             self.frame_ms_ema * 0.9 + dt * 1000.0 * 0.1
         };
         ui.ctx().request_repaint();
+
+        // Export: drive any in-flight readback, else kick off a pending request. Runs only when
+        // exporting; never touches the live render path.
+        if let Some(rs) = frame.wgpu_render_state() {
+            // 1) Finish an in-flight job the frame its readback is ready.
+            let done = self
+                .export_job
+                .as_ref()
+                .and_then(|job| job.poll_take(&rs.device).map(|vol| (vol, *job.request())));
+            if let Some((vol, req)) = done {
+                export::run_export(&vol, &req);
+                self.export_job = None; // MUST drop here (poll_take already unmapped)
+                self.export_status = "export complete".to_string();
+            } else if self.export_job.is_none() {
+                // 2) Start a pending request.
+                if let Some(req) = self.pending_export.take() {
+                    let tex = {
+                        let g = rs.renderer.read();
+                        g.callback_resources
+                            .get::<crate::render::Renderer>()
+                            .unwrap()
+                            .volume
+                            .texture
+                            .clone()
+                    }; // read guard drops here, before begin()
+                    self.export_job = Some(export::ReadbackJob::begin(
+                        &rs.device,
+                        &rs.queue,
+                        &tex,
+                        self.committed_dims,
+                        req,
+                    ));
+                    self.export_status = "exporting…".to_string();
+                }
+            }
+        }
 
         // Top bar: title, dims + seed (moved out of `layers_panel`), theme toggle, and the
         // fps/ms readout (label only — the EMA above is what actually computes it). Sits inside
