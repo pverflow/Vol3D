@@ -2,6 +2,7 @@ mod anim;
 mod anim_timeline;
 mod app;
 mod camera;
+mod export;
 mod gradient;
 mod layer;
 mod persistence;
