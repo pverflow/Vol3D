@@ -1,5 +1,11 @@
 use crate::layer::{GenParams, GpuLayer};
 use crate::render::occupancy::{make_occupancy_texture, OccupancyBuilder};
+use crate::render::specialize::{feature_mask, specialize};
+use std::collections::HashMap;
+
+/// The unspecialized generation shader. Never handed to the GPU as-is — `specialize` reduces it to
+/// the families the current scene reaches first (see `render::specialize` for why that matters).
+const GENERATE_WGSL: &str = include_str!("../../shaders/generate.wgsl");
 
 /// Ramp LUT atlas width — fixed at 256 texels/row (one texel per 8-bit density value),
 /// matching `ramp::build_ramp_lut_atlas`'s contract.
@@ -27,15 +33,15 @@ pub struct VolumeGen {
     lut_rows: u32,
     bind_group: wgpu::BindGroup,
     bgl: wgpu::BindGroupLayout,
-    pipeline: wgpu::ComputePipeline,
+    pipeline_layout: wgpu::PipelineLayout,
+    /// One compiled pipeline per `specialize::feature_mask`. Keyed rather than replaced so
+    /// toggling a layer's noise type back to a previously-used family is instant instead of
+    /// re-paying pipeline creation (which is the expensive step this whole module exists for).
+    pipelines: HashMap<u32, wgpu::ComputePipeline>,
 }
 
 impl VolumeGen {
     pub fn new(device: &wgpu::Device, dims: [u32; 3]) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("generate"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/generate.wgsl").into()),
-        });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("gen-bgl"),
             entries: &[
@@ -95,15 +101,10 @@ impl VolumeGen {
             bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("gen"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
+        // No pipeline is built here: which one we need depends on the scene, and the first
+        // `generate_into` always runs with real layers before anything is drawn (`Vol3dApp` starts
+        // `dirty`). Compiling a monolithic one up front would re-introduce exactly the multi-second
+        // (Windows: up to 60 s) stall this module exists to avoid.
         let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("gen-params"),
             size: std::mem::size_of::<GenParams>() as u64,
@@ -158,8 +159,38 @@ impl VolumeGen {
             lut_rows,
             bind_group,
             bgl,
-            pipeline,
+            pipeline_layout,
+            pipelines: HashMap::new(),
         }
+    }
+
+    /// The pipeline for `mask`, compiling (and caching) it on first use.
+    ///
+    /// This is the call that costs real time — 0.3–0.7 s for a typical specialized scene, versus
+    /// 16–60 s for the unspecialized shader on Windows/DXC. It is synchronous (wgpu 29 exposes no
+    /// async pipeline creation), so it must stay rare: hence the cache, and hence `specialize`.
+    fn pipeline_for(&mut self, device: &wgpu::Device, mask: u32) -> &wgpu::ComputePipeline {
+        self.pipelines.entry(mask).or_insert_with(|| {
+            let t0 = crate::render::specialize::now_ms();
+            let src = specialize(GENERATE_WGSL, mask);
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("generate-specialized"),
+                source: wgpu::ShaderSource::Wgsl(src.into()),
+            });
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("gen"),
+                layout: Some(&self.pipeline_layout),
+                module: &module,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            log::info!(
+                "VolumeGen: compiled generation pipeline for feature mask {mask:#010b} in {:.0} ms",
+                crate::render::specialize::now_ms() - t0
+            );
+            pipeline
+        })
     }
 
     fn make_volume_texture(
@@ -378,6 +409,12 @@ impl VolumeGen {
             &self.lut_sampler,
         );
 
+        // Compile-on-demand for exactly the generator families this scene reaches. Done before the
+        // encoder so the (possibly slow, first-time-only) pipeline build isn't inside a pass.
+        let mask = feature_mask(layers);
+        self.pipeline_for(device, mask);
+        let pipeline = &self.pipelines[&mask];
+
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gen-enc"),
         });
@@ -386,7 +423,7 @@ impl VolumeGen {
                 label: Some("gen-pass"),
                 timestamp_writes: None,
             });
-            cpass.set_pipeline(&self.pipeline);
+            cpass.set_pipeline(pipeline);
             cpass.set_bind_group(0, &self.bind_group, &[]);
             cpass.dispatch_workgroups(
                 dims[0].div_ceil(4),

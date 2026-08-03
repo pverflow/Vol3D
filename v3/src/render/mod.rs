@@ -1,6 +1,7 @@
 pub mod frame_cache;
 pub mod occupancy;
 pub mod raymarch;
+pub mod specialize;
 pub mod volume;
 use crate::anim::{is_stale, BakeKey};
 use crate::layer::{GenParams, GpuLayer};
