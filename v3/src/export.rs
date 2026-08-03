@@ -1,8 +1,9 @@
-// Export (Export SP1, task 1): pure-CPU encode/tonemap core — un-pad a padded GPU readback,
+// Export (Export SP1): pure-CPU encode/tonemap core (task 1) — un-pad a padded GPU readback,
 // tonemap an RGBA16F texel to match the viewport (`raymarch.wgsl`), and encode a tiled
-// sprite-sheet PNG or raw bytes + JSON sidecar. No GPU code here — the readback job that
-// produces a `VolumeData` and the platform save (`save_bytes`) are a later task, so nothing
-// below is called by non-test code yet — same `allow(dead_code)` situation as `persistence.rs`.
+// sprite-sheet PNG or raw bytes + JSON sidecar — plus the GPU readback job and platform save
+// (task 2): a non-blocking poll-based state machine that copies a render target into a
+// `MAP_READ` buffer and, once mapped, hands back a `VolumeData` for the encoders above.
+// Nothing here is wired into `app.rs` yet (that's task 3), so `allow(dead_code)` still applies.
 #![allow(dead_code)]
 
 /// Tight (no row padding) RGBA16F volume bytes, X-fastest -> Y -> Z, 8 bytes/texel.
@@ -28,6 +29,23 @@ impl RawFmt {
             RawFmt::R8 => "r8",
         }
     }
+}
+
+/// What `run_export` should encode once a `VolumeData` readback lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportKind {
+    SpritePng,
+    Raw(RawFmt),
+}
+
+/// User-facing export choice, captured at the moment a readback is kicked off (`ReadbackJob`
+/// carries this alongside the in-flight GPU copy so `run_export` knows what to do once the
+/// bytes are back). No `Eq` (unlike `ExportKind`) — `exposure` is an `f32`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExportRequest {
+    pub kind: ExportKind,
+    pub cols: u32,
+    pub exposure: f32,
 }
 
 /// Round `n` up to the next multiple of `a`.
@@ -148,6 +166,194 @@ pub fn encode_spritesheet_png(vol: &VolumeData, cols: u32, exposure: f32) -> Vec
             .expect("image data matches the declared width/height/color type by construction");
     }
     png_bytes
+}
+
+/// Bytes per RGBA16F texel — the only format the GPU readback copies (encoders above tonemap
+/// down to RGBA8/R8 in CPU-land once the bytes are back).
+const READBACK_BYTES_PER_TEXEL: u32 = 8;
+
+/// A non-blocking GPU->CPU readback in flight: `begin` submits a `copy_texture_to_buffer` and
+/// starts the async map; `poll_take` is meant to be called once per frame (or whenever
+/// convenient) and returns `Some(VolumeData)` only once the map has completed, without ever
+/// blocking the caller.
+pub struct ReadbackJob {
+    buffer: wgpu::Buffer,
+    dims: [u32; 3],
+    padded_bpr: u32,
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    request: ExportRequest,
+}
+
+impl ReadbackJob {
+    /// Kick off a readback of `texture` (an RGBA16F render target sized `dims`) into a fresh
+    /// `MAP_READ` buffer, and start the async map. Non-blocking: submits the copy and returns
+    /// immediately: poll `poll_take` to find out when the bytes are ready.
+    pub fn begin(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        dims: [u32; 3],
+        request: ExportRequest,
+    ) -> ReadbackJob {
+        let padded_bpr = align_up(dims[0] * READBACK_BYTES_PER_TEXEL, 256);
+        let size = (padded_bpr as u64) * (dims[1] as u64) * (dims[2] as u64);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("export-readback"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("export-readback"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bpr),
+                    rows_per_image: Some(dims[1]),
+                },
+            },
+            wgpu::Extent3d {
+                width: dims[0],
+                height: dims[1],
+                depth_or_array_layers: dims[2],
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ready_cb = ready.clone();
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |res| {
+            if res.is_ok() {
+                ready_cb.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        ReadbackJob {
+            buffer,
+            dims,
+            padded_bpr,
+            ready,
+            request,
+        }
+    }
+
+    /// Pump the device's async work without blocking, then return the unpadded `VolumeData`
+    /// once the map callback has fired — `None` while the copy/map is still in flight. Callers
+    /// should stop polling this job (and drop it) once `Some` comes back: the returned buffer
+    /// has already been unmapped.
+    pub fn poll_take(&self, device: &wgpu::Device) -> Option<VolumeData> {
+        let _ = device.poll(wgpu::PollType::Poll);
+        if !self.ready.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+
+        let view = self.buffer.slice(..).get_mapped_range();
+        let padded: &[u8] = &view;
+        let rgba16f = unpad_rows(padded, self.dims, self.padded_bpr, READBACK_BYTES_PER_TEXEL);
+        drop(view);
+        self.buffer.unmap();
+
+        Some(VolumeData {
+            dims: self.dims,
+            rgba16f,
+        })
+    }
+
+    /// The export choice this job was started for, so the caller can decide how to encode the
+    /// `VolumeData` `poll_take` eventually hands back.
+    pub fn request(&self) -> &ExportRequest {
+        &self.request
+    }
+}
+
+/// Save `bytes` as `{basename}.{ext}`: on native, a file next to the working directory; on
+/// web, a browser download via a synthetic anchor click. Failures are logged, never panics.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_bytes(basename: &str, ext: &str, bytes: &[u8]) {
+    let path = format!("./{basename}.{ext}");
+    match std::fs::write(&path, bytes) {
+        Ok(()) => {
+            let shown = std::fs::canonicalize(&path)
+                .map(|p| p.display().to_string())
+                .unwrap_or(path);
+            log::info!("export: saved {shown}");
+        }
+        Err(e) => log::error!("export: failed to write {path}: {e}"),
+    }
+}
+
+/// Save `bytes` as `{basename}.{ext}`: on native, a file next to the working directory; on
+/// web, a browser download via a synthetic anchor click. Failures are logged, never panics.
+#[cfg(target_arch = "wasm32")]
+pub fn save_bytes(basename: &str, ext: &str, bytes: &[u8]) {
+    use wasm_bindgen::JsCast;
+
+    let array = js_sys::Array::new();
+    array.push(&js_sys::Uint8Array::from(bytes));
+    let blob = match web_sys::Blob::new_with_u8_array_sequence(&array) {
+        Ok(blob) => blob,
+        Err(e) => {
+            log::error!("export: failed to build blob: {e:?}");
+            return;
+        }
+    };
+    let url = match web_sys::Url::create_object_url_with_blob(&blob) {
+        Ok(url) => url,
+        Err(e) => {
+            log::error!("export: failed to create object url: {e:?}");
+            return;
+        }
+    };
+
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        log::error!("export: no window/document to trigger a download from");
+        let _ = web_sys::Url::revoke_object_url(&url);
+        return;
+    };
+    let anchor = document
+        .create_element("a")
+        .ok()
+        .and_then(|e| e.dyn_into::<web_sys::HtmlAnchorElement>().ok());
+    match anchor {
+        Some(anchor) => {
+            anchor.set_href(&url);
+            anchor.set_download(&format!("{basename}.{ext}"));
+            anchor.click();
+        }
+        None => log::error!("export: failed to create download anchor element"),
+    }
+    let _ = web_sys::Url::revoke_object_url(&url);
+}
+
+/// Encode `vol` per `request.kind` and hand the bytes to `save_bytes`. Raw exports also write a
+/// `.json` sidecar next to the `.raw` file (same basename, `encode_raw`'s second return value).
+pub fn run_export(vol: &VolumeData, request: &ExportRequest) {
+    match request.kind {
+        ExportKind::SpritePng => {
+            let png = encode_spritesheet_png(vol, request.cols, request.exposure);
+            save_bytes("vol3d_volume", "png", &png);
+        }
+        ExportKind::Raw(fmt) => {
+            let basename = match fmt {
+                RawFmt::Rgba16f => "vol3d_volume_rgba16f",
+                RawFmt::Rgba8 => "vol3d_volume_rgba8",
+                RawFmt::R8 => "vol3d_volume_r8",
+            };
+            let (bytes, sidecar) = encode_raw(vol, fmt);
+            save_bytes(basename, "raw", &bytes);
+            save_bytes(basename, "json", sidecar.as_bytes());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -324,5 +530,34 @@ mod tests {
         let (width, height, _color_type, _buf) = decode_png(&png_bytes);
         assert_eq!(width, 2);
         assert_eq!(height, 4);
+    }
+
+    // `save_bytes` (native) writes to `./{basename}.{ext}`, so this test `cd`s into a scratch
+    // dir under `std::env::temp_dir()` for the call, then restores the process cwd immediately
+    // (before reading the file back or asserting) so a failed assertion can't leave the whole
+    // test binary running from a deleted temp dir.
+    // ponytail: mutates the process-global cwd, so this must stay the only fs-cwd-dependent
+    // test in the crate; if a second one shows up, give `save_bytes` a caller-supplied base dir
+    // instead of hardcoding `./`.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn save_bytes_native_writes_exact_bytes_readable_back() {
+        let original_cwd = std::env::current_dir().expect("read cwd");
+        let dir = std::env::temp_dir().join(format!(
+            "vol3d_export_save_bytes_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        std::env::set_current_dir(&dir).expect("cd into scratch dir");
+
+        let bytes: Vec<u8> = (0..=255u8).collect();
+        save_bytes("save_bytes_test", "bin", &bytes);
+
+        std::env::set_current_dir(&original_cwd).expect("restore cwd");
+
+        let readback = std::fs::read(dir.join("save_bytes_test.bin")).expect("read back");
+        assert_eq!(readback, bytes);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
