@@ -6,3 +6,6 @@ src-tauri/target/
 
 # TypeScript incremental build cache
 tsconfig.tsbuildinfo
+
+.DS_Store
+**/.DS_Store

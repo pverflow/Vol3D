@@ -1,0 +1,28 @@
+[package]
+name = "vol3d"
+version = "3.0.0-alpha.0"
+edition = "2021"
+
+[dependencies]
+egui = "=0.35.0"
+eframe = { version = "=0.35.0", default-features = false, features = ["wgpu", "default_fonts"] }
+egui-wgpu = "=0.35.0"
+wgpu = "=29.0.4"
+bytemuck = { version = "1.25", features = ["derive"] }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+png = "0.17"
+half = { version = "2", features = ["bytemuck"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "1"
+env_logger = "0.11"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Window", "Storage", "Blob", "BlobPropertyBag", "Url", "HtmlAnchorElement", "HtmlElement", "Document", "Element", "Performance"] }
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+console_log = "1"
